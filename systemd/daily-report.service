@@ -1,0 +1,19 @@
+[Unit]
+Description=Daily Report Auto Submit Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/daily_report
+Environment=PATH=/home/ubuntu/daily_report/venv/bin:/usr/bin:/bin
+Environment=HOME=/home/ubuntu
+ExecStart=/home/ubuntu/daily_report/venv/bin/python /home/ubuntu/daily_report/main.py
+Restart=always
+RestartSec=30
+StandardOutput=append:/home/ubuntu/daily_report/service.log
+StandardError=append:/home/ubuntu/daily_report/service.log
+
+[Install]
+WantedBy=multi-user.target
