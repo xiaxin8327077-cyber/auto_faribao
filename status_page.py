@@ -43,8 +43,6 @@ COOKIE_NAME = "status_page_session"
 COOKIE_AGE = 12 * 60 * 60
 MAX_UPLOAD = 200 * 1024 * 1024
 PREVIEW_LIMIT = 64 * 1024
-CAPTCHA_AGE = 5 * 60
-CAPTCHA_CHARS = "0123456789"
 TEXT_PREVIEW_EXTS = {
     ".txt",
     ".log",
@@ -71,7 +69,6 @@ TEXT_PREVIEW_EXTS = {
 IMAGE_PREVIEW_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
 SESSIONS = {}
-CAPTCHAS = {}
 LOGIN_RATE = {}
 TAILSCALE_CACHE = {"ts": 0.0, "data": {}}
 XRAY_CACHE = {"ts": 0.0, "data": {}}
@@ -80,7 +77,6 @@ METRICS_STATE = None
 LOCK = threading.Lock()
 TLOCK = threading.Lock()
 MLOCK = threading.Lock()
-CAPLOCK = threading.Lock()
 RATELOCK = threading.Lock()
 TSLOCK = threading.Lock()
 XLOCK = threading.Lock()
@@ -610,81 +606,6 @@ def metrics_worker():
         except Exception as exc:
             sys.stderr.write(f"metric error: {exc}\n")
         time.sleep(METRIC_INTERVAL)
-
-
-def cleanup_captchas_locked():
-    now_ts = time.time()
-    for token in list(CAPTCHAS.keys()):
-        item = CAPTCHAS.get(token) or {}
-        if item.get("exp", 0) <= now_ts:
-            CAPTCHAS.pop(token, None)
-
-
-def captcha_svg(code):
-    width = 156
-    height = 56
-    lines = []
-    for _ in range(7):
-        x1 = secrets.randbelow(width)
-        y1 = secrets.randbelow(height)
-        x2 = secrets.randbelow(width)
-        y2 = secrets.randbelow(height)
-        alpha = 18 + secrets.randbelow(24)
-        lines.append(
-            f"<line x1='{x1}' y1='{y1}' x2='{x2}' y2='{y2}' stroke='rgba(32,86,112,0.{alpha})' stroke-width='1.4' />"
-        )
-
-    dots = []
-    for _ in range(28):
-        x = secrets.randbelow(width)
-        y = secrets.randbelow(height)
-        r = 1 + secrets.randbelow(3)
-        alpha = 16 + secrets.randbelow(30)
-        dots.append(f"<circle cx='{x}' cy='{y}' r='{r}' fill='rgba(15,139,141,0.{alpha})' />")
-
-    chars = []
-    for idx, char in enumerate(code):
-        x = 18 + idx * 26 + secrets.randbelow(8)
-        y = 33 + secrets.randbelow(12)
-        rotate = -18 + secrets.randbelow(37)
-        font_size = 22 + secrets.randbelow(8)
-        chars.append(
-            f"<text x='{x}' y='{y}' font-size='{font_size}' font-weight='700' "
-            f"fill='#16324e' transform='rotate({rotate} {x} {y})'>{escape(char)}</text>"
-        )
-
-    return (
-        f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 {width} {height}' width='{width}' height='{height}'>"
-        "<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>"
-        "<stop offset='0%' stop-color='#ffffff'/><stop offset='100%' stop-color='#dff7f4'/>"
-        "</linearGradient></defs>"
-        f"<rect x='0.5' y='0.5' width='{width-1}' height='{height-1}' rx='14' fill='url(#g)' stroke='rgba(15,139,141,.18)'/>"
-        + "".join(lines)
-        + "".join(dots)
-        + "".join(chars)
-        + "</svg>"
-    )
-
-
-def create_captcha(ip_addr):
-    code = "".join(secrets.choice(CAPTCHA_CHARS) for _ in range(4))
-    token = secrets.token_urlsafe(24)
-    with CAPLOCK:
-        cleanup_captchas_locked()
-        CAPTCHAS[token] = {"code": code.lower(), "exp": time.time() + CAPTCHA_AGE, "ip": ip_addr}
-    return token, captcha_svg(code), code
-
-
-def verify_captcha(ip_addr, token, value):
-    with CAPLOCK:
-        cleanup_captchas_locked()
-        item = CAPTCHAS.pop(str(token or "").strip(), None)
-    if not item:
-        raise ValueError("图形验证码已失效，请刷新后重试。")
-    if item.get("ip") != ip_addr:
-        raise ValueError("图形验证码校验失败，请刷新后重试。")
-    if str(value or "").strip().lower() != str(item.get("code", "")).lower():
-        raise ValueError("图形验证码错误。")
 
 
 def rate_state_locked(ip_addr):
@@ -1269,8 +1190,6 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
 .input{width:100%;border:1px solid rgba(255,255,255,.10);border-radius:16px;padding:14px 15px;font-size:16px;outline:none;background:rgba(0,16,27,.48);color:#fff}
 .input::placeholder{color:rgba(139,159,176,.48)}
 .input:focus{border-color:rgba(126,240,226,.58);box-shadow:0 0 0 4px rgba(0,103,95,.18)}
-.captcha-row{display:grid;grid-template-columns:minmax(0,1fr) 104px;gap:10px;align-items:center;margin-top:14px}
-.captcha-box{height:58px;border:1px solid var(--line);border-radius:16px;display:grid;place-items:center;background:rgba(255,255,255,.06);overflow:hidden}
 .ghost-btn,.primary-btn{appearance:none;border:none;border-radius:16px;padding:12px 14px;font:inherit;cursor:pointer;font-weight:700}
 .ghost-btn{background:rgba(255,255,255,.06);color:#dce9f5;border:1px solid rgba(255,255,255,.10)}
 .primary-btn{width:100%;margin-top:18px;background:linear-gradient(135deg,var(--accent),#0a8d7f);color:#fff;box-shadow:0 16px 34px rgba(0,103,95,.34)}
@@ -1285,67 +1204,39 @@ body::before{content:'';position:fixed;inset:0;background-image:radial-gradient(
     <div class='login-head'>
       <div class='login-brand'><span class='material-symbols-outlined'>shield</span></div>
       <div class='login-kicker'>The Warden</div>
-      <div class='login-title'>安全验证</div>
-      <div class='login-sub'>输入访问密码和图形验证码后继续。</div>
+      <div class='login-title'>访问登录</div>
+      <div class='login-sub'>输入访问密码后继续。</div>
     </div>
     <label class='field'><span>访问密码</span><input id='pwd' class='input' type='password' autocomplete='current-password' placeholder='请输入访问密码'></label>
-    <div class='captcha-row'>
-      <div id='captchaBox' class='captcha-box'>加载中...</div>
-      <button id='refreshCaptchaBtn' class='ghost-btn' type='button'>刷新验证码</button>
-    </div>
-    <label class='field'><span>图形验证码</span><input id='captchaInput' class='input' type='text' inputmode='numeric' pattern='[0-9]*' maxlength='4' autocomplete='off' placeholder='请输入验证码'></label>
     <div id='msg' class='hint'></div>
     <button id='btn' class='primary-btn' type='button'>进入页面</button>
     <div class='login-foot'></div>
   </div>
 <script>
-let captchaToken = '';
 function setMsg(text){ document.getElementById('msg').textContent = text || ''; }
-async function loadCaptcha(){
-  const box = document.getElementById('captchaBox');
-  box.textContent = '加载中...';
-  try{
-    const r = await fetch('/api/captcha', {cache:'no-store'});
-    const data = await r.json();
-    captchaToken = data.token || '';
-    box.innerHTML = data.svg || '验证码加载失败';
-  }catch(err){
-    box.textContent = '验证码加载失败';
-    setMsg('验证码加载失败，请稍后重试。');
-  }
-}
 async function login(){
   const btn = document.getElementById('btn');
   const password = document.getElementById('pwd').value.trim();
-  const captcha = document.getElementById('captchaInput').value.replace(/\\D+/g,'').trim();
   if(!password){ setMsg('请输入访问密码。'); return; }
-  if(!captchaToken){ setMsg('验证码尚未准备好，请刷新后重试。'); return; }
-  if(!captcha){ setMsg('请输入图形验证码。'); return; }
   btn.disabled = true;
   btn.textContent = '验证中...';
   try{
-    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:password, captcha_token:captchaToken, captcha_value:captcha})});
+    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:password})});
     const data = await r.json();
     if(!r.ok){
       setMsg(data.message || '验证失败。');
-      document.getElementById('captchaInput').value = '';
-      await loadCaptcha();
       return;
     }
     location.href = '/';
   }catch(err){
     setMsg('请求失败，请稍后重试。');
-    await loadCaptcha();
   }finally{
     btn.disabled = false;
     btn.textContent = '进入页面';
   }
 }
-document.getElementById('refreshCaptchaBtn').onclick = () => { setMsg(''); loadCaptcha().catch(() => setMsg('验证码加载失败，请稍后重试。')); };
 document.getElementById('btn').onclick = () => login();
 document.getElementById('pwd').addEventListener('keydown', event => { if(event.key === 'Enter'){ login(); }});
-document.getElementById('captchaInput').addEventListener('keydown', event => { if(event.key === 'Enter'){ login(); }});
-loadCaptcha().catch(() => setMsg('验证码加载失败，请稍后重试。'));
 </script>
 </body>
 </html>
@@ -2138,14 +2029,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_html(200, "ok")
             return
 
-        if path == "/api/captcha":
-            token, svg, code = create_captcha(self.client_ip())
-            payload = {"token": token, "svg": svg}
-            if self.is_local_request():
-                payload["debug_code"] = code
-            self.send_json(200, payload)
-            return
-
         if path == "/api/status":
             if not self.need({"readonly", "full"}):
                 return
@@ -2231,9 +2114,6 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 data = self.read_json()
                 password = str(data.get("password", "")).strip()
-                captcha_token = str(data.get("captcha_token", "")).strip()
-                captcha_value = str(data.get("captcha_value", "")).strip()
-                verify_captcha(self.client_ip(), captcha_token, captcha_value)
             except Exception as exc:
                 record_login_result(self.client_ip(), False)
                 self.send_json(400, {"message": str(exc)})
