@@ -1570,6 +1570,7 @@ input[type='file']::file-selector-button{appearance:none;border:none;border-radi
 @media (max-width:1080px){.metrics-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:760px){.app-shell{padding:10px}.hero,.section,.sidebar{padding:16px}.metrics-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.mini-grid,.gauge-grid{grid-template-columns:1fr}th,td{padding:11px 10px}.table-shell{overflow:auto}.status-value,.hero-card .value{font-size:18px}}
 @media (max-width:560px){.metrics-grid{grid-template-columns:1fr}.hero h1{font-size:26px}.metric-value{font-size:22px}}
+
 </style>
 </head>
 <body>
@@ -1822,9 +1823,10 @@ async function loadReportHistory(){
       var detail = d.innerHTML;
       var sc = rec.status === "成功" ? "#52c41a" : rec.status === "失败" ? "#ff4d4f" : "#faad14";
       var contentDisplay = ct || "";
+      var titleAttr = contentDisplay.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       if (contentDisplay.length > 50) { contentDisplay = contentDisplay.substring(0, 50) + "..."; }
       var detailDisplay = detail.replace(/\\n/g, "<br>") || (rec.status === "失败" ? "未知错误" : "-");
-      return `<tr><td>${tm}</td><td>${tp}</td><td>${dt}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${contentDisplay || "(自动提取)"}</td><td style="color:${sc};font-weight:700">${st}</td><td style="font-size:12px;color:#667989;line-height:1.5;max-width:300px;word-break:break-word">${detailDisplay}</td></tr>`;
+      return `<tr><td>${tm}</td><td>${tp}</td><td>${dt}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${titleAttr}">${contentDisplay || "(自动提取)"}</td><td style="color:${sc};font-weight:700">${st}</td><td style="font-size:12px;color:#667989;line-height:1.5;max-width:300px;word-break:break-word">${detailDisplay}</td></tr>`;
     }).join("");
   } catch(e) {}
 }
