@@ -522,6 +522,10 @@ FORM_SELECTORS = {
 - **问题**：详情列使用 tooltip/overflow:hidden 显示，用户无法直接看到
 - **修复**：去掉 `overflow:hidden` + `title` 属性，改为 `word-break:break-word` 直接显示文字，`\n` 转 `<br>`
 
+### 6. 日报内容悬浮提示
+- **问题**：历史记录中日报内容列被截断为 50 字符，无法查看完整内容
+- **修复**：使用浏览器原生 `title` 属性实现悬浮提示，鼠标悬浮到内容列自动显示完整日报内容。最初尝试自定义 CSS tooltip，但因 `overflow:hidden` 在 `<td>` 上遮挡了子元素 tooltip 导致无法显示，最终改用原生 `title` 方案
+
 ## 依赖
 
 ```
