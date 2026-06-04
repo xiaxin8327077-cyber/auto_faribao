@@ -135,16 +135,22 @@ body {{ font-family: Microsoft YaHei, sans-serif; background: #f0f2f5; min-heigh
   </div>
 </div>
 <script>
+function formatLocalDate(d) {{
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${{yyyy}}-${{mm}}-${{dd}}`;
+}}
 function getOffsetDate(offset) {{
   const d = new Date(new Date().getTime() + offset * 86400000);
-  return d.toISOString().split('T')[0];
+  return formatLocalDate(d);
 }}
 function getLastFriday() {{
   const d = new Date();
   const day = d.getDay();
   const diff = day <= 5 ? day + 5 : day - 2 + 7;
   d.setDate(d.getDate() - diff);
-  return d.toISOString().split('T')[0];
+  return formatLocalDate(d);
 }}
 function setQuickDate(dateStr, el) {{
   document.getElementById('reportDate').value = dateStr;

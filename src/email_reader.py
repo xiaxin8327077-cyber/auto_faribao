@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 SUBJECT_KEYWORD = "新cookies"
 SENDER_KEYWORD = "350006418@qq.com"
+IMAP_TIMEOUT_SECONDS = 30
 
 
 def read_cookies_email(cfg) -> str:
@@ -19,7 +20,7 @@ def read_cookies_email(cfg) -> str:
         return ""
 
     try:
-        mail = imaplib.IMAP4_SSL(e.imap_host, e.imap_port)
+        mail = imaplib.IMAP4_SSL(e.imap_host, e.imap_port, timeout=IMAP_TIMEOUT_SECONDS)
         mail.login(e.sender, e.password)
         mail.select("INBOX")
 
