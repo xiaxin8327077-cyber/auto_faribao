@@ -476,12 +476,8 @@ def update_traffic():
 
 
 def traffic_worker():
-    while True:
-        try:
-            update_traffic()
-        except Exception as exc:
-            sys.stderr.write(f"traffic error: {exc}\n")
-        time.sleep(SAMPLE)
+    """Disabled - traffic tracking stopped."""
+    pass
 
 
 def read_cpu_jiffies():
@@ -1119,7 +1115,15 @@ def set_xray_service(action):
 def status_payload():
     mem = mem_info()
     metric_history = capture_metric_sample(force=False)
-    traffic = update_traffic()
+    # Traffic tracking disabled - return empty data
+    traffic = {
+        "tracking_started_at": now_local(),
+        "timezone": TIMEZONE_LABEL,
+        "ifaces": [],
+        "ts_ifaces": [],
+        "today": {"date": today_key(), "rx": 0, "tx": 0, "ts_rx": 0, "ts_tx": 0, "updated_at": now_local()},
+        "days": [],
+    }
     disks_info = [
         {
             "mount": item["mount"],
@@ -2316,7 +2320,7 @@ def main():
     ensure_dirs()
     load_auth_config()
     capture_metric_sample(force=True)
-    threading.Thread(target=traffic_worker, daemon=True).start()
+    # Traffic tracking disabled - traffic_worker not started
     threading.Thread(target=metrics_worker, daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"listening on http://{HOST}:{PORT}")

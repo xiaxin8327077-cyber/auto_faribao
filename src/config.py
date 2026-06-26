@@ -75,12 +75,36 @@ class EmailConfig:
         self.imap_port = int(data.get("imap_port", 993))
 
 
+class WechatConfig:
+    def __init__(self, data: dict):
+        self.corpid = data.get("corpid", "")
+        self.corpsecret = data.get("corpsecret", "")
+        self.agentid = int(data.get("agentid", 0))
+        self.token = data.get("token", "")
+        self.aes_key = data.get("aes_key", "")
+        self.to_user = data.get("to_user", "@all")
+
+
+class SchedulerConfig:
+    def __init__(self, data: dict):
+        self.cookie_check_hour = int(data.get("cookie_check_hour", 9))
+        self.cookie_check_minute = int(data.get("cookie_check_minute", 45))
+        self.report_submit_hour = int(data.get("report_submit_hour", 20))
+        self.report_submit_minute = int(data.get("report_submit_minute", 0))
+        self.stats_push_hour = int(data.get("stats_push_hour", 21))
+        self.stats_push_minute = int(data.get("stats_push_minute", 0))
+        self.cache_cleanup_hour = int(data.get("cache_cleanup_hour", 4))
+        self.cache_cleanup_minute = int(data.get("cache_cleanup_minute", 0))
+
+
 class Config:
     def __init__(self, data: dict):
         self.source = SourceConfig(data.get("source", {}))
         self.target = TargetConfig(data.get("target", {}))
         self.captcha = CaptchaConfig(data.get("captcha", {}))
         self.email = EmailConfig(data.get("email", {}))
+        self.wechat = WechatConfig(data.get("wechat", {}))
+        self.scheduler = SchedulerConfig(data.get("scheduler", {}))
         self.host = data.get("host", "0.0.0.0")
         self.port = int(data.get("port", 8080))
 
@@ -104,3 +128,22 @@ def load_config(path: str) -> Config:
         raise ConfigError(f"Config file is empty: {path}")
 
     return Config(data)
+
+
+def save_config(path: str, cfg: Config, original_data: dict = None) -> dict:
+    """Save config back to file. If original_data provided, updates only relevant keys."""
+    data = original_data or {}
+    data.setdefault("scheduler", {})
+    data["scheduler"]["cookie_check_hour"] = cfg.scheduler.cookie_check_hour
+    data["scheduler"]["cookie_check_minute"] = cfg.scheduler.cookie_check_minute
+    data["scheduler"]["report_submit_hour"] = cfg.scheduler.report_submit_hour
+    data["scheduler"]["report_submit_minute"] = cfg.scheduler.report_submit_minute
+    data["scheduler"]["stats_push_hour"] = cfg.scheduler.stats_push_hour
+    data["scheduler"]["stats_push_minute"] = cfg.scheduler.stats_push_minute
+    data["scheduler"]["cache_cleanup_hour"] = cfg.scheduler.cache_cleanup_hour
+    data["scheduler"]["cache_cleanup_minute"] = cfg.scheduler.cache_cleanup_minute
+
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+    return data
