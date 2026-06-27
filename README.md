@@ -444,24 +444,9 @@ FORM_SELECTORS = {
 - `save_report_record(record)`：保存发送记录到 JSON 文件
   - 使用 `RECLOCK` 加锁
   - 自动生成 16 位 hex ID
-- `load_report_records()`：加载所有发送记录
-- `parse_report_source_from_output(text)`：从子进程输出解析 `Report source:` 行
-- `parse_smart_doc_meta_from_output(text)`：从子进程输出解析 `Smart doc status:` 和 `Smart doc error:` 行
-- `send_report_failure_fallback(report_date, detail, ...)`：兜底邮件通知
-  - 当 submit_for_date.py 子进程失败且未自行发送邮件时调用
-  - 通过内联 Python 代码执行邮件发送
+	- `load_report_records()`：加载所有发送记录
 
-**API 端点**：
-- `POST /api/report`：手动发送日报
-  - 请求体：`{"date": "2026-05-29"}`
-  - 流程：
-    1. 创建 pending 状态的记录并保存
-    2. 调用 `submit_for_date.py` 子进程执行提交
-    3. 解析子进程输出获取结果
-    4. 更新记录状态（成功/失败）
-    5. 从输出中提取日报内容（`Extracted:` 行）
-    6. 失败时发送兜底邮件通知
-    7. 返回结果
+> **注意**：日报手动发送功能已移除，统一通过企业微信指令或定时任务提交。`send_report_failure_fallback`、`POST /api/report` 等相关代码已删除。
 - `GET /api/report-history`：获取发送记录列表
 
 **前端（日报发送 Tab）**：
