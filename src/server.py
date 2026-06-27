@@ -187,6 +187,7 @@ def create_app(cfg: Config) -> Flask:
 
 ## ⚙️ 系统管理
 **生成二维码** — 续期Cookies
+**更新工作日历** — 更新下一年节假日
 **检查Cookies** — 验证有效性
 **查看配置** / **查看定时配置**
 **设置Cookies检查时间 09:45**
@@ -219,6 +220,30 @@ def create_app(cfg: Config) -> Flask:
                     if not started:
                         _send_wechat_text(cfg.wechat, "ℹ️ 已有二维码登录续期任务正在进行中，请先完成当前扫码。", from_user_id)
                         _end_cmd()
+                    return "", 200
+
+                elif "更新工作日历" in content:
+                    from_user_id = msg.get("FromUserName", "")
+                    if not _try_start_cmd("更新工作日历"):
+                        _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
+                        return "", 200
+                    _send_wechat_text(cfg.wechat, "⏳ 正在从中国政府网获取下一年节假日安排...", from_user_id)
+
+                    def process_calendar_update():
+                        try:
+                            from src.calendar_updater import update_calendar
+                            ok, msg = update_calendar()
+                            _send_wechat_text(cfg.wechat, msg, from_user_id)
+                            from src.workday_calendar import reset_calendar
+                            reset_calendar()
+                        except Exception as e:
+                            logger.error(f"Calendar update failed: {e}", exc_info=True)
+                            _send_wechat_text(cfg.wechat, f"❌ 更新失败\n{e}", from_user_id)
+                        finally:
+                            _end_cmd()
+
+                    thread = threading.Thread(target=process_calendar_update, daemon=True)
+                    thread.start()
                     return "", 200
 
                 elif "检查Cookies" in content or "Cookies状态" in content or "cookies状态" in content or "检查cookies" in content:

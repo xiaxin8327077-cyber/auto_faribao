@@ -54,6 +54,7 @@ def _run(cfg):
     last_submit_date = None
     last_stats_date = None
     last_cache_cleanup_date = None
+    last_calendar_update_year = None
 
     while True:
         with _scheduler_lock:
@@ -97,6 +98,12 @@ def _run(cfg):
             last_cache_cleanup_date = today_str
             logger.info("Scheduler triggered: monthly cache cleanup")
             _run_cache_cleanup(current_cfg)
+
+        # 每年 12 月 1 日自动更新下一年工作日历
+        if (now.month == 12 and now.day == 1 and
+                last_calendar_update_year != now.year):
+            last_calendar_update_year = now.year
+            _run_calendar_update(current_cfg)
 
         time.sleep(30)
 
@@ -332,3 +339,19 @@ def _run_cache_cleanup(cfg):
             _send_wechat_text(cfg.wechat, f"❌ 定时缓存清理失败\n{e}", getattr(cfg.wechat, "to_user", None))
         except Exception:
             pass
+
+
+def _run_calendar_update(cfg):
+    """每年 12 月 1 日自动更新下一年工作日历。"""
+    from src.calendar_updater import update_calendar
+    from src.wechat_notifier import send_text as _send_wx_text
+
+    next_year = __import__("datetime").date.today().year + 1
+    logger.info(f"Auto-updating workday calendar for {next_year}...")
+    ok, msg = update_calendar(next_year)
+    if ok:
+        _send_wx_text(cfg.wechat, f"📅 {msg}", getattr(cfg.wechat, "to_user", None))
+        from src.workday_calendar import reset_calendar
+        reset_calendar()
+    else:
+        _send_wx_text(cfg.wechat, f"⚠️ {msg}\n请手动更新 config/mainland_workdays.json", getattr(cfg.wechat, "to_user", None))

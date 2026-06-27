@@ -79,6 +79,12 @@ def get_calendar(path=None) -> WorkdayCalendar:
     return _calendar_instance
 
 
+def reset_calendar():
+    """清除日历缓存，下次调用 get_calendar 时重新加载文件。"""
+    global _calendar_instance
+    _calendar_instance = None
+
+
 def is_workday(day: date = None, path=None) -> bool:
     if day is None:
         from src.beijing_time import today
