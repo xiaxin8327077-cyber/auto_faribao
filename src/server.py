@@ -652,6 +652,18 @@ def create_app(cfg: Config) -> Flask:
                         # 运行时间
                         uptime = subprocess.run(["uptime", "-p"], capture_output=True, text=True, timeout=5).stdout.strip()
 
+                        # CPU 负载
+                        try:
+                            with open("/proc/loadavg") as f:
+                                load_parts = f.read().strip().split()
+                                load_1m = float(load_parts[0])
+                            nproc = int(subprocess.run(["nproc"], capture_output=True, text=True, timeout=5).stdout.strip())
+                            cpu_pct = round(load_1m / nproc * 100)
+                        except Exception:
+                            load_1m = 0
+                            nproc = 0
+                            cpu_pct = 0
+
                         # 内存详情
                         mem_raw = subprocess.run(["free", "-b"], capture_output=True, text=True, timeout=5).stdout
                         mem_lines = mem_raw.strip().splitlines()
@@ -725,6 +737,8 @@ def create_app(cfg: Config) -> Flask:
                         reply = f"""🖥️ 服务器状态
 
 ⏱️ 运行时间：{uptime}
+🖥️ CPU：{load_1m:.1f} / {nproc} 核（{cpu_pct}%）
+
 💿 磁盘：{disk_used} / {disk_total}
 
 💾 内存详情：
