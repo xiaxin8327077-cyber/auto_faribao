@@ -3,7 +3,7 @@ import re
 from datetime import date
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeout
-from src.browser_lock import browser_operation, launch_browser
+from src.browser_lock import browser_operation, launch_browser, _BROWSER_LOCK
 from src.config import Config, TargetConfig
 from src.auth import login_with_captcha, AuthError
 
@@ -1030,6 +1030,7 @@ def _login_and_navigate(cfg: Config):
     token = login_with_captcha(target.url, target.username, target.password, cfg.captcha)
     domain = _domain_from_url(target.url)
 
+    _BROWSER_LOCK.acquire()
     browser = None
     context = None
     page = None
@@ -1057,6 +1058,7 @@ def _login_and_navigate(cfg: Config):
         page.wait_for_timeout(5000)
         return pw, browser, context, page
     except Exception:
+        _BROWSER_LOCK.release()
         try:
             if browser:
                 browser.close()
@@ -1116,6 +1118,7 @@ def get_report_status(cfg: Config, report_date: str = None) -> dict:
     finally:
         browser.close()
         pw.stop()
+        _BROWSER_LOCK.release()
 
 
 def delete_daily_report(cfg: Config, report_date: str = None) -> tuple[bool, str]:
@@ -1140,6 +1143,7 @@ def delete_daily_report(cfg: Config, report_date: str = None) -> tuple[bool, str
     finally:
         browser.close()
         pw.stop()
+        _BROWSER_LOCK.release()
 
 
 def get_recent_reports(cfg: Config, count: int = 5) -> list[dict]:
@@ -1189,6 +1193,7 @@ def get_recent_reports(cfg: Config, count: int = 5) -> list[dict]:
     finally:
         browser.close()
         pw.stop()
+        _BROWSER_LOCK.release()
 
 
 def get_monthly_statistics(cfg: Config, year: int = None, month: int = None) -> dict:
@@ -1260,6 +1265,7 @@ def get_monthly_statistics(cfg: Config, year: int = None, month: int = None) -> 
     finally:
         browser.close()
         pw.stop()
+        _BROWSER_LOCK.release()
 
 
 def get_weekly_statistics(cfg: Config, year: int = None, month: int = None, day: int = None) -> dict:
@@ -1334,3 +1340,4 @@ def get_weekly_statistics(cfg: Config, year: int = None, month: int = None, day:
     finally:
         browser.close()
         pw.stop()
+        _BROWSER_LOCK.release()

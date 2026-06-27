@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from src.browser_lock import browser_operation, launch_browser
 
 from src.auto_cookies_updater import COOKIE_FIELDS, _get_updated_fields, _get_current_cookie_values, _revert_config, update_config_cookies
 from src.config import load_config
@@ -93,8 +94,8 @@ def _renew_cookies_by_qr_locked(config_path: str, cfg, to_user: str, reason: str
 
     send_text(cfg.wechat, f"⏳ {reason}\n正在生成企业微信扫码登录二维码，请稍等...", to_user)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    with browser_operation(), sync_playwright() as p:
+        browser = launch_browser(p)
         context = browser.new_context(viewport={"width": 1280, "height": 1024}, locale="zh-CN")
         page = context.new_page()
         page.set_default_timeout(15000)
