@@ -11,6 +11,10 @@ from src.auto_cookies_updater import update_cookies_from_wechat
 from src.extractor import extract_tasks, ExtractError
 from src.wechat_notifier import send_text as _send_wechat_text, send_markdown as _send_wechat_markdown
 from src.qr_login_renewer import start_renew_cookies_by_qr
+from src.pending_confirmation import (
+    save_pending, load_pending, clear_pending,
+    is_pending_confirmation_reply, is_yes, is_no,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +154,14 @@ def create_app(cfg: Config) -> Flask:
                     thread = threading.Thread(target=process_cookies_update, daemon=True)
                     thread.start()
 
+                    return "", 200
+
+                elif is_pending_confirmation_reply(content):
+                    from_user_id = msg.get("FromUserName", "")
+                    if is_yes(content):
+                        _handle_pending_yes(cfg, from_user_id)
+                    elif is_no(content):
+                        _handle_pending_no(cfg, from_user_id)
                     return "", 200
 
                 elif content.strip() in ("指令", "帮助", "help", "菜单"):
@@ -1293,6 +1305,14 @@ def auto_submit_if_needed(cfg: Config):
         )
         return
 
+    # 智能文档过期(cookies失效)时交互确认，不直接回退
+    if source == "previous_report" and meta.get("smart_doc_status") == "error":
+        smart_error = meta.get("smart_doc_error", "")
+        if _is_cookies_expiry_error(smart_error):
+            save_pending(report, source, meta)
+            _send_pending_confirm_message(cfg, smart_error)
+            return
+
     _submit_and_notify(report, cfg, source, meta)
 
 
@@ -1330,3 +1350,75 @@ def _submit_and_notify(content: str, cfg: Config, report_source: str = None,
             smart_doc_error=report_meta.get("smart_doc_error"),
         )
         return False
+
+
+def _is_cookies_expiry_error(error: str) -> bool:
+    """判断智能文档提取错误是否由 cookies 过期导致。"""
+    if not error:
+        return False
+    lower = error.lower()
+    return any(kw in lower for kw in ("login required", "cookies", "cookie", "登录"))
+
+
+def _send_pending_confirm_message(cfg, error: str):
+    """发送交互确认消息：智能文档过期，是否使用前一天日报。"""
+    import src.beijing_time
+    now_str = src.beijing_time.now().strftime("%Y-%m-%d %H:%M:%S")
+    error_preview = str(error)[:200] + ("..." if len(str(error)) > 200 else "")
+
+    msg = f"""## ⚠️ 定时日报提交 — 智能文档已过期
+
+> **检测时间**：{now_str}
+> **错误详情**：{error_preview}
+
+系统已自动获取前一天日报内容作为备用。
+
+**是否使用前一天日报提交？**
+回复 **是** — 使用前一天日报内容提交
+回复 **否** — 生成扫码登录二维码（需手动重新提交）
+
+> ⏰ **5 分钟内未回复将自动使用前一天日报提交**"""
+    _send_wechat_markdown(cfg.wechat, msg)
+
+
+def _handle_pending_yes(cfg, from_user_id: str):
+    """用户回复'是'：用前一天日报内容提交。"""
+    data = load_pending()
+    if not data:
+        _send_wechat_text(cfg.wechat, "ℹ️ 当前没有待确认的日报提交", from_user_id)
+        return
+
+    clear_pending()
+    _send_wechat_text(cfg.wechat, "⏳ 已确认，正在使用前一天日报提交...", from_user_id)
+
+    try:
+        success = _submit_and_notify(
+            data["report_content"], cfg,
+            data.get("report_source", "previous_report"),
+            data.get("report_meta", {}),
+        )
+        logger.info("Pending confirmation: user chose YES, submitted previous report")
+    except Exception as e:
+        logger.error(f"Pending yes submit failed: {e}", exc_info=True)
+        _send_wechat_text(cfg.wechat, f"❌ 提交失败\n{e}", from_user_id)
+
+
+def _handle_pending_no(cfg, from_user_id: str):
+    """用户回复'否'：生成扫码登录二维码。"""
+    data = load_pending()
+    if not data:
+        _send_wechat_text(cfg.wechat, "ℹ️ 当前没有待确认的日报提交", from_user_id)
+        return
+
+    clear_pending()
+    _send_wechat_text(cfg.wechat, "⏳ 已确认，正在生成扫码登录二维码...", from_user_id)
+
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
+    started = start_renew_cookies_by_qr(config_path, from_user_id, "定时日报提交时发现Cookies过期，用户选择不沿用前一天日报")
+    if not started:
+        _send_wechat_text(cfg.wechat, "ℹ️ 已有二维码登录任务在进行中，请先完成当前扫码", from_user_id)
+    logger.info("Pending confirmation: user chose NO, started QR renew")
+
+
+# ============================================================
+# 原 server 文件尾部

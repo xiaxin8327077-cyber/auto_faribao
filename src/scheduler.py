@@ -2,6 +2,7 @@ import logging
 import threading
 import time
 from src.beijing_time import now as beijing_now, today
+from src.pending_confirmation import handle_pending_timeout_if_needed
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +56,14 @@ def _run(cfg):
     last_cache_cleanup_date = None
 
     while True:
-        now = beijing_now()
-        today_str = now.strftime("%Y-%m-%d")
-
         with _scheduler_lock:
             current_cfg = _runtime_cfg or cfg
+
+        # 检查待确认超时（定时提交发现 cookies 过期时的交互确认）
+        handle_pending_timeout_if_needed(current_cfg)
+
+        now = beijing_now()
+        today_str = now.strftime("%Y-%m-%d")
 
         ch, cm, rh, rm, sh, sm, cch, ccm = _get_times(current_cfg)
 
