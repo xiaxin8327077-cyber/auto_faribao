@@ -4,8 +4,8 @@
 
 本系统部署在东京 AWS 服务器（13.158.229.204），实现 OA 日报的自动提取、提交与通知。系统由两个独立服务组成：
 
-1. **daily-report**：日报自动提交核心服务，负责定时提取智能表格任务、提交日报到 OA 系统、发送邮件通知、自动更新 Cookies
-2. **status-page**：服务器状态监控页面，同时集成了日报手动发送功能
+1. **daily-report**：日报自动提交核心服务，负责定时提取智能表格任务、提交日报到 OA 系统、发送企业微信通知
+2. **status-page**：服务器状态监控页面，提供日报发送记录查询
 
 ## 系统架构
 
@@ -20,8 +20,8 @@
 │  │  - 系统状态监控   │    │  - 定时任务调度          │   │
 │  │  - 文件管理      │    │  - 智能表格提取          │   │
 │  │  - Tailscale/Xray│    │  - OA 日报提交          │   │
-│  │  - 日报发送(手动) │───>│  - 邮件通知             │   │
-│  │  - 发送记录      │    │  - Cookies 自动更新      │   │
+│  │  - 发送记录查询   │    │  - 企业微信通知          │   │
+│  │                  │    │  - 浏览器串行化调度       │   │
 │  └──────────────────┘    └──────────────────────────┘   │
 │                                                         │
 │  systemd: status-page.service + daily-report.service    │
@@ -44,14 +44,18 @@ daily_report_project/
 │   ├── extractor.py           # 智能表格数据提取
 │   ├── processor.py           # 任务数据格式化
 │   ├── auth.py                # OA 系统登录（验证码识别）
-│   ├── captcha.py             # 验证码识别（多策略）
+│   ├── captcha.py             # 验证码识别（多策略 + 子进程隔离）
+│   ├── captcha_worker.py      # 验证码识别子进程（ddddocr 用完即释放）
 │   ├── config.py              # 配置加载与数据类
-│   ├── email_notifier.py      # 邮件通知（仅日报提交成功/失败）
-│   ├── email_reader.py        # 邮件读取（接收 Cookies 更新）
-│   ├── auto_cookies_updater.py# Cookies 自动更新流程
+│   ├── browser_lock.py        # 浏览器互斥锁 + 低内存参数
+│   ├── notifier.py            # 通知分发（企业微信）
+│   ├── wechat_notifier.py     # 企业微信通知（Markdown/文本/图片）
+│   ├── wechat_callback.py     # 企业微信回调加解密
+│   ├── auto_cookies_updater.py# Cookies 更新工具（企业微信指令）
 │   ├── cookies_checker.py     # Cookies 有效性检查
+│   ├── pending_confirmation.py# 交互确认(是/否/超时)
 │   ├── scheduler.py           # 定时任务调度器
-│   ├── server.py              # Flask Web 服务（手动提交 API）
+│   ├── server.py              # Flask Web 服务（企业微信回调 + API）
 │   ├── beijing_time.py        # 北京时间工具
 │   └── workday_calendar.py    # 工作日历（节假日判断）
 └── systemd/
@@ -97,7 +101,7 @@ daily_report_project/
 7. 失败则调用 `notify_report_failure()` 发送失败邮件
 8. 如果内容生成阶段就失败，输出 `FAILURE_EMAIL_SENT` 标记
 
-**关键设计**：status-page 通过解析 stdout 中的 `Extracted:` 行获取真实日报内容，通过 `FAILURE_EMAIL_SENT` 判断是否需要兜底邮件通知。
+**关键设计**：status-page 通过解析 stdout 中的 `Extracted:` 行获取真实日报内容，通过 `FAILURE_NOTIFIED` 判断是否需要兜底通知。
 
 ### 3. report_builder.py — 日报内容构建器
 
