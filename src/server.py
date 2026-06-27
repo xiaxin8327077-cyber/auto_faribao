@@ -200,6 +200,8 @@ def create_app(cfg: Config) -> Flask:
 **清理缓存** — 系统级缓存清理
 **查看日志** — 最近30条日志
 **重启服务** — 重启daily-report
+**启动Xray** / **停止Xray** / **重启Xray**
+**启动Hy2** / **停止Hy2** / **重启Hy2**
 
 > 💡 手动触发仅发企业微信通知。"""
                     _send_wechat_markdown(cfg.wechat, help_text, from_user_id)
@@ -885,6 +887,14 @@ def create_app(cfg: Config) -> Flask:
                     thread.start()
                     return "", 200
 
+                elif _match_proxy_cmd(content, "xray"):
+                    _handle_proxy_cmd(cfg, msg, "xray", "Xray")
+                    return "", 200
+
+                elif _match_proxy_cmd(content, "hysteria", "hy2"):
+                    _handle_proxy_cmd(cfg, msg, "hysteria", "Hysteria")
+                    return "", 200
+
                 elif "运行服务" in content or "运行进程" in content:
                     from_user_id = msg.get("FromUserName", "")
                     try:
@@ -1423,6 +1433,42 @@ def _handle_pending_no(cfg, from_user_id: str):
     if not started:
         _send_wechat_text(cfg.wechat, "ℹ️ 已有二维码登录任务在进行中，请先完成当前扫码", from_user_id)
     logger.info("Pending confirmation: user chose NO, started QR renew")
+
+
+def _match_proxy_cmd(content: str, *names: str) -> bool:
+    """匹配代理服务管理指令：启动Xray/停止Xray/重启Xray 等。"""
+    lowered = content.lower()
+    for name in names:
+        if name in lowered and ("启动" in content or "停止" in content or "重启" in content):
+            return True
+    return False
+
+
+def _handle_proxy_cmd(cfg, msg: dict, svc: str, label: str):
+    """执行代理服务管理指令。"""
+    from_user_id = msg.get("FromUserName", "")
+    content = msg.get("Content", "")
+
+    if "启动" in content:
+        action, action_label = "start", "启动"
+    elif "停止" in content:
+        action, action_label = "stop", "停止"
+    elif "重启" in content:
+        action, action_label = "restart", "重启"
+    else:
+        return
+
+    try:
+        subprocess.run(
+            ["sudo", "systemctl", action, svc],
+            capture_output=True, text=True, timeout=15, check=True,
+        )
+        _send_wechat_text(cfg.wechat, f"✅ {label} 已{action_label}", from_user_id)
+        logger.info(f"Proxy cmd: {action} {svc}")
+    except subprocess.CalledProcessError as e:
+        _send_wechat_text(cfg.wechat, f"❌ {label} {action_label}失败\n{e.stderr.strip()[-200:] or str(e)}", from_user_id)
+    except Exception as e:
+        _send_wechat_text(cfg.wechat, f"❌ {label} 操作异常\n{e}", from_user_id)
 
 
 # ============================================================
