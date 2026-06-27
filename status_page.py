@@ -1289,36 +1289,6 @@ FULL_REPORT_NAV = """<button class="nav-btn" type="button" data-tab-target="repo
 FULL_REPORT_SECTION = """<section class="tab-panel" data-tab="report">
   <section class="panel section">
     <div class="section-head">
-      <div>
-        <div class="eyebrow">Daily Report</div>
-        <h2>日报发送</h2>
-        <p class="section-copy">选择日期后点击发送，系统将自动从智能表格提取当日任务并提交日报到 OA 系统。</p>
-      </div>
-    </div>
-    <div class="tool-grid">
-      <div class="tool-card">
-        <div class="tool-title">补发日报</div>
-        <div class="tool-muted" style="margin-top:4px">选择需要补发的日期，系统将自动提取智能表格内容</div>
-        <div class="form-grid" style="margin-top:14px">
-          <label><span>日报日期</span><input class="input" type="date" id="reportDate" /></label>
-          <label><span>快捷日期</span>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;align-self:end">
-              <button class="ghost-btn compact-btn" type="button" onclick="setReportDate(0)">今天</button>
-              <button class="ghost-btn compact-btn" type="button" onclick="setReportDate(-1)">昨天</button>
-              <button class="ghost-btn compact-btn" type="button" onclick="setReportDate(-2)">前天</button>
-              <button class="ghost-btn compact-btn" type="button" onclick="setReportDate(-3)">三天前</button>
-            </div>
-          </label>
-        </div>
-        <div style="display:flex;gap:10px;margin-top:14px;align-items:center">
-          <button id="sendReportBtn" type="button" onclick="sendReport()">发送日报</button>
-          <span id="reportMsg" class="hint-line" style="margin-top:0"></span>
-        </div>
-      </div>
-    </div>
-  </section>
-  <section class="panel section">
-    <div class="section-head">
       <div class="eyebrow">History</div>
       <h3>发送记录</h3>
     </div>
@@ -1707,7 +1677,7 @@ function pct(part,total){ const base=Number(total||0); if(!base){ return 0; } re
 function setText(id, value){ const node=document.getElementById(id); if(node){ node.textContent=value; } }
 function setGauge(id, percent, textId){ const clamped=Math.max(0, Math.min(100, Number(percent||0))); const node=document.getElementById(id); if(node){ node.style.background=`conic-gradient(#0f8b8d ${clamped}%, rgba(15,139,141,.12) ${clamped}% 100%)`; } setText(textId, `${clamped.toFixed(0)}%`); }
 function setFill(id, percent){ const node=document.getElementById(id); if(node){ node.style.width=`${Math.max(0, Math.min(100, Number(percent||0)))}%`; } }
-function openTab(name){ const valid=Array.from(document.querySelectorAll('[data-tab]')).map(node => node.getAttribute('data-tab')); const target=valid.includes(name) ? name : 'overview'; document.querySelectorAll('[data-tab-target]').forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-tab-target') === target)); document.querySelectorAll('[data-tab]').forEach(panel => panel.classList.toggle('active', panel.getAttribute('data-tab') === target)); if(target === 'files' && ROLE === 'full'){ loadFiles(currentPath, currentSearch).catch(console.error); } if(target === 'settings' && ROLE === 'full'){ loadPasswordInfo().catch(console.error); } if(target === 'report' && ROLE === 'full'){ setReportDate(0); loadReportHistory(); } if(location.hash !== `#${target}`){ history.replaceState(null, '', `#${target}`); } }
+function openTab(name){ const valid=Array.from(document.querySelectorAll('[data-tab]')).map(node => node.getAttribute('data-tab')); const target=valid.includes(name) ? name : 'overview'; document.querySelectorAll('[data-tab-target]').forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-tab-target') === target)); document.querySelectorAll('[data-tab]').forEach(panel => panel.classList.toggle('active', panel.getAttribute('data-tab') === target)); if(target === 'files' && ROLE === 'full'){ loadFiles(currentPath, currentSearch).catch(console.error); } if(target === 'settings' && ROLE === 'full'){ loadPasswordInfo().catch(console.error); } if(target === 'report' && ROLE === 'full'){ loadReportHistory(); } if(location.hash !== `#${target}`){ history.replaceState(null, '', `#${target}`); } }
 function bindTabMenu(){ document.querySelectorAll('[data-tab-target]').forEach(btn => { btn.onclick = () => openTab(btn.getAttribute('data-tab-target')); }); openTab((location.hash || '#overview').slice(1)); }
 function linePath(data, innerW, innerH, padX, padY, key){ if(!data.length){ return ''; } const step=data.length > 1 ? innerW/(data.length-1) : 0; return data.map((item, idx) => { const x=padX + idx * step; const y=padY + innerH - (Math.max(0, Math.min(100, Number(item[key]||0))) / 100) * innerH; return `${idx ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`; }).join(' '); }
 function areaPath(data, innerW, innerH, padX, padY, key){ if(!data.length){ return ''; } const step=data.length > 1 ? innerW/(data.length-1) : 0; const firstX=padX; const lastX=padX + step * (data.length - 1); const points=data.map((item, idx) => { const x=padX + idx * step; const y=padY + innerH - (Math.max(0, Math.min(100, Number(item[key]||0))) / 100) * innerH; return `${idx ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`; }).join(' '); return `${points} L${lastX.toFixed(1)},${(padY+innerH).toFixed(1)} L${firstX.toFixed(1)},${(padY+innerH).toFixed(1)} Z`; }
@@ -1761,44 +1731,6 @@ if(ROLE === 'full'){
   if(xrStartBtn){ xrStartBtn.onclick = () => toggleXray('start').catch(err => setText('xrMsg', '操作失败：' + err)); }
   if(xrStopBtn){ xrStopBtn.onclick = () => toggleXray('stop').catch(err => setText('xrMsg', '操作失败：' + err)); }
   if(xrRestartBtn){ xrRestartBtn.onclick = () => toggleXray('restart').catch(err => setText('xrMsg', '操作失败：' + err)); }
-}
-
-function setReportDate(offset) {
-  var d = new Date();
-  d.setDate(d.getDate() + offset);
-  var yyyy = d.getFullYear();
-  var mm = String(d.getMonth() + 1).padStart(2, "0");
-  var dd = String(d.getDate()).padStart(2, "0");
-  var dateStr = yyyy + "-" + mm + "-" + dd;
-  var el = document.getElementById("reportDate");
-  if (el) { el.value = dateStr; }
-}
-
-async function sendReport(){
-  var btn = document.getElementById("sendReportBtn");
-  var msg = document.getElementById("reportMsg");
-  var date = document.getElementById("reportDate").value;
-  btn.disabled = true;
-  btn.textContent = "发送中...";
-  msg.textContent = "";
-  msg.style.color = "";
-  try {
-    var r = await fetch("/api/report", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({date:date})});
-    var data = await r.json();
-    if (r.ok) {
-      msg.style.color = data.record && data.record.status === "成功" ? "#52c41a" : "#faad14";
-      msg.textContent = "已提交 " + (date || "当天") + " | " + (data.record ? data.record.status : "");
-      loadReportHistory();
-    } else {
-      msg.style.color = "#ff4d4f";
-      msg.textContent = (data.message || "未知错误");
-    }
-  } catch(e) {
-    msg.style.color = "#ff4d4f";
-    msg.textContent = "网络错误: " + e.message;
-  }
-  btn.disabled = false;
-  btn.textContent = "发送日报";
 }
 
 async function loadReportHistory(){
@@ -1877,51 +1809,6 @@ def parse_smart_doc_meta_from_output(text):
         elif line.startswith("Smart doc error:"):
             meta["smart_doc_error"] = line.split(":", 1)[1].strip() or None
     return meta
-
-
-def send_report_failure_fallback(report_date, detail, report_source=None, smart_doc_status=None, smart_doc_error=None):
-    """Best-effort email if the submit subprocess fails before sending its own notice."""
-    code = r"""
-import sys
-sys.path.insert(0, "/home/ubuntu/daily_report")
-from src.config import load_config
-from src.notifier import notify_report_failure
-
-date = sys.argv[1] or None
-detail = sys.argv[2]
-source = sys.argv[3] or None
-smart_status = sys.argv[4] or None
-smart_error = sys.argv[5] or None
-cfg = load_config("/home/ubuntu/daily_report/config.yaml")
-notify_report_failure(
-    cfg,
-    "状态页提交兜底提醒：日报未成功提交。\n\n失败原因/报错信息：\n" + detail,
-    report_date=date,
-    report_source=source,
-    smart_doc_status=smart_status,
-    smart_doc_error=smart_error,
-)
-"""
-    try:
-        subprocess.run(
-            [
-                "/home/ubuntu/daily_report/venv/bin/python",
-                "-c",
-                code,
-                report_date or "",
-                str(detail)[-3000:],
-                report_source or "",
-                smart_doc_status or "",
-                smart_doc_error or "",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd="/home/ubuntu/daily_report",
-            check=False,
-        )
-    except Exception as exc:
-        sys.stderr.write(f"fallback email failed: {exc}\n")
 
 
 def page(role=None):
@@ -2243,69 +2130,6 @@ class Handler(BaseHTTPRequestHandler):
                 labels = {"start": "启动", "stop": "停止", "restart": "重启"}
                 verb = labels.get(action, action)
                 self.send_json(200, {"message": f"Xray 已{verb}。", "xray": xray})
-            except Exception as exc:
-                self.send_json(400, {"message": str(exc)})
-            return
-
-        if path == "/api/report":
-            if not self.need({"full"}):
-                return
-            try:
-                data = self.read_json()
-                report_date = str(data.get("date", "")).strip() or None
-                record = {
-                    "id": secrets.token_hex(8),
-                    "time": fmt_dt(cn_now()),
-                    "type": "手动",
-                    "date": report_date or cn_now().strftime("%Y-%m-%d"),
-                    "content": "",
-                    "status": "pending",
-                    "detail": "",
-                }
-                record_id = save_report_record(record)
-                import subprocess as _sp
-                try:
-                    args = ["/home/ubuntu/daily_report/venv/bin/python", "/home/ubuntu/daily_report/submit_for_date.py"]
-                    if report_date:
-                        args.append(report_date)
-                    proc = _sp.run(args, capture_output=True, text=True, timeout=300, cwd="/home/ubuntu/daily_report")
-                    ok = proc.returncode == 0
-                    combined_output = (proc.stdout or "") + "\n" + (proc.stderr or "")
-                    report_source = parse_report_source_from_output(combined_output)
-                    smart_meta = parse_smart_doc_meta_from_output(combined_output)
-                    detail_text = (combined_output.strip()[-1500:] or "submit_for_date.py failed")
-                    record["status"] = "成功" if ok else "失败"
-                    record["detail"] = detail_text
-                    if not ok and "FAILURE_EMAIL_SENT" not in combined_output:
-                        send_report_failure_fallback(
-                            report_date,
-                            detail_text or combined_output or "submit_for_date.py failed",
-                            report_source,
-                            smart_meta.get("smart_doc_status"),
-                            smart_meta.get("smart_doc_error"),
-                        )
-                    for line in proc.stdout.split("\n") + proc.stderr.split("\n"):
-                        if "Extracted:" in line:
-                            record["content"] = line.split("Extracted:", 1)[1].strip().rstrip("...")
-                            break
-                except Exception as e:
-                    record["status"] = "失败"
-                    record["detail"] = str(e)
-                    send_report_failure_fallback(report_date, str(e), "unknown", "unknown", None)
-                records = load_report_records()
-                replaced = False
-                for idx, item in enumerate(records):
-                    if item.get("id") == record_id:
-                        records[idx] = record
-                        replaced = True
-                        break
-                if not replaced:
-                    records.append(record)
-                with RECLOCK:
-                    os.makedirs(STATE_DIR, exist_ok=True)
-                    with open(REPORT_HISTORY_FILE, "w", encoding="utf-8") as f:
-                        json.dump(records, f, ensure_ascii=False, indent=2)
-                self.send_json(200, {"message": "请求已接收", "record": record})
             except Exception as exc:
                 self.send_json(400, {"message": str(exc)})
             return
