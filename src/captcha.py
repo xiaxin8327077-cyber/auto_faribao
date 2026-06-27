@@ -1,7 +1,10 @@
 import base64
 import io
 import logging
+import os
 import re
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -38,19 +41,22 @@ def recognize_captcha(image_bytes: bytes, cfg: CaptchaConfig) -> str:
 
 
 class DdddOcrSolver:
+    """本地 OCR，通过子进程隔离加载——识别完释放内存。"""
     def __init__(self):
-        self._ocr = None
+        self._worker = Path(__file__).parent / "captcha_worker.py"
 
     def solve(self, image_bytes: bytes):
-        try:
-            import ddddocr
-        except ImportError:
+        if not self._worker.exists():
             return None
         try:
-            if self._ocr is None:
-                self._ocr = ddddocr.DdddOcr(show_ad=False)
-            raw = self._ocr.classification(image_bytes)
-            return _normalize_digits(raw)
+            proc = subprocess.run(
+                [sys.executable, str(self._worker)],
+                input=image_bytes,
+                capture_output=True,
+                timeout=15,
+            )
+            raw = proc.stdout.decode("utf-8", errors="replace").strip()
+            return _normalize_digits(raw) if raw else None
         except Exception:
             return None
 
