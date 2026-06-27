@@ -89,7 +89,7 @@ daily_report_project/
 
 ### 2. submit_for_date.py — 指定日期提交脚本
 
-**功能**：被 status-page 的 `/api/report` 接口调用，执行指定日期的日报提交。
+**功能**：命令行工具，可指定日期提交日报。支持被外部脚本调用。
 
 **执行流程**：
 1. 从命令行参数获取日期（可选）
@@ -97,11 +97,9 @@ daily_report_project/
 3. 输出元数据标记：`Report source:`、`Smart doc status:`、`Smart doc error:`
 4. 输出提取内容预览：`Extracted: {前200字符}...`
 5. 调用 `submit_daily_report()` 提交到 OA
-6. 成功则调用 `notify_report_success()` 发送成功邮件
-7. 失败则调用 `notify_report_failure()` 发送失败邮件
-8. 如果内容生成阶段就失败，输出 `FAILURE_EMAIL_SENT` 标记
-
-**关键设计**：status-page 通过解析 stdout 中的 `Extracted:` 行获取真实日报内容，通过 `FAILURE_NOTIFIED` 判断是否需要兜底通知。
+6. 成功则调用 `notify_report_success()` 发送企业微信通知
+7. 失败则调用 `notify_report_failure()` 发送企业微信通知
+8. 如果内容生成阶段就失败，输出 `FAILURE_NOTIFIED` 标记
 
 ### 3. report_builder.py — 日报内容构建器
 
@@ -254,55 +252,41 @@ FORM_SELECTORS = {
 
 **失败处理**：所有策略都失败时，保存验证码图片到 `data/captcha/failed/` 目录。
 
-### 9. email_notifier.py — 邮件通知
+### 9. notifier.py — 通知分发
 
-**功能**：发送日报提交结果的邮件通知。**仅在定时任务自动提交的日报提交成功或失败时发送邮件**，手动触发（网页/企业微信指令）的日报提交不发送邮件，Cookies 相关通知也仅通过企业微信发送。
+**功能**：日报提交结果通知分发（仅企业微信渠道）。
 
-**邮件类型**：
-1. `notify_report_success`：日报提交成功通知
-   - 包含：发送时间、日报日期、日报类型（智能文档/上次日报）、智能文档读取状态、项目名称、工作时长、是否出差、日志类型、日报详情
-2. `notify_report_failure`：日报提交失败通知
-   - 包含：错误信息、建议手动提交
+**通知类型**（全部通过企业微信应用消息发送，不再使用邮件）：
+1. `notify_report_success`：日报提交成功 — Markdown 格式，含发送时间、日期、类型、内容
+2. `notify_report_failure`：日报提交失败 — Markdown 格式，含错误信息、建议手动提交
+3. `notify_cookies_expired`：Cookies 过期提醒
+4. `notify_cookies_valid`：Cookies 更新成功确认
+5. `notify_cookies_invalid`：Cookies 更新失败提醒
 
-> **注意**：
-> - Cookies 过期、Cookies 更新成功/失败等场景**不发送邮件**，仅通过企业微信应用消息通知。
-> - **手动触发的日报提交不发送邮件**，包括：网页手动提交、企业微信"发送日报"指令、企业微信"根据前一天内容发送"指令。仅定时任务自动提交的日报才发送邮件。
+底层调用 `wechat_notifier.py` 通过企业微信 API 发送消息。
 
-**容错设计**：邮件发送失败不会影响主流程。`send_email()` 和 `_send()` 均有异常捕获，仅记录日志，不会抛出异常中断主程序。
+### 10. wechat_notifier.py — 企业微信通知
 
-**邮件配置**：SMTP_SSL 连接，使用企业邮箱 `xiaxin@gbicc.net` 发送，收件人 `350006418@qq.com`。
+**功能**：企业微信应用消息发送（文本/Markdown/图片）。
 
-**日报类型标签**：
-- `smart_sheet` → "来自智能文档"
-- `previous_report` → "来自上一次日报"
-- `manual` → "手动填写"
-- `generation_failed` → "未生成（智能文档和上一次日报均失败）"
+- `send_text()`：发送文本消息
+- `send_markdown()`：发送 Markdown 消息
+- `send_image()`：上传并发送图片（用于二维码等）
 
-### 10. email_reader.py — 邮件读取
+### 11. auto_cookies_updater.py — Cookies 更新工具
 
-**功能**：从邮箱读取 Cookies 更新邮件。
+**功能**：通过企业微信指令更新智能表格 Cookies。
 
-**读取逻辑**：
-1. 通过 IMAP_SSL 连接邮箱
-2. 从最新邮件开始倒序搜索
-3. 匹配条件：主题包含"新cookies"，发件人包含 `350006418@qq.com`
-4. 提取邮件正文（优先 text/plain，其次 text/html）
-5. 读取后删除该邮件（标记 `\Deleted` + expunge）
-
-### 11. auto_cookies_updater.py — Cookies 自动更新
-
-**功能**：从邮件中读取新 Cookies 并更新配置文件。
-
-**更新流程**：
-1. 调用 `read_cookies_email()` 读取邮件
-2. 调用 `parse_cookies_from_text()` 解析 Cookie 键值对
-   - 支持格式：`TOK=xxx;`、`TOK: xxx`、`TOK xxx`
+- `update_cookies_from_wechat()`：解析企业微信消息中的 Cookies 并更新 config.yaml
+- `parse_cookies_from_text()`：支持多种格式（key=value、key:value、key value）
+- 更新后自动验证新 Cookies 是否有效
+- 验证失败自动回滚配置
 3. 比较新旧值，确定需要更新的字段
 4. 备份旧值
 5. 更新 `config.yaml`
 6. 调用 `check_cookies()` 验证新 Cookies
-7. 验证成功 → 发送 `notify_cookies_valid` 邮件
-8. 验证失败 → 回滚配置 + 发送 `notify_cookies_invalid` 邮件
+7. 验证成功 → 发送企业微信通知
+8. 验证失败 → 回滚配置 + 发送企业微信通知
 
 **Cookie 字段列表**：
 `TOK`, `traceid`, `hashkey`, `tdoc_uid`, `wedoc_openid`, `wedoc_sid`, `wedoc_sids`, `wedoc_skey`, `wedoc_ticket`, `fingerprint`
@@ -321,25 +305,25 @@ FORM_SELECTORS = {
 
 ### 13. scheduler.py — 定时任务调度器
 
-**功能**：在工作日定时执行 Cookies 检查和日报自动提交。
+**功能**：在工作日定时执行 Cookies 检查、日报自动提交、统计推送、缓存清理。
 
-**调度时间（北京时间）**：
-- **17:00**：Cookies 有效性检查（`_run_cookies_check`）
-  - 检查 Cookies 是否过期
-  - 尝试从智能表格提取任务，验证读取是否正常
-  - 异常时发送 Cookies 过期邮件
-- **17:30**：日报自动提交（`_run_auto_submit`）
-  - 调用 `auto_submit_if_needed()` 自动提交
+**调度时间（北京时间，可通过企业微信指令动态修改）**：
+- **09:45**：Cookies 有效性检查（`_run_cookies_check`）
+  - 检查 Cookies 是否过期，异常时发送企业微信通知
+- **18:00**：日报自动提交（`_run_auto_submit`）
+  - 智能表格提取 → OA 提交 → 企业微信通知
+  - 提取失败 + cookies 过期 → 企微交互确认（是/否/超时）
+- **18:38**：统计推送（`_run_stats_push`，周日或月末）
+  - 周报/月报统计通过企业微信推送
 - **每月1号 04:00**：定时缓存清理（`_run_cache_cleanup`）
-  - 清理项目截图（1天前）
-  - 清理 __pycache__ 缓存目录
+  - 清理截图、pycache、日志、系统缓存、验证码失败截图
+- **每年12月1日**：自动更新下一年工作日历（`_run_calendar_update`）
   - 清理服务日志文件
   - 清理 Linux 页面缓存
   - 清理 APT 包缓存
   - 清理系统日志（保留7天）
   - 清理 /tmp 临时文件（保留7天）
   - 完成后发送企业微信通知
-- **每 5 分钟**：检查邮箱是否有新 Cookies 邮件（`_run_cookies_email_check`）
 
 **工作日判断**：使用 `workday_calendar.is_workday()` 判断，支持中国法定节假日和调休。
 
@@ -384,13 +368,12 @@ FORM_SELECTORS = {
 | ❓ 帮助 | 指令 / 帮助 / help / 菜单 | 查看所有可用指令及说明 |
 | ⚙️ 系统管理 | （直接发送 Cookies 字符串） | 更新智能表格 Cookies 并验证 |
 
-**`auto_submit_if_needed(cfg, send_email=True)`**：
+**`auto_submit_if_needed(cfg)`**：
 自动提交函数：
 1. 调用 `build_report_with_meta()` 构建日报内容
 2. 调用 `submit_daily_report()` 提交
-3. 根据结果发送成功/失败通知（企业微信 + 可选邮件）
-- `send_email=True`（默认）：发送邮件通知（定时任务使用）
-- `send_email=False`：仅发送企业微信通知（手动触发使用）
+3. 提取失败 + cookies 过期 → 企微交互确认(是/否/超时)
+4. 根据结果发送成功/失败通知（仅企业微信）
 
 ### 15. beijing_time.py — 北京时间工具
 
@@ -437,17 +420,17 @@ FORM_SELECTORS = {
   - 登录路径、日报路径
   - 默认项目名称
   - 页面超时、元素超时
-- `CaptchaConfig`：验证码识别配置
-  - API Key、Base URL、模型名称、识别提示词
-- `EmailConfig`：邮件配置
-  - SMTP/IMAP 主机、端口、发件人、密码、收件人
-- `Config`：顶层配置，包含以上所有子配置 + host + port
+	- `CaptchaConfig`：验证码识别配置
+	  - API Key、Base URL、模型名称、识别提示词
+	- `WechatConfig`：企业微信配置（corpid、corpsecret、agentid 等）
+	- `SchedulerConfig`：定时任务配置（各任务的小时/分钟）
+	- `Config`：顶层配置，包含以上所有子配置 + host + port
 
 **安全检查**：配置文件权限不是 600 时输出警告。
 
-### 18. status_page.py — 服务器状态页 + 日报发送集成
+### 18. status_page.py — 服务器状态页
 
-**功能**：服务器状态监控页面，同时集成了日报手动发送功能。
+**功能**：服务器状态监控页面（日报发送功能已移除，统一由企业微信指令管理）。
 
 **技术栈**：Python 标准库 `http.server.ThreadingHTTPServer`（非 Flask）
 
@@ -524,29 +507,29 @@ FORM_SELECTORS = {
 ## 定时任务时间线（北京时间，工作日）
 
 ```
-17:00  Cookies 有效性检查（scheduler.py → cookies_checker.py）
-       ├── Cookies 有效 → 尝试提取智能表格任务验证
-       └── Cookies 过期 → 发送企业微信通知（不发邮件）
+09:45  Cookies 有效性检查（scheduler.py → cookies_checker.py）
+       ├── Cookies 有效 → 跳过
+       └── Cookies 过期 → 企业微信通知 + 启动二维码续期
 
-17:00-17:30  每 5 分钟检查邮箱是否有新 Cookies 邮件
-             ├── 有新邮件 → 解析 Cookies → 更新 config.yaml → 验证
-             │   ├── 验证通过 → 发送企业微信通知（不发邮件）
-             │   └── 验证失败 → 回滚配置 + 发送企业微信通知（不发邮件）
-             └── 无新邮件 → 跳过
+18:00  日报自动提交（scheduler.py → server.py → report_builder.py → target.py）
+       ├── 智能表格提取成功 → 提交日报 → 企业微信通知
+       ├── 智能表格提取失败(cookies过期) → 企微交互确认(是/否/超时)
+       └── 两者都失败 → 企业微信通知
 
-17:30  日报自动提交（scheduler.py → server.py → report_builder.py → target.py）
-       ├── 智能表格提取成功 → 提交日报 → 发送成功邮件 + 企业微信
-       ├── 智能表格提取失败 → 读取上次日报 → 提交 → 发送成功邮件 + 企业微信
-       └── 两者都失败 → 发送失败邮件 + 企业微信
+18:38  统计推送（仅周日或月末）→ 企业微信推送周报/月报
+
+04:00  每月1号：定时缓存清理（截图/pycache/日志/系统缓存/验证码失败截图）
+
+12月1日  每年：自动更新下一年工作日历
 ```
 
-## 手动发送日报流程
+## 日报提交流程
 
 ### 通过企业微信指令
 ```
-用户在企业微信应用中发送"发送日报"或"提交日报"
+用户发送"发送日报"或"提交日报"
 → 系统立即响应"正在读取智能文档并提交日报"
-→ 后台线程执行：智能表格提取 → OA 提交 → 企业微信通知（不发邮件）
+→ 后台线程执行：智能表格提取 → OA 提交 → 企业微信通知
 → 完成后通过企业微信发送结果通知
 ```
 
@@ -555,17 +538,17 @@ FORM_SELECTORS = {
 用户访问 http://13.158.229.204 → 登录（完整版密码）
 → 点击"日报发送"菜单 → 选择日期 → 点击"发送日报"
 → status-page 调用 submit_for_date.py 子进程
-→ 智能表格提取 → OA 提交 → 邮件通知
+→ 智能表格提取 → OA 提交 → 企业微信通知
 → 页面显示发送结果 + 更新历史记录
 ```
 
 ### 通过 daily-report 自带 Web UI（8080端口）
 ```
 用户访问 Web UI → 填写日报内容和日期 → 点击提交
-→ 后台线程执行提交 → 企业微信通知（不发邮件）
+→ 后台线程执行提交 → 企业微信通知
 ```
 
-> **注意**：通过企业微信指令和 daily-report Web UI 手动触发的日报提交，**不发送邮件通知**，仅通过企业微信发送结果通知。仅定时任务自动提交的日报才发送邮件。
+> **注意**：所有日报提交结果通知统一通过企业微信发送，不再使用邮件。
 
 ## systemd 服务配置
 
@@ -768,6 +751,30 @@ FORM_SELECTORS = {
 - **配置变更**：
   - `config.yaml` 新增 `scheduler.cache_cleanup_hour` 和 `scheduler.cache_cleanup_minute` 配置项
   - 默认值：04:00（凌晨4点）
+
+### 22. 🔥 彻底移除邮件，改用企业微信
+- **问题**：邮件通知（SMTP/IMAP）在 911MB 小内存服务器上占用资源，且每5分钟邮箱轮询会与定时日报提交产生 chromium 并发导致超时
+- **修复**：
+  1. 删除 `email_notifier.py`、`email_reader.py`，所有通知统一使用企业微信
+  2. 删除 `EmailConfig` 配置类，移除 config.yaml 中 email 段
+  3. 删除定时邮件轮询（`_run_cookies_email_check`），消除并发 chromium 根源
+  4. 新增 `browser_lock.py` 全局浏览器互斥锁 + 低内存启动参数
+  5. 新增 `notifier.py` 纯企业微信通知分发
+  6. 新增 `wechat_notifier.py` 企业微信消息发送
+
+### 23. dddocr 子进程隔离，降低基线内存
+- **问题**：ddddocr 本地 OCR 模型加载后常驻 ~50MB，进程基线从 48MB 涨到 ~100MB
+- **修复**：将 dddocr 识别改为子进程模式（`captcha_worker.py`），stdin 收图 → 识别 → stdout 输出 → 退出释放
+
+### 24. 补全浏览器互斥锁 + cookies 过期交互确认
+- 补全 `_login_and_navigate`、`qr_login_renewer` 的 browser_operation 锁
+- 补全"生成二维码"指令的 _try_start_cmd 互斥锁
+- 定时提交发现 cookies 过期 → 企微交互确认（是/否/5分钟超时）
+
+### 25. 工作日历自动更新 + 代理服务管理指令
+- 新增 `calendar_updater.py`：每年12月1日自动从 GitHub holiday-cn 拉取下一年节假日
+- 新增企业微信指令：启动Xray/停止Xray/重启Xray、启动Hy2/停止Hy2/重启Hy2
+- 服务器状态新增 CPU 占用显示
 
 ## 依赖
 
