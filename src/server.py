@@ -206,12 +206,17 @@ def create_app(cfg: Config) -> Flask:
                     return "", 200
 
                 elif "生成二维码" in content or "重新登录" in content or "扫码登录" in content:
-                    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
                     from_user_id = msg.get("FromUserName", "")
+                    if not _try_start_cmd("生成二维码"):
+                        _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
+                        return "", 200
+
+                    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
                     _send_wechat_text(cfg.wechat, "⏳ 已收到请求，正在准备企业微信扫码登录二维码...", from_user_id)
                     started = start_renew_cookies_by_qr(config_path, from_user_id, "收到手动扫码登录指令")
                     if not started:
                         _send_wechat_text(cfg.wechat, "ℹ️ 已有二维码登录续期任务正在进行中，请先完成当前扫码。", from_user_id)
+                        _end_cmd()
                     return "", 200
 
                 elif "检查Cookies" in content or "Cookies状态" in content or "cookies状态" in content or "检查cookies" in content:
