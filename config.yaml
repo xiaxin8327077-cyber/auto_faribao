@@ -1,0 +1,83 @@
+host: 0.0.0.0
+port: 8080
+source:
+  doc_id: s3_AecAfAazAEACND1DAzgQ1RzG1Np3v
+  scode: ANoAZwcqAAw1tlXpxOAecAfAazAEA
+  tab_id: tZdOxZ
+  view_id: vtvpys
+  name_field: 任务名称
+  desc_field: 任务描述
+  max_desc_len: 25
+  start_field: 启动时间
+  end_field: 预计完成时间
+  person_field: 负责人
+  status_field: 任务状态
+  person_names:
+  - 夏鑫
+  status_values:
+  - 进行中
+  low_login_enable: '1'
+  utype: ww
+  TOK: 672f8c2ae107b782
+  traceid: 672f8c2ae1
+  hashkey: 672f8c2a
+  tdoc_uid: '13102700534677199'
+  wedoc_openid: wozbKqDgAACT29-f4esmoMcSuLRroAzw
+  wedoc_sid: 1s82NIy_U0cu9zJRADJQVgAA
+  wedoc_sids: 13102700534677199&1s82NIy_U0cu9zJRADJQVgAA
+  wedoc_skey: 13102700534677199&ab2bfd9533a85533c8f443a2440da0b1
+  wedoc_ticket: 13102700534677199&CAESIOIsZ1Iu6QzT2SHtIiDAmLZ9LprUx78q4imn4xv95uzE
+  language: zh-CN
+  fingerprint: ''
+target:
+  url: https://oa.gbicc.cn
+  login_path: login?redirect=%2Findex
+  report_path: /project/prmProjectWorkLog
+  username: xiaxin
+  password: E7Rjmnp9BEFp
+  default_project: 江苏信托开发技术服务项目2026
+  page_timeout: 60000
+  element_timeout: 15000
+captcha:
+  api_key: sk-cdccacaae68f4e5d977314a07496da12
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  model: qwen3-vl-flash
+  prompt: '这是4位数字验证码，请仔细识别后只返回4位数字，不要其他内容。
+
+    识别规则：
+
+    - 长线先排除，字符分四区
+
+    - 贯穿线条是干扰，成形才算数字
+
+    - 闭圈辨0和8，带尾巴多是9
+
+    - 右弧常为3，斜竖多1或7
+
+    - 折角看作4，上弯下收是2
+
+    '
+email:
+  smtp_host: smtp.qiye.163.com
+  smtp_port: 994
+  sender: xiaxin@gbicc.net
+  password: $1%a#K5uCAnKCs$3
+  recipient: 350006418@qq.com
+  imap_host: imap.qiye.163.com
+  imap_port: 993
+wechat:
+  corpid: wwf35acf2abf80360b
+  corpsecret: dmiz23nCg6OtT56pnphVUk94LScSB_f3aV5r1uxhhzM
+  agentid: 1000002
+  token: rbjqr9999
+  aes_key: L37GqJlVeGqqHPNb2E7b4aTIh4Z5avJAID2Bdhc2cLN
+  to_user: XiaXin
+scheduler:
+  cookie_check_hour: 9
+  cookie_check_minute: 45
+  report_submit_hour: 18
+  report_submit_minute: 18
+  stats_push_hour: 18
+  stats_push_minute: 38
+  cache_cleanup_hour: 4
+  cache_cleanup_minute: 0
