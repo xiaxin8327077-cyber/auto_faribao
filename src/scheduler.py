@@ -299,6 +299,20 @@ def _run_cache_cleanup(cfg):
         )
         results.append("🗂️ /tmp 临时文件：已清理（保留7天）")
 
+        # 8. Clean old failed captcha images (7 days ago)
+        captcha_failed_dir = os.path.join(project_dir, "data", "captcha", "failed")
+        captcha_cleaned = 0
+        if os.path.isdir(captcha_failed_dir):
+            for fname in os.listdir(captcha_failed_dir):
+                fpath = os.path.join(captcha_failed_dir, fname)
+                try:
+                    if os.path.isfile(fpath) and time.time() - os.path.getmtime(fpath) > 7 * 86400:
+                        os.remove(fpath)
+                        captcha_cleaned += 1
+                except Exception:
+                    pass
+        results.append(f"🖼️ 验证码失败截图：清理 {captcha_cleaned} 个（保留7天）")
+
         # Get memory info after cleanup
         mem_after = subprocess.run(["free", "-m"], capture_output=True, text=True, timeout=5).stdout
         mem_lines = mem_after.strip().splitlines()
