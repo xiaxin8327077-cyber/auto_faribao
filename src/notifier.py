@@ -1,8 +1,5 @@
 import logging
-from src.email_notifier import (
-    notify_report_success as email_notify_report_success,
-    notify_report_failure as email_notify_report_failure,
-)
+
 from src.wechat_notifier import (
     notify_report_success as wechat_notify_report_success,
     notify_report_failure as wechat_notify_report_failure,
@@ -20,25 +17,19 @@ def _has_wechat_config(cfg) -> bool:
 
 def notify_report_success(cfg, content: str, report_info: dict = None, report_date: str = None,
                           report_source: str = None, smart_doc_status: str = None,
-                          smart_doc_error: str = None, send_email: bool = True):
-    if send_email:
-        email_notify_report_success(cfg, content, report_info, report_date,
-                                     report_source, smart_doc_status, smart_doc_error)
+                          smart_doc_error: str = None):
     if _has_wechat_config(cfg):
         wechat_notify_report_success(cfg, content, report_info, report_date,
-                                      report_source, smart_doc_status, smart_doc_error)
+                                     report_source, smart_doc_status, smart_doc_error)
 
 
 def notify_report_failure(cfg, error: str, report_date: str = None, report_source: str = None,
                           smart_doc_status: str = None, smart_doc_error: str = None,
-                          screenshot: str = None, send_email: bool = True):
-    if send_email:
-        email_notify_report_failure(cfg, error, report_date, report_source,
-                                   smart_doc_status, smart_doc_error)
+                          screenshot: str = None):
     if _has_wechat_config(cfg):
         wechat_notify_report_failure(cfg, error, report_date, report_source,
-                                      smart_doc_status, smart_doc_error,
-                                      screenshot=screenshot)
+                                     smart_doc_status, smart_doc_error,
+                                     screenshot=screenshot)
 
 
 def notify_cookies_expired(cfg, error: str):

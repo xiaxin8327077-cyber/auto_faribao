@@ -64,17 +64,6 @@ class CaptchaConfig:
             "闭圈辨0和8，带尾巴多是9；右弧常为3，斜竖多1或7；折角看作4，上弯下收是2").strip()
 
 
-class EmailConfig:
-    def __init__(self, data: dict):
-        self.smtp_host = data.get("smtp_host", "")
-        self.smtp_port = int(data.get("smtp_port", 465))
-        self.sender = data.get("sender", "")
-        self.password = data.get("password", "")
-        self.recipient = data.get("recipient", "")
-        self.imap_host = data.get("imap_host", "")
-        self.imap_port = int(data.get("imap_port", 993))
-
-
 class WechatConfig:
     def __init__(self, data: dict):
         self.corpid = data.get("corpid", "")
@@ -102,7 +91,6 @@ class Config:
         self.source = SourceConfig(data.get("source", {}))
         self.target = TargetConfig(data.get("target", {}))
         self.captcha = CaptchaConfig(data.get("captcha", {}))
-        self.email = EmailConfig(data.get("email", {}))
         self.wechat = WechatConfig(data.get("wechat", {}))
         self.scheduler = SchedulerConfig(data.get("scheduler", {}))
         self.host = data.get("host", "0.0.0.0")

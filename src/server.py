@@ -245,7 +245,7 @@ def create_app(cfg: Config) -> Flask:
                             if not success:
                                 _send_wechat_text(cfg.wechat, f"❌ 删除失败，无法重发\n{result_msg}", from_user_id)
                                 return
-                            auto_submit_if_needed(cfg, send_email=False)
+                            auto_submit_if_needed(cfg)
                         except Exception as e:
                             logger.error(f"Resend report command failed: {e}", exc_info=True)
                             _send_wechat_text(cfg.wechat, f"❌ 重发异常\n{e}", from_user_id)
@@ -400,10 +400,6 @@ def create_app(cfg: Config) -> Flask:
   • 地址：{cfg.target.url}
   • 用户名：{cfg.target.username}
   • 默认项目：{cfg.target.default_project}
-
-📧 邮件通知：
-  • 发件人：{cfg.email.sender if cfg.email else '未配置'}
-  • 收件人：{cfg.email.recipient if cfg.email else '未配置'}
 
 💬 企业微信：
   • 企业ID：{cfg.wechat.corpid if cfg.wechat else '未配置'}
@@ -998,7 +994,7 @@ def create_app(cfg: Config) -> Flask:
 
                     def process_send_report():
                         try:
-                            auto_submit_if_needed(cfg, send_email=False)
+                            auto_submit_if_needed(cfg)
                         except Exception as e:
                             logger.error(f"Wechat send report command failed: {e}", exc_info=True)
                             _send_wechat_text(cfg.wechat, f"❌ 发送日报任务异常\n{e}", from_user_id)
@@ -1087,7 +1083,6 @@ def create_app(cfg: Config) -> Flask:
                                     "smart_doc_status": "not_used",
                                     "smart_doc_error": "",
                                 },
-                                send_email=False,
                             )
                         except Exception as e:
                             logger.error(f"Submit with previous content failed: {e}", exc_info=True)
@@ -1131,7 +1126,6 @@ def _handle_manual_submit(content: str, report_date: str, cfg: Config):
                 report_date=report_date,
                 report_source="manual",
                 smart_doc_status="not_used",
-                send_email=False,
             )
         else:
             notify_report_failure(
@@ -1141,7 +1135,6 @@ def _handle_manual_submit(content: str, report_date: str, cfg: Config):
                 report_source="manual",
                 smart_doc_status="not_used",
                 screenshot=report_info.get("screenshot"),
-                send_email=False,
             )
     except Exception as e:
         logger.error(f"Manual submit error: {e}", exc_info=True)
@@ -1151,7 +1144,6 @@ def _handle_manual_submit(content: str, report_date: str, cfg: Config):
             report_date=report_date,
             report_source="manual",
             smart_doc_status="not_used",
-            send_email=False,
         )
 
 
@@ -1283,7 +1275,7 @@ async function submitReport() {{
 </html>"""
 
 
-def auto_submit_if_needed(cfg: Config, send_email: bool = True):
+def auto_submit_if_needed(cfg: Config):
     """Called by scheduler at 17:45. Auto-submits if no manual report was provided."""
     logger.info("No manual report today — extracting from smart sheet...")
     try:
@@ -1298,15 +1290,14 @@ def auto_submit_if_needed(cfg: Config, send_email: bool = True):
             report_source=getattr(e, "report_source", "generation_failed"),
             smart_doc_status=getattr(e, "smart_doc_status", "unknown"),
             smart_doc_error=getattr(e, "smart_doc_error", ""),
-            send_email=send_email,
         )
         return
 
-    _submit_and_notify(report, cfg, source, meta, send_email=send_email)
+    _submit_and_notify(report, cfg, source, meta)
 
 
 def _submit_and_notify(content: str, cfg: Config, report_source: str = None,
-                       report_meta: dict = None, send_email: bool = True) -> bool:
+                       report_meta: dict = None) -> bool:
     report_meta = report_meta or {}
     try:
         success, msg, report_info = submit_daily_report(content, cfg)
@@ -1318,7 +1309,6 @@ def _submit_and_notify(content: str, cfg: Config, report_source: str = None,
                 report_source=report_source,
                 smart_doc_status=report_meta.get("smart_doc_status"),
                 smart_doc_error=report_meta.get("smart_doc_error"),
-                send_email=send_email,
             )
             return True
         notify_report_failure(
@@ -1328,7 +1318,6 @@ def _submit_and_notify(content: str, cfg: Config, report_source: str = None,
             smart_doc_status=report_meta.get("smart_doc_status"),
             smart_doc_error=report_meta.get("smart_doc_error"),
             screenshot=report_info.get("screenshot"),
-            send_email=send_email,
         )
         return False
     except Exception as e:
@@ -1339,6 +1328,5 @@ def _submit_and_notify(content: str, cfg: Config, report_source: str = None,
             report_source=report_source,
             smart_doc_status=report_meta.get("smart_doc_status"),
             smart_doc_error=report_meta.get("smart_doc_error"),
-            send_email=send_email,
         )
         return False

@@ -5,7 +5,7 @@ date = sys.argv[1] if len(sys.argv) > 1 else None
 from src.config import load_config
 from src.report_builder import build_report_with_meta
 from src.target import submit_daily_report
-from src.email_notifier import notify_report_success, notify_report_failure
+from src.notifier import notify_report_success, notify_report_failure
 
 cfg = load_config("config.yaml")
 try:
@@ -29,7 +29,7 @@ except Exception as e:
         smart_doc_status=smart_doc_status,
         smart_doc_error=smart_doc_error,
     )
-    print("FAILURE_EMAIL_SENT")
+    print("FAILURE_NOTIFIED")
     print(f"FAILED: 日报内容生成失败: {e}")
     sys.exit(1)
 
@@ -54,6 +54,6 @@ else:
         smart_doc_status=meta.get("smart_doc_status"),
         smart_doc_error=meta.get("smart_doc_error"),
     )
-    print("FAILURE_EMAIL_SENT")
+    print("FAILURE_NOTIFIED")
     print(f"FAILED: {msg}")
     sys.exit(1)

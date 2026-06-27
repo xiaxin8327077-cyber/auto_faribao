@@ -3,6 +3,7 @@ import re
 from datetime import date
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeout
+from src.browser_lock import browser_operation, launch_browser
 from src.config import Config, TargetConfig
 from src.auth import login_with_captcha, AuthError
 
@@ -184,8 +185,8 @@ def submit_daily_report(content: str, cfg: Config, dry_run: bool = False,
 
     domain = _domain_from_url(target.url)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    with browser_operation(), sync_playwright() as p:
+        browser = launch_browser(p)
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080},
             locale="zh-CN",
@@ -273,8 +274,8 @@ def modify_daily_report(content: str, cfg: Config) -> tuple[bool, str, dict]:
 
     domain = _domain_from_url(target.url)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    with browser_operation(), sync_playwright() as p:
+        browser = launch_browser(p)
         context = browser.new_context(viewport={"width": 1920, "height": 1080}, locale="zh-CN")
         context.add_cookies([
             {"name": "DQMS-Token", "value": token, "domain": domain, "path": "/"},
@@ -327,8 +328,8 @@ def get_previous_report_content(cfg: Config, before_date: str = None) -> str:
 
     domain = _domain_from_url(target.url)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    with browser_operation(), sync_playwright() as p:
+        browser = launch_browser(p)
         context = browser.new_context(viewport={"width": 1920, "height": 1080}, locale="zh-CN")
         context.add_cookies([
             {"name": "DQMS-Token", "value": token, "domain": domain, "path": "/"},
@@ -1034,7 +1035,7 @@ def _login_and_navigate(cfg: Config):
     page = None
     pw = sync_playwright().start()
     try:
-        browser = pw.chromium.launch(headless=True)
+        browser = launch_browser(pw)
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080},
             locale="zh-CN",

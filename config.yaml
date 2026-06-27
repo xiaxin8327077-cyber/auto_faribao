@@ -57,14 +57,6 @@ captcha:
     - 折角看作4，上弯下收是2
 
     '
-email:
-  smtp_host: smtp.qiye.163.com
-  smtp_port: 994
-  sender: xiaxin@gbicc.net
-  password: $1%a#K5uCAnKCs$3
-  recipient: 350006418@qq.com
-  imap_host: imap.qiye.163.com
-  imap_port: 993
 wechat:
   corpid: wwf35acf2abf80360b
   corpsecret: dmiz23nCg6OtT56pnphVUk94LScSB_f3aV5r1uxhhzM

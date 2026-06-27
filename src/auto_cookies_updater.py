@@ -76,52 +76,6 @@ def update_config_cookies(config_path: str, new_cookies: dict) -> bool:
         return False
 
 
-def try_update_cookies(config_path: str) -> bool:
-    """Main entry: read email, parse cookies, update config, verify.
-    Returns True if cookies were updated successfully.
-    """
-    from src.config import load_config
-    from src.cookies_checker import check_cookies, CookiesError
-    from src.email_reader import read_cookies_email
-    from src.wechat_notifier import notify_cookies_valid as wechat_notify_cookies_valid
-    from src.wechat_notifier import notify_cookies_invalid as wechat_notify_cookies_invalid
-
-    cfg = load_config(config_path)
-    email_text = read_cookies_email(cfg)
-    if not email_text:
-        logger.info("No new cookies email found")
-        return False
-
-    new_cookies = parse_cookies_from_text(email_text)
-    logger.info(f"Parsed cookies: {list(new_cookies.keys())}")
-
-    if not new_cookies:
-        logger.warning("No valid cookies found in email")
-        return False
-
-    updated_fields = _get_updated_fields(config_path, new_cookies)
-    if not updated_fields:
-        logger.info("No cookie fields changed")
-        return False
-
-    old_cookies = _get_current_cookie_values(config_path, updated_fields)
-    if not update_config_cookies(config_path, new_cookies):
-        return False
-
-    logger.info("Verifying new cookies...")
-    cfg = load_config(config_path)
-    try:
-        check_cookies(cfg)
-        logger.info("New cookies are valid!")
-        wechat_notify_cookies_valid(cfg, updated_fields)
-        return True
-    except CookiesError as e:
-        logger.error(f"New cookies verification failed: {e}")
-        _revert_config(config_path, old_cookies)
-        wechat_notify_cookies_invalid(cfg, str(e))
-        return False
-
-
 def _get_updated_fields(config_path: str, new_cookies: dict) -> list:
     try:
         with open(config_path, "r", encoding="utf-8") as f:

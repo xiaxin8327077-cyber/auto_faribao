@@ -1885,7 +1885,7 @@ def send_report_failure_fallback(report_date, detail, report_source=None, smart_
 import sys
 sys.path.insert(0, "/home/ubuntu/daily_report")
 from src.config import load_config
-from src.email_notifier import notify_report_failure
+from src.notifier import notify_report_failure
 
 date = sys.argv[1] or None
 detail = sys.argv[2]

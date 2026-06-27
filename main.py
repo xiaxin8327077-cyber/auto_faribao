@@ -63,7 +63,7 @@ def main():
 
     logger.info(f"Target: {cfg.target.url}")
     logger.info(f"Captcha model: {cfg.captcha.model}")
-    logger.info(f"Email: {'configured' if cfg.email.sender else 'NOT configured'}")
+    logger.info(f"Wechat: {'configured' if cfg.wechat.corpid else 'NOT configured'}")
 
     if args.test_login:
         return _test_login(cfg)
@@ -199,7 +199,7 @@ def _dry_run_report(cfg, message: str, report_date: str = None) -> int:
 
 def _submit_once(cfg, message: str, report_date: str = None) -> int:
     from src.target import submit_daily_report
-    from src.email_notifier import notify_report_success, notify_report_failure
+    from src.notifier import notify_report_success, notify_report_failure
 
     logger.info("=== Submitting daily report ===")
     logger.info(f"Message: {message}")

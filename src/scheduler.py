@@ -5,8 +5,6 @@ from src.beijing_time import now as beijing_now, today
 
 logger = logging.getLogger(__name__)
 
-COOKIES_EMAIL_CHECK_INTERVAL = 300
-
 _scheduler_lock = threading.Lock()
 _runtime_cfg = None
 
@@ -55,12 +53,10 @@ def _run(cfg):
     last_submit_date = None
     last_stats_date = None
     last_cache_cleanup_date = None
-    last_email_check = 0
 
     while True:
         now = beijing_now()
         today_str = now.strftime("%Y-%m-%d")
-        now_ts = time.time()
 
         with _scheduler_lock:
             current_cfg = _runtime_cfg or cfg
@@ -97,10 +93,6 @@ def _run(cfg):
             last_cache_cleanup_date = today_str
             logger.info("Scheduler triggered: monthly cache cleanup")
             _run_cache_cleanup(current_cfg)
-
-        if now_ts - last_email_check >= COOKIES_EMAIL_CHECK_INTERVAL:
-            last_email_check = now_ts
-            _run_cookies_email_check(current_cfg)
 
         time.sleep(30)
 
@@ -338,15 +330,3 @@ def _run_cache_cleanup(cfg):
             _send_wechat_text(cfg.wechat, f"❌ 定时缓存清理失败\n{e}", getattr(cfg.wechat, "to_user", None))
         except Exception:
             pass
-
-
-def _run_cookies_email_check(cfg):
-    from src.auto_cookies_updater import try_update_cookies
-    import os
-    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")
-    try:
-        updated = try_update_cookies(config_path)
-        if updated:
-            logger.info("Cookies auto-updated from email!")
-    except Exception as e:
-        logger.debug(f"Cookies email check: {e}")
