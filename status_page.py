@@ -33,7 +33,6 @@ METRIC_INTERVAL = max(10, int(os.getenv("STATUS_PAGE_METRIC_INTERVAL", "20")))
 METRIC_KEEP = max(60, int(os.getenv("STATUS_PAGE_METRIC_KEEP", "240")))
 STATE_DIR = os.getenv("STATUS_PAGE_STATE_DIR", "/var/lib/status-page")
 STATE_FILE = os.path.join(STATE_DIR, "traffic_state.json")
-REPORT_HISTORY_FILE = os.path.join(STATE_DIR, "report_history.json")
 METRICS_FILE = os.path.join(STATE_DIR, "metric_history.json")
 UPLOAD_DIR = os.path.join(STATE_DIR, "uploads")
 AUTH_FILE = os.path.join(STATE_DIR, "auth_config.json")
@@ -1285,25 +1284,8 @@ FULL_XRAY_ACTIONS = """
   <button id="xrRestartBtn" class="ghost-btn" type="button">重启 Xray</button>
 </div>
 """
-FULL_REPORT_NAV = """<button class="nav-btn" type="button" data-tab-target="report"><span class="material-symbols-outlined nav-icon">send</span><span>日报发送</span></button>"""
-FULL_REPORT_SECTION = """<section class="tab-panel" data-tab="report">
-  <section class="panel section">
-    <div class="section-head">
-      <div class="eyebrow">History</div>
-      <h3>发送记录</h3>
-    </div>
-    <div class="table-shell">
-      <table>
-        <thead>
-          <tr><th>时间</th><th>类型</th><th>日期</th><th>内容</th><th>状态</th><th>详情</th></tr>
-        </thead>
-        <tbody id="reportHistoryBody">
-          <tr><td colspan="6" style="text-align:center;color:#667989">暂无发送记录</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-</section>"""
+FULL_REPORT_NAV = ""
+FULL_REPORT_SECTION = ""
 
 FULL_FILE_SECTION = """
 <section class='tab-panel' data-tab='files'>
@@ -1556,7 +1538,6 @@ input[type='file']::file-selector-button{appearance:none;border:none;border-radi
       <button class='nav-btn active' type='button' data-tab-target='overview'>系统状态</button>
       @@FILE_NAV@@
       @@SETTINGS_NAV@@
-      @@REPORT_NAV@@
     </nav>
     <div class='sidebar-meta'><div id='generatedAtSide'>最后刷新：加载中...</div><div>自动刷新：@@REFRESH@@ 秒</div><div>采样间隔：<span id='metricIntervalSide'>加载中...</span></div></div>
     <button id='logoutBtn' class='ghost-btn logout-btn' type='button'>退出登录</button>
@@ -1656,7 +1637,6 @@ input[type='file']::file-selector-button{appearance:none;border:none;border-radi
       </section>
     </section>
 
-    @@REPORT_SECTION@@
     @@FILE_SECTION@@
     @@SETTINGS_SECTION@@
 
@@ -1677,7 +1657,7 @@ function pct(part,total){ const base=Number(total||0); if(!base){ return 0; } re
 function setText(id, value){ const node=document.getElementById(id); if(node){ node.textContent=value; } }
 function setGauge(id, percent, textId){ const clamped=Math.max(0, Math.min(100, Number(percent||0))); const node=document.getElementById(id); if(node){ node.style.background=`conic-gradient(#0f8b8d ${clamped}%, rgba(15,139,141,.12) ${clamped}% 100%)`; } setText(textId, `${clamped.toFixed(0)}%`); }
 function setFill(id, percent){ const node=document.getElementById(id); if(node){ node.style.width=`${Math.max(0, Math.min(100, Number(percent||0)))}%`; } }
-function openTab(name){ const valid=Array.from(document.querySelectorAll('[data-tab]')).map(node => node.getAttribute('data-tab')); const target=valid.includes(name) ? name : 'overview'; document.querySelectorAll('[data-tab-target]').forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-tab-target') === target)); document.querySelectorAll('[data-tab]').forEach(panel => panel.classList.toggle('active', panel.getAttribute('data-tab') === target)); if(target === 'files' && ROLE === 'full'){ loadFiles(currentPath, currentSearch).catch(console.error); } if(target === 'settings' && ROLE === 'full'){ loadPasswordInfo().catch(console.error); } if(target === 'report' && ROLE === 'full'){ loadReportHistory(); } if(location.hash !== `#${target}`){ history.replaceState(null, '', `#${target}`); } }
+function openTab(name){ const valid=Array.from(document.querySelectorAll('[data-tab]')).map(node => node.getAttribute('data-tab')); const target=valid.includes(name) ? name : 'overview'; document.querySelectorAll('[data-tab-target]').forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-tab-target') === target)); document.querySelectorAll('[data-tab]').forEach(panel => panel.classList.toggle('active', panel.getAttribute('data-tab') === target)); if(target === 'files' && ROLE === 'full'){ loadFiles(currentPath, currentSearch).catch(console.error); } if(target === 'settings' && ROLE === 'full'){ loadPasswordInfo().catch(console.error); } if(location.hash !== `#${target}`){ history.replaceState(null, '', `#${target}`); } }
 function bindTabMenu(){ document.querySelectorAll('[data-tab-target]').forEach(btn => { btn.onclick = () => openTab(btn.getAttribute('data-tab-target')); }); openTab((location.hash || '#overview').slice(1)); }
 function linePath(data, innerW, innerH, padX, padY, key){ if(!data.length){ return ''; } const step=data.length > 1 ? innerW/(data.length-1) : 0; return data.map((item, idx) => { const x=padX + idx * step; const y=padY + innerH - (Math.max(0, Math.min(100, Number(item[key]||0))) / 100) * innerH; return `${idx ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`; }).join(' '); }
 function areaPath(data, innerW, innerH, padX, padY, key){ if(!data.length){ return ''; } const step=data.length > 1 ? innerW/(data.length-1) : 0; const firstX=padX; const lastX=padX + step * (data.length - 1); const points=data.map((item, idx) => { const x=padX + idx * step; const y=padY + innerH - (Math.max(0, Math.min(100, Number(item[key]||0))) / 100) * innerH; return `${idx ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`; }).join(' '); return `${points} L${lastX.toFixed(1)},${(padY+innerH).toFixed(1)} L${firstX.toFixed(1)},${(padY+innerH).toFixed(1)} Z`; }
@@ -1733,82 +1713,12 @@ if(ROLE === 'full'){
   if(xrRestartBtn){ xrRestartBtn.onclick = () => toggleXray('restart').catch(err => setText('xrMsg', '操作失败：' + err)); }
 }
 
-async function loadReportHistory(){
-  try {
-    var r = await fetch("/api/report-history", {cache:"no-store"});
-    if (r.status !== 200) { return; }
-    var data = await r.json();
-    var records = data.records || [];
-    var tbody = document.getElementById("reportHistoryBody");
-    if (!records.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#667989">暂无发送记录</td></tr>';
-      return;
-    }
-    tbody.innerHTML = records.slice().reverse().map(function(rec) {
-      var d = document.createElement("div");
-      d.textContent = rec.content || "";
-      var ct = d.innerHTML;
-      d.textContent = rec.date || "";
-      var dt = d.innerHTML;
-      d.textContent = rec.time || "";
-      var tm = d.innerHTML;
-      d.textContent = rec.type || "";
-      var tp = d.innerHTML;
-      d.textContent = rec.status || "";
-      var st = d.innerHTML;
-      d.textContent = rec.detail || "";
-      var detail = d.innerHTML;
-      var sc = rec.status === "成功" ? "#52c41a" : rec.status === "失败" ? "#ff4d4f" : "#faad14";
-      var contentDisplay = ct || "";
-      var titleAttr = contentDisplay.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      if (contentDisplay.length > 50) { contentDisplay = contentDisplay.substring(0, 50) + "..."; }
-      var detailDisplay = detail.replace(/\\n/g, "<br>") || (rec.status === "失败" ? "未知错误" : "-");
-      return `<tr><td>${tm}</td><td>${tp}</td><td>${dt}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${titleAttr}">${contentDisplay || "(自动提取)"}</td><td style="color:${sc};font-weight:700">${st}</td><td style="font-size:12px;color:#667989;line-height:1.5;max-width:300px;word-break:break-word">${detailDisplay}</td></tr>`;
-    }).join("");
-  } catch(e) {}
-}
+
 </script>
 </body>
 </html>
 """
 
-def save_report_record(record):
-    with RECLOCK:
-        records = load_report_records()
-        record.setdefault("id", secrets.token_hex(8))
-        records.append(record)
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(REPORT_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(records, f, ensure_ascii=False, indent=2)
-        return record["id"]
-
-def load_report_records():
-    os.makedirs(STATE_DIR, exist_ok=True)
-    try:
-        with open(REPORT_HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-def parse_report_source_from_output(text):
-    for line in str(text or "").splitlines():
-        if line.startswith("Report source:"):
-            source = line.split(":", 1)[1].strip()
-            if source:
-                return source
-    return None
-
-
-def parse_smart_doc_meta_from_output(text):
-    meta = {"smart_doc_status": None, "smart_doc_error": None}
-    for line in str(text or "").splitlines():
-        if line.startswith("Smart doc status:"):
-            meta["smart_doc_status"] = line.split(":", 1)[1].strip() or None
-        elif line.startswith("Smart doc error:"):
-            meta["smart_doc_error"] = line.split(":", 1)[1].strip() or None
-    return meta
 
 
 def page(role=None):
@@ -1824,8 +1734,6 @@ def page(role=None):
         .replace("@@REFRESH@@", str(REFRESH))
         .replace("@@FILE_NAV@@", FULL_FILE_NAV if role == "full" else "")
         .replace("@@SETTINGS_NAV@@", FULL_SETTINGS_NAV if role == "full" else "")
-        .replace("@@REPORT_NAV@@", FULL_REPORT_NAV if role == "full" else "")
-        .replace("@@REPORT_SECTION@@", FULL_REPORT_SECTION if role == "full" else "")
         .replace("@@FILE_SECTION@@", FULL_FILE_SECTION if role == "full" else "")
         .replace("@@SETTINGS_SECTION@@", FULL_SETTINGS_SECTION if role == "full" else "")
         .replace("@@TAILSCALE_ACTIONS@@", FULL_TAILSCALE_ACTIONS if role == "full" else "")
@@ -1984,13 +1892,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(400, {"message": "当前文件不支持图片预览。"})
                 return
             self.send_file(target, download=False)
-            return
-
-        if path == "/api/report-history":
-            if not self.need({"full"}):
-                return
-            records = load_report_records()
-            self.send_json(200, {"records": records})
             return
 
         self.send_json(404, {"message": "not found"})
