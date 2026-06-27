@@ -573,7 +573,7 @@ def create_app(cfg: Config) -> Flask:
                         _send_wechat_text(cfg.wechat, f"❌ 修改失败\n{e}", from_user_id)
                     return "", 200
 
-                elif "设置提交时间" in content or "修改提交时间" in content or "设置日报时间" in content:
+                elif "设置日报提交时间" in content or "修改日报提交时间" in content or "设置提交时间" in content or "修改提交时间" in content or "设置日报时间" in content:
                     from_user_id = msg.get("FromUserName", "")
                     import re
                     time_match = re.search(r'(\d{1,2})[:：](\d{2})', content)

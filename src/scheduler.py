@@ -114,7 +114,6 @@ def _is_last_day_of_month(day):
 
 def _run_cookies_check(cfg):
     from src.cookies_checker import check_cookies, CookiesError
-    from src.extractor import extract_tasks, ExtractError
     from src.notifier import notify_cookies_expired
 
     try:
@@ -130,21 +129,6 @@ def _run_cookies_check(cfg):
         notify_cookies_expired(cfg, f"Cookies 检查异常: {e}")
         _start_qr_renew(cfg, f"自动检测到 Cookies 检查异常: {e}")
         return
-
-    try:
-        tasks = extract_tasks(cfg.source)
-        if tasks:
-            logger.info(f"Smart document read check passed: {len(tasks)} matching tasks")
-        else:
-            logger.info("Smart document read check passed, no matching tasks; no email sent")
-    except ExtractError as e:
-        logger.error(f"Smart document read failed: {e}")
-        notify_cookies_expired(cfg, f"智能文档读取异常: {e}")
-        _start_qr_renew(cfg, f"自动检测到智能文档读取异常: {e}")
-    except Exception as e:
-        logger.error(f"Smart document read error: {e}", exc_info=True)
-        notify_cookies_expired(cfg, f"智能文档读取异常: {e}")
-        _start_qr_renew(cfg, f"自动检测到智能文档读取异常: {e}")
 
 
 def _start_qr_renew(cfg, reason: str):
