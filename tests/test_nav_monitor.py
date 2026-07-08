@@ -8,10 +8,15 @@ from src.nav_monitor import (
     NanyinWealthProvider,
     NavProduct,
     NavRecord,
+    ProductCandidate,
     ProductNavResult,
+    build_add_product_candidates,
     calculate_change,
+    confirm_pending_nav_add,
+    format_product_candidates,
     format_nav_report,
     parse_nav_query_date,
+    save_pending_nav_add,
 )
 
 
@@ -211,3 +216,79 @@ def test_nanyin_provider_parses_encrypted_payload_results():
     assert records[0].unit_nav == Decimal("1.0006")
     assert missed.exact is False
     assert missed.record.nav_date == date(2026, 6, 26)
+
+
+def test_add_product_candidates_display_latest_nav():
+    class FakeProvider:
+        def search_products(self, query):
+            return [
+                ProductCandidate(
+                    provider="citic_wealth",
+                    code="AF233276B",
+                    name="慧盈象固收增强一年持有期5号B",
+                    register_code="Z7002623000809",
+                    latest_nav_date=date(2026, 7, 7),
+                    latest_unit_nav=Decimal("1.0780"),
+                    latest_cumulative_nav=Decimal("1.0780"),
+                )
+            ]
+
+    candidates = build_add_product_candidates(FakeProvider(), "AF233276B")
+    text = format_product_candidates(candidates)
+
+    assert "1. 信银理财" in text
+    assert "代码：AF233276B" in text
+    assert "登记编码：Z7002623000809" in text
+    assert "最新净值：2026-07-07  1.078000" in text
+    assert "回复：确认添加净值产品 1" in text
+
+
+def test_confirm_pending_nav_add_writes_only_selected_candidate(tmp_path):
+    cfg = Config({"nav_monitor": {"products": []}})
+    pending_path = tmp_path / "nav_pending.json"
+    candidates = [
+        ProductCandidate("citic_wealth", "AF233276B", "P1"),
+        ProductCandidate("nanyin_wealth", "NYZY000022", "P2"),
+    ]
+
+    save_pending_nav_add(candidates, pending_path=str(pending_path), now=datetime(2026, 7, 8, 8, 0))
+    ok, message = confirm_pending_nav_add(
+        cfg,
+        2,
+        pending_path=str(pending_path),
+        now=datetime(2026, 7, 8, 8, 1),
+    )
+
+    assert ok is True
+    assert "已添加" in message
+    assert len(cfg.nav_monitor.products) == 1
+    assert cfg.nav_monitor.products[0].provider == "nanyin_wealth"
+    assert cfg.nav_monitor.products[0].code == "NYZY000022"
+    assert not pending_path.exists()
+
+
+def test_confirm_pending_nav_add_rejects_duplicate(tmp_path):
+    cfg = Config({
+        "nav_monitor": {
+            "products": [
+                {"provider": "citic_wealth", "code": "AF233276B", "name": "P1"},
+            ]
+        }
+    })
+    pending_path = tmp_path / "nav_pending.json"
+
+    save_pending_nav_add(
+        [ProductCandidate("citic_wealth", "AF233276B", "P1")],
+        pending_path=str(pending_path),
+        now=datetime(2026, 7, 8, 8, 0),
+    )
+    ok, message = confirm_pending_nav_add(
+        cfg,
+        1,
+        pending_path=str(pending_path),
+        now=datetime(2026, 7, 8, 8, 1),
+    )
+
+    assert ok is False
+    assert "已存在" in message
+    assert len(cfg.nav_monitor.products) == 1

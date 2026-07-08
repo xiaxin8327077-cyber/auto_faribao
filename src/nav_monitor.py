@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import ssl
 import string
@@ -29,6 +30,9 @@ PROVIDER_LABELS = {
     "citic_wealth": "信银理财",
     "nanyin_wealth": "南银理财",
 }
+
+DEFAULT_PENDING_NAV_ADD_PATH = "/tmp/nav_monitor_pending_add.json"
+PENDING_NAV_ADD_TTL_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -185,6 +189,158 @@ def _format_decimal(value) -> str:
 
 def _format_pct(value: Decimal) -> str:
     return f"{value.quantize(Decimal('0.0001'))}%"
+
+
+def build_add_product_candidates(provider: "WealthProvider", query: str, limit: int = 5) -> list[ProductCandidate]:
+    return provider.search_products(query)[:limit]
+
+
+def format_product_candidates(candidates: list[ProductCandidate]) -> str:
+    if not candidates:
+        return "未找到该产品，请改用产品代码、销售代码、登记编码或更完整的产品名称重试。"
+
+    lines = ["找到以下候选产品，请确认：", ""]
+    for index, candidate in enumerate(candidates, 1):
+        label = PROVIDER_LABELS.get(candidate.provider, candidate.provider)
+        lines.append(f"{index}. {label}")
+        lines.append(f"名称：{candidate.name or '-'}")
+        lines.append(f"代码：{candidate.code or '-'}")
+        if candidate.register_code:
+            lines.append(f"登记编码：{candidate.register_code}")
+        if candidate.sales_code and candidate.sales_code != candidate.code:
+            lines.append(f"销售代码：{candidate.sales_code}")
+
+        if candidate.latest_nav_date and candidate.latest_unit_nav is not None:
+            lines.append(
+                "最新净值："
+                f"{candidate.latest_nav_date:%Y-%m-%d}  {_format_decimal(candidate.latest_unit_nav)}"
+            )
+            if candidate.latest_cumulative_nav is not None:
+                lines.append(f"累计净值：{_format_decimal(candidate.latest_cumulative_nav)}")
+        else:
+            reason = candidate.nav_error or "接口未返回最新净值"
+            lines.append(f"最新净值：暂不可用（{reason}）")
+        lines.append("")
+
+    lines.append("回复：确认添加净值产品 1")
+    lines.append("回复：取消添加净值产品 可放弃本次添加")
+    return "\n".join(lines).rstrip()
+
+
+def save_pending_nav_add(
+    candidates: list[ProductCandidate],
+    pending_path: str = DEFAULT_PENDING_NAV_ADD_PATH,
+    now: Optional[datetime] = None,
+):
+    data = {
+        "created_at": (now or datetime.now()).timestamp(),
+        "candidates": [_candidate_to_dict(candidate) for candidate in candidates],
+    }
+    with open(pending_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def load_pending_nav_add(
+    pending_path: str = DEFAULT_PENDING_NAV_ADD_PATH,
+    now: Optional[datetime] = None,
+) -> list[ProductCandidate]:
+    if not os.path.exists(pending_path):
+        return []
+    try:
+        with open(pending_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        clear_pending_nav_add(pending_path)
+        return []
+
+    created_at = float(data.get("created_at") or 0)
+    current = (now or datetime.now()).timestamp()
+    if current - created_at > PENDING_NAV_ADD_TTL_SECONDS:
+        clear_pending_nav_add(pending_path)
+        return []
+    return [_candidate_from_dict(item) for item in data.get("candidates", [])]
+
+
+def clear_pending_nav_add(pending_path: str = DEFAULT_PENDING_NAV_ADD_PATH):
+    try:
+        if os.path.exists(pending_path):
+            os.remove(pending_path)
+    except OSError:
+        logger.warning("Failed to remove NAV pending add file: %s", pending_path)
+
+
+def cancel_pending_nav_add(pending_path: str = DEFAULT_PENDING_NAV_ADD_PATH) -> str:
+    clear_pending_nav_add(pending_path)
+    return "已取消添加净值产品。"
+
+
+def confirm_pending_nav_add(
+    cfg,
+    index: int,
+    pending_path: str = DEFAULT_PENDING_NAV_ADD_PATH,
+    now: Optional[datetime] = None,
+) -> tuple[bool, str]:
+    candidates = load_pending_nav_add(pending_path, now=now)
+    if not candidates:
+        return False, "当前没有待确认的净值产品，或确认已超时，请重新发送添加命令。"
+    if index < 1 or index > len(candidates):
+        return False, f"序号无效，请回复 1 到 {len(candidates)} 之间的序号。"
+
+    candidate = candidates[index - 1]
+    products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
+    for product in products:
+        if (
+            getattr(product, "provider", "").lower() == candidate.provider.lower()
+            and getattr(product, "code", "").upper() == candidate.code.upper()
+        ):
+            clear_pending_nav_add(pending_path)
+            return False, f"净值产品已存在：{candidate.name or candidate.code}"
+
+    from src.config import NavProductConfig
+
+    products.append(
+        NavProductConfig(
+            {
+                "provider": candidate.provider,
+                "code": candidate.code,
+                "name": candidate.name,
+            }
+        )
+    )
+    clear_pending_nav_add(pending_path)
+    return True, f"已添加净值产品：{candidate.name or candidate.code}"
+
+
+def _candidate_to_dict(candidate: ProductCandidate) -> dict:
+    return {
+        "provider": candidate.provider,
+        "code": candidate.code,
+        "name": candidate.name,
+        "register_code": candidate.register_code,
+        "sales_code": candidate.sales_code,
+        "latest_nav_date": candidate.latest_nav_date.isoformat() if candidate.latest_nav_date else "",
+        "latest_unit_nav": str(candidate.latest_unit_nav) if candidate.latest_unit_nav is not None else "",
+        "latest_cumulative_nav": (
+            str(candidate.latest_cumulative_nav)
+            if candidate.latest_cumulative_nav is not None
+            else ""
+        ),
+        "nav_error": candidate.nav_error,
+    }
+
+
+def _candidate_from_dict(data: dict) -> ProductCandidate:
+    return ProductCandidate(
+        provider=str(data.get("provider") or ""),
+        code=str(data.get("code") or ""),
+        name=str(data.get("name") or ""),
+        register_code=str(data.get("register_code") or ""),
+        sales_code=str(data.get("sales_code") or ""),
+        latest_nav_date=_optional_nav_date(data.get("latest_nav_date")),
+        latest_unit_nav=_optional_decimal(data.get("latest_unit_nav")),
+        latest_cumulative_nav=_optional_decimal(data.get("latest_cumulative_nav")),
+        nav_error=str(data.get("nav_error") or ""),
+    )
 
 
 class WealthProvider:
