@@ -32,7 +32,8 @@ def start(cfg):
         f"Scheduler started: cookies check at {ch:02d}:{cm:02d}, "
         f"report submit at {rh:02d}:{rm:02d} on weekdays, "
         f"stats push at {sh:02d}:{sm:02d} on Sun/month-end, "
-        f"cache cleanup at {cch:02d}:{ccm:02d}"
+        f"cache cleanup at {cch:02d}:{ccm:02d}, "
+        f"nav monitor at {cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d}"
     )
 
 
@@ -45,7 +46,8 @@ def update_runtime_config(cfg):
         f"Scheduler config updated: cookies check {ch:02d}:{cm:02d}, "
         f"report submit {rh:02d}:{rm:02d}, "
         f"stats push {sh:02d}:{sm:02d}, "
-        f"cache cleanup {cch:02d}:{ccm:02d}"
+        f"cache cleanup {cch:02d}:{ccm:02d}, "
+        f"nav monitor {cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d}"
     )
 
 
@@ -54,6 +56,7 @@ def _run(cfg):
     last_submit_date = None
     last_stats_date = None
     last_cache_cleanup_date = None
+    last_nav_push_date = None
     last_calendar_update_year = None
 
     while True:
@@ -67,6 +70,11 @@ def _run(cfg):
         today_str = now.strftime("%Y-%m-%d")
 
         ch, cm, rh, rm, sh, sm, cch, ccm = _get_times(current_cfg)
+
+        if _should_run_nav_monitor(current_cfg, now, last_nav_push_date):
+            last_nav_push_date = today_str
+            logger.info("Scheduler triggered: nav monitor push")
+            _run_nav_monitor_push(current_cfg)
 
         if _is_workday(now.date()):
             if (now.hour == ch and
@@ -123,6 +131,18 @@ def _is_last_day_of_month(day):
     return day.day == last
 
 
+def _should_run_nav_monitor(cfg, now, last_nav_push_date):
+    nav = getattr(cfg, "nav_monitor", None)
+    if not nav or not getattr(nav, "enabled", False):
+        return False
+    today_str = now.strftime("%Y-%m-%d")
+    return (
+        now.hour == nav.push_hour
+        and now.minute == nav.push_minute
+        and last_nav_push_date != today_str
+    )
+
+
 def _run_cookies_check(cfg):
     from src.cookies_checker import check_cookies, CookiesError
     from src.notifier import notify_cookies_expired
@@ -160,6 +180,35 @@ def _run_auto_submit(cfg):
     except Exception as e:
         logger.error(f"Scheduler auto-submit failed: {e}", exc_info=True)
         notify_report_failure(cfg, str(e), report_source="unknown", smart_doc_status="unknown")
+
+
+def _run_nav_monitor_push(cfg):
+    try:
+        from src.nav_monitor import push_nav_report
+        push_nav_report(cfg)
+    except Exception as e:
+        logger.error(f"Scheduler nav monitor push failed: {e}", exc_info=True)
+        if _wechat_is_configured(cfg):
+            try:
+                from src.wechat_notifier import send_text as _send_wechat_text
+                _send_wechat_text(
+                    cfg.wechat,
+                    f"❌ 净值监控推送失败\n{e}",
+                    getattr(cfg.wechat, "to_user", None),
+                )
+            except Exception:
+                logger.error("NAV failure notification failed", exc_info=True)
+
+
+def _wechat_is_configured(cfg) -> bool:
+    wechat = getattr(cfg, "wechat", None)
+    return bool(
+        wechat
+        and getattr(wechat, "corpid", "")
+        and getattr(wechat, "corpsecret", "")
+        and getattr(wechat, "agentid", 0)
+        and getattr(wechat, "to_user", "")
+    )
 
 
 def _run_stats_push(cfg, day):

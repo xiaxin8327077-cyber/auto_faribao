@@ -292,3 +292,53 @@ def test_confirm_pending_nav_add_rejects_duplicate(tmp_path):
     assert ok is False
     assert "已存在" in message
     assert len(cfg.nav_monitor.products) == 1
+
+
+def test_scheduler_existing_times_do_not_include_nav_time():
+    from src.scheduler import _get_times
+
+    cfg = Config({
+        "scheduler": {
+            "cookie_check_hour": 9,
+            "cookie_check_minute": 45,
+            "report_submit_hour": 20,
+            "report_submit_minute": 0,
+            "stats_push_hour": 21,
+            "stats_push_minute": 0,
+            "cache_cleanup_hour": 4,
+            "cache_cleanup_minute": 0,
+        },
+        "nav_monitor": {"push_hour": 8, "push_minute": 0},
+    })
+
+    assert _get_times(cfg) == (9, 45, 20, 0, 21, 0, 4, 0)
+
+
+def test_scheduler_nav_monitor_uses_independent_time_state():
+    from src.scheduler import _should_run_nav_monitor
+
+    cfg = Config({"nav_monitor": {"enabled": True, "push_hour": 8, "push_minute": 0}})
+    now = datetime(2026, 7, 8, 8, 0)
+
+    assert _should_run_nav_monitor(cfg, now, None) is True
+    assert _should_run_nav_monitor(cfg, now, "2026-07-08") is False
+
+    cfg.nav_monitor.enabled = False
+    assert _should_run_nav_monitor(cfg, now, None) is False
+
+
+def test_scheduler_nav_push_exception_does_not_notify_report_failure(monkeypatch):
+    import src.nav_monitor
+    import src.notifier
+    from src.scheduler import _run_nav_monitor_push
+
+    def fail_push(cfg):
+        raise RuntimeError("nav provider down")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("notify_report_failure should not be called")
+
+    monkeypatch.setattr(src.nav_monitor, "push_nav_report", fail_push)
+    monkeypatch.setattr(src.notifier, "notify_report_failure", fail_if_called)
+
+    _run_nav_monitor_push(Config({}))
