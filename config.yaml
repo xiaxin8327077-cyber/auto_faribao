@@ -73,3 +73,14 @@ scheduler:
   stats_push_minute: 38
   cache_cleanup_hour: 4
   cache_cleanup_minute: 0
+nav_monitor:
+  enabled: true
+  push_hour: 8
+  push_minute: 0
+  products:
+  - provider: citic_wealth
+    code: AF233276B
+    name: 慧盈象固收增强一年持有期5号B
+  - provider: citic_wealth
+    code: AF233262B
+    name: 慧盈象固收增强六个月持有期1号B
