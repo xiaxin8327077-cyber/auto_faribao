@@ -1,8 +1,34 @@
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import secrets
+import ssl
+import string
+import textwrap
+import time
+import urllib.parse
+import urllib.request
+from http.cookiejar import CookieJar
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Optional
+
+
+logger = logging.getLogger(__name__)
+
+
+class ProviderError(Exception):
+    pass
+
+
+PROVIDER_LABELS = {
+    "citic_wealth": "信银理财",
+    "nanyin_wealth": "南银理财",
+}
 
 
 @dataclass(frozen=True)
@@ -159,3 +185,419 @@ def _format_decimal(value) -> str:
 
 def _format_pct(value: Decimal) -> str:
     return f"{value.quantize(Decimal('0.0001'))}%"
+
+
+class WealthProvider:
+    provider = ""
+
+    def fetch_latest(self, product: NavProduct, **kwargs) -> list[NavRecord]:
+        raise NotImplementedError
+
+    def search_products(self, query: str) -> list[ProductCandidate]:
+        raise NotImplementedError
+
+    def get_product_identity(self, code: str) -> Optional[ProductCandidate]:
+        candidates = self.search_products(code)
+        for candidate in candidates:
+            if candidate.code.upper() == code.upper():
+                return candidate
+        return candidates[0] if candidates else None
+
+    def fetch_by_date(self, product: NavProduct, target_date: date) -> DateQueryResult:
+        records = self.fetch_latest(product, as_of=target_date)
+        eligible = [record for record in records if record.nav_date <= target_date]
+        if not eligible:
+            return DateQueryResult(target_date=target_date, exact=False, record=None)
+        record = eligible[0]
+        previous = next(
+            (item for item in records if item.nav_date < record.nav_date),
+            None,
+        )
+        return DateQueryResult(
+            target_date=target_date,
+            exact=record.nav_date == target_date,
+            record=record,
+            previous=previous,
+        )
+
+
+class CiticWealthProvider(WealthProvider):
+    provider = "citic_wealth"
+    SEARCH_PATH = "/cms.product/api/custom/productInfo/search"
+    DETAIL_PATH = "/cms.product/api/custom/productInfo/getTAProductDetail"
+    NAV_PATH = "/cms.product/api/custom/productInfo/getTAProductNav"
+
+    def __init__(self, client=None):
+        self.client = client or CiticHttpClient()
+
+    def fetch_latest(self, product: NavProduct, **kwargs) -> list[NavRecord]:
+        data = _unwrap_provider_response(
+            self.client.get_json(self.NAV_PATH, {"prodCode": product.code, "queryUnit": 1})
+        )
+        items = _first_list(data, "productNavPic", "list", "rows", "data")
+        records = [
+            self._record_from_item(item, product)
+            for item in items
+            if item
+        ]
+        return sorted(records, key=lambda item: item.nav_date, reverse=True)
+
+    def search_products(self, query: str) -> list[ProductCandidate]:
+        data = _unwrap_provider_response(
+            self.client.get_json(self.SEARCH_PATH, {"key": query})
+        )
+        items = data if isinstance(data, list) else _first_list(data, "list", "rows", "records", "data")
+        return [
+            self._candidate_from_item(item)
+            for item in items[:5]
+            if item
+        ]
+
+    def get_product_identity(self, code: str) -> Optional[ProductCandidate]:
+        exact = [
+            candidate for candidate in self.search_products(code)
+            if candidate.code.upper() == code.upper()
+        ]
+        if exact:
+            return exact[0]
+
+        data = _unwrap_provider_response(
+            self.client.get_json(self.DETAIL_PATH, {"prodCode": code, "prodType": 2})
+        )
+        return self._candidate_from_item(data) if data else None
+
+    def _record_from_item(self, item: dict, product: NavProduct) -> NavRecord:
+        return NavRecord(
+            provider=self.provider,
+            code=str(item.get("prodCode") or product.code),
+            name=str(item.get("prodNameShort") or item.get("prodName") or product.name),
+            nav_date=_parse_nav_date(item.get("navDate") or item.get("navDateStr")),
+            unit_nav=_parse_decimal(item.get("nav") or item.get("navStr")),
+            cumulative_nav=_optional_decimal(item.get("totalNav") or item.get("totalNavStr")),
+            source="citic_wealth",
+        )
+
+    def _candidate_from_item(self, item: dict) -> ProductCandidate:
+        return ProductCandidate(
+            provider=self.provider,
+            code=str(item.get("prodCode") or item.get("code") or ""),
+            name=str(item.get("prodNameShort") or item.get("prodName") or item.get("name") or ""),
+            register_code=str(item.get("registCode") or item.get("registerCode") or ""),
+            sales_code=str(item.get("prodCode") or ""),
+            latest_nav_date=_optional_nav_date(item.get("navDate") or item.get("navDateStr")),
+            latest_unit_nav=_optional_decimal(item.get("nav") or item.get("navStr")),
+            latest_cumulative_nav=_optional_decimal(item.get("totalNav") or item.get("totalNavStr")),
+        )
+
+
+class NanyinWealthProvider(WealthProvider):
+    provider = "nanyin_wealth"
+    DETAIL_PATH = "/eportal/ui?moduleId=5&portal.url=/portlet/article-data!queryProductDetail.portlet&TopModuelId=e7db4f2628cb40548f6101d71695ada2"
+    NAV_PATH = "/eportal/ui?moduleId=5&portal.url=/portlet/article-data!queryNetValueList.portlet&TopModuelId=e7db4f2628cb40548f6101d71695ada2"
+
+    def __init__(self, client=None):
+        self.client = client or NanyinHttpClient()
+
+    def fetch_latest(self, product: NavProduct, as_of: Optional[date] = None, **kwargs) -> list[NavRecord]:
+        end_date = as_of or date.today()
+        start_date = end_date - timedelta(days=120)
+        payload = {
+            "productCode": product.code,
+            "startDate": start_date.isoformat(),
+            "endDate": end_date.isoformat(),
+            "currentPage": 1,
+        }
+        data = self.client.post_encrypted_json(self.NAV_PATH, payload)
+        items = _first_list(data, "aaData", "result", "list", "rows", "data")
+        records = [
+            self._record_from_item(item, product)
+            for item in items
+            if isinstance(item, dict) and "$ref" not in item
+        ]
+        return sorted(records, key=lambda item: item.nav_date, reverse=True)
+
+    def search_products(self, query: str) -> list[ProductCandidate]:
+        candidate = self.get_product_identity(query)
+        return [candidate] if candidate else []
+
+    def get_product_identity(self, code: str) -> Optional[ProductCandidate]:
+        data = self.client.post_encrypted_json(self.DETAIL_PATH, {"productCode": code})
+        if not data:
+            return None
+        candidate = ProductCandidate(
+            provider=self.provider,
+            code=str(data.get("salesCode") or data.get("productCode") or code),
+            name=str(data.get("title") or data.get("productName") or ""),
+            register_code=str(data.get("financingRegisterCode") or data.get("registerCode") or ""),
+            sales_code=str(data.get("salesCode") or ""),
+        )
+        return self._with_latest_nav(candidate)
+
+    def _with_latest_nav(self, candidate: ProductCandidate) -> ProductCandidate:
+        try:
+            product = NavProduct(candidate.provider, candidate.code, candidate.name)
+            records = self.fetch_latest(product)
+            if not records:
+                return ProductCandidate(**{**candidate.__dict__, "nav_error": "暂无净值记录"})
+            latest = records[0]
+            return ProductCandidate(
+                **{
+                    **candidate.__dict__,
+                    "latest_nav_date": latest.nav_date,
+                    "latest_unit_nav": latest.unit_nav,
+                    "latest_cumulative_nav": latest.cumulative_nav,
+                }
+            )
+        except Exception as exc:
+            return ProductCandidate(**{**candidate.__dict__, "nav_error": str(exc)[:120]})
+
+    def _record_from_item(self, item: dict, product: NavProduct) -> NavRecord:
+        return NavRecord(
+            provider=self.provider,
+            code=str(item.get("productCode") or product.code),
+            name=product.name,
+            nav_date=_parse_nav_date(item.get("date") or item.get("navDate")),
+            unit_nav=_parse_decimal(item.get("netValue") or item.get("netAssetValue")),
+            cumulative_nav=_optional_decimal(item.get("cumulativeNetValue")),
+            source="nanyin_wealth",
+        )
+
+
+class CiticHttpClient:
+    BASE_URL = "https://wechat.citic-wealth.com"
+    SIGN_KEY = b"49bd72694d7e406fbcf738244e2b0803"
+
+    def __init__(self, timeout: int = 10):
+        self.timeout = timeout
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=_legacy_ssl_context())
+        )
+
+    def get_json(self, path: str, params: dict = None) -> dict:
+        url = self.BASE_URL + path
+        if params:
+            url = f"{url}?{urllib.parse.urlencode(params)}"
+        return _read_json(self.opener, url, self._headers(), timeout=self.timeout)
+
+    def _headers(self) -> dict:
+        timestamp = str(int(time.time() * 1000))
+        nonce = secrets.token_hex(16)
+        message = f"api:request:signature:{timestamp}:{nonce}".encode("utf-8")
+        return {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json,text/plain,*/*",
+            "channel": "h5_trade_service",
+            "X-Api-Request-Timestamp": timestamp,
+            "X-Api-Request-Nonce": nonce,
+            "X-Api-Request-Signature": hmac.new(
+                self.SIGN_KEY,
+                message,
+                hashlib.sha256,
+            ).hexdigest(),
+        }
+
+
+class NanyinHttpClient:
+    BASE_URL = "https://www.nanyinwealth.com"
+    PAGE_PATH = "/nanyinwealth/lccp/cpjz/index.html?id=NYZY000022"
+    PUBLIC_KEY_PATH = "/eportal/ui?moduleId=5&portal.url=/portlet/login-handle!publicKey.portlet&TopModuelId=e7db4f2628vb40548f6101d71695ada2&_=1672801141869"
+
+    def __init__(self, timeout: int = 10):
+        self.timeout = timeout
+        self.cookie_jar = CookieJar()
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=_legacy_ssl_context()),
+            urllib.request.HTTPCookieProcessor(self.cookie_jar),
+        )
+        self.server_public_key = ""
+
+    def post_encrypted_json(self, path: str, payload: dict) -> dict:
+        self._ensure_session()
+        aes_key = _random_aes_key()
+        body = {
+            "data": _aes_encrypt(payload, aes_key),
+            "aesKey": _rsa_encrypt(aes_key, self.server_public_key),
+            "timeStamp": _aes_encrypt(str(int(time.time() * 1000)), aes_key),
+        }
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        response = _read_json(
+            self.opener,
+            self.BASE_URL + path,
+            self._headers("application/json;charset=utf-8"),
+            data=data,
+            timeout=self.timeout,
+        )
+        if response.get("errorMessage"):
+            raise ProviderError(response["errorMessage"])
+        encrypted = ((response.get("data") or {}).get("data") if isinstance(response.get("data"), dict) else "")
+        if not encrypted:
+            return response.get("data") or response
+        plain = _aes_decrypt(encrypted, aes_key)
+        try:
+            return json.loads(plain)
+        except json.JSONDecodeError:
+            raise ProviderError("南银理财响应解密后不是有效 JSON")
+
+    def _ensure_session(self):
+        if self.server_public_key:
+            return
+        _read_text(
+            self.opener,
+            self.BASE_URL + self.PAGE_PATH,
+            self._headers("text/html"),
+            timeout=self.timeout,
+        )
+        response = _read_json(
+            self.opener,
+            self.BASE_URL + self.PUBLIC_KEY_PATH,
+            self._headers("application/json"),
+            timeout=self.timeout,
+        )
+        key = response.get("data")
+        if not key:
+            raise ProviderError("南银理财未返回服务端公钥")
+        self.server_public_key = key
+
+    def _headers(self, content_type: str = "") -> dict:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json,text/javascript,*/*;q=0.01",
+            "Referer": self.BASE_URL + self.PAGE_PATH,
+        }
+        if content_type:
+            headers["Content-Type"] = content_type
+        return headers
+
+
+def get_provider(provider: str) -> WealthProvider:
+    if provider == "citic_wealth":
+        return CiticWealthProvider()
+    if provider == "nanyin_wealth":
+        return NanyinWealthProvider()
+    raise ProviderError(f"不支持的理财机构：{provider}")
+
+
+def _unwrap_provider_response(response: dict):
+    if not isinstance(response, dict):
+        return response
+    code = response.get("code")
+    if code not in (None, "0000", 0, "0"):
+        raise ProviderError(str(response.get("msg") or response.get("message") or code))
+    return response.get("data", response)
+
+
+def _first_list(data, *keys: str) -> list:
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _parse_nav_date(value) -> date:
+    if isinstance(value, date):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        raise ProviderError("净值日期为空")
+    raw = raw.replace(".", "-").replace("/", "-")
+    if re.fullmatch(r"\d{8}", raw):
+        return datetime.strptime(raw, "%Y%m%d").date()
+    return date.fromisoformat(raw[:10])
+
+
+def _optional_nav_date(value) -> Optional[date]:
+    if value in (None, ""):
+        return None
+    try:
+        return _parse_nav_date(value)
+    except Exception:
+        return None
+
+
+def _parse_decimal(value) -> Decimal:
+    if value in (None, ""):
+        raise ProviderError("净值为空")
+    return Decimal(str(value).replace(",", "").strip())
+
+
+def _optional_decimal(value) -> Optional[Decimal]:
+    if value in (None, ""):
+        return None
+    try:
+        return _parse_decimal(value)
+    except Exception:
+        return None
+
+
+def _legacy_ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+    return context
+
+
+def _read_json(opener, url: str, headers: dict, data: bytes = None, timeout: int = 10) -> dict:
+    text = _read_text(opener, url, headers, data=data, timeout=timeout)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ProviderError(f"接口返回不是有效 JSON：{exc}") from exc
+
+
+def _read_text(opener, url: str, headers: dict, data: bytes = None, timeout: int = 10) -> str:
+    method = "POST" if data is not None else "GET"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with opener.open(request, timeout=timeout) as response:
+        raw = response.read()
+        charset = response.headers.get_content_charset() or "utf-8"
+        return raw.decode(charset, "replace")
+
+
+def _random_aes_key() -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(16))
+
+
+def _aes_encrypt(payload, key: str) -> str:
+    try:
+        from Crypto.Cipher import AES
+        from Crypto.Util.Padding import pad
+    except Exception as exc:
+        raise ProviderError("缺少 pycryptodome，无法访问南银理财接口") from exc
+
+    if not isinstance(payload, str):
+        payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    cipher = AES.new(key.encode("utf-8"), AES.MODE_ECB)
+    return base64.b64encode(cipher.encrypt(pad(payload.encode("utf-8"), 16))).decode("ascii")
+
+
+def _aes_decrypt(payload: str, key: str) -> str:
+    try:
+        from Crypto.Cipher import AES
+        from Crypto.Util.Padding import unpad
+    except Exception as exc:
+        raise ProviderError("缺少 pycryptodome，无法访问南银理财接口") from exc
+
+    cipher = AES.new(key.encode("utf-8"), AES.MODE_ECB)
+    return unpad(cipher.decrypt(base64.b64decode(payload)), 16).decode("utf-8", "replace")
+
+
+def _rsa_encrypt(payload: str, public_key: str) -> str:
+    try:
+        from Crypto.Cipher import PKCS1_v1_5
+        from Crypto.PublicKey import RSA
+    except Exception as exc:
+        raise ProviderError("缺少 pycryptodome，无法访问南银理财接口") from exc
+
+    if "BEGIN PUBLIC KEY" not in public_key:
+        public_key = (
+            "-----BEGIN PUBLIC KEY-----\n"
+            + "\n".join(textwrap.wrap(public_key, 64))
+            + "\n-----END PUBLIC KEY-----"
+        )
+    cipher = PKCS1_v1_5.new(RSA.import_key(public_key))
+    return base64.b64encode(cipher.encrypt(payload.encode("utf-8"))).decode("ascii")

@@ -3,7 +3,9 @@ from decimal import Decimal
 
 from src.config import Config, save_config
 from src.nav_monitor import (
+    CiticWealthProvider,
     DateQueryResult,
+    NanyinWealthProvider,
     NavProduct,
     NavRecord,
     ProductNavResult,
@@ -128,3 +130,84 @@ def test_date_miss_report_format():
     assert "查询日期：2026-07-02" in text
     assert "状态：该日未披露" in text
     assert "最近披露：2026-06-26  1.000000" in text
+
+
+def test_citic_provider_parses_history_and_candidates():
+    class FakeCiticClient:
+        def get_json(self, path, params):
+            if path.endswith("/search"):
+                return {
+                    "code": "0000",
+                    "data": [
+                        {
+                            "prodCode": "AF233276B",
+                            "prodNameShort": "慧盈象固收增强一年持有期5号B",
+                            "registCode": "Z7002623000809",
+                            "navDate": "20260707",
+                            "nav": "1.0780",
+                            "totalNav": "1.0780",
+                        }
+                    ],
+                }
+            return {
+                "code": "0000",
+                "data": {
+                    "productNavPic": [
+                        {"prodCode": "AF233276B", "navDate": "20260706", "nav": "1.0781"},
+                        {"prodCode": "AF233276B", "navDate": "20260707", "nav": "1.0780"},
+                    ]
+                },
+            }
+
+    provider = CiticWealthProvider(client=FakeCiticClient())
+    product = NavProduct("citic_wealth", "AF233276B", "慧盈象固收增强一年持有期5号B")
+
+    records = provider.fetch_latest(product)
+    candidates = provider.search_products("AF233276B")
+
+    assert [r.nav_date for r in records[:2]] == [date(2026, 7, 7), date(2026, 7, 6)]
+    assert records[0].unit_nav == Decimal("1.0780")
+    assert candidates[0].code == "AF233276B"
+    assert candidates[0].latest_nav_date == date(2026, 7, 7)
+    assert candidates[0].latest_unit_nav == Decimal("1.0780")
+
+
+def test_nanyin_provider_parses_encrypted_payload_results():
+    class FakeNanyinClient:
+        def post_encrypted_json(self, path, payload):
+            if "queryProductDetail" in path:
+                return {
+                    "salesCode": "NYZY000022",
+                    "title": "南银理财致远一年定开19期A份额",
+                    "financingRegisterCode": "Z7003226000190",
+                }
+            return {
+                "aaData": [
+                    {
+                        "productCode": "NYZY000022",
+                        "date": "2026-07-03",
+                        "netValue": "1.0006",
+                        "cumulativeNetValue": "1.0006",
+                    },
+                    {
+                        "productCode": "NYZY000022",
+                        "date": "2026-06-26",
+                        "netValue": "1.0000",
+                        "cumulativeNetValue": "1.0000",
+                    },
+                ]
+            }
+
+    provider = NanyinWealthProvider(client=FakeNanyinClient())
+    product = NavProduct("nanyin_wealth", "NYZY000022", "南银理财致远一年定开19期A份额")
+
+    candidate = provider.get_product_identity("NYZY000022")
+    records = provider.fetch_latest(product, as_of=date(2026, 7, 8))
+    missed = provider.fetch_by_date(product, date(2026, 7, 2))
+
+    assert candidate.code == "NYZY000022"
+    assert candidate.register_code == "Z7003226000190"
+    assert records[0].nav_date == date(2026, 7, 3)
+    assert records[0].unit_nav == Decimal("1.0006")
+    assert missed.exact is False
+    assert missed.record.nav_date == date(2026, 6, 26)
