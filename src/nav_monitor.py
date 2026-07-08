@@ -30,6 +30,16 @@ PROVIDER_LABELS = {
     "citic_wealth": "信银理财",
     "nanyin_wealth": "南银理财",
 }
+PROVIDER_ALIASES = {
+    "信银": "citic_wealth",
+    "信银理财": "citic_wealth",
+    "citic": "citic_wealth",
+    "citic_wealth": "citic_wealth",
+    "南银": "nanyin_wealth",
+    "南银理财": "nanyin_wealth",
+    "nanyin": "nanyin_wealth",
+    "nanyin_wealth": "nanyin_wealth",
+}
 
 DEFAULT_PENDING_NAV_ADD_PATH = "/tmp/nav_monitor_pending_add.json"
 PENDING_NAV_ADD_TTL_SECONDS = 300
@@ -84,6 +94,18 @@ class ProductNavResult:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class NavCommand:
+    action: str
+    target_date: Optional[date] = None
+    provider: str = ""
+    query: str = ""
+    code: str = ""
+    index: int = 0
+    hour: int = 0
+    minute: int = 0
+
+
 def parse_nav_query_date(text: str, base_date: Optional[date] = None) -> Optional[date]:
     base_date = base_date or date.today()
     content = (text or "").strip()
@@ -104,11 +126,69 @@ def parse_nav_query_date(text: str, base_date: Optional[date] = None) -> Optiona
         return None
 
 
+def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[NavCommand]:
+    content = (text or "").strip()
+    if not content:
+        return None
+
+    match = re.fullmatch(r"确认添加净值产品\s+(\d+)", content)
+    if match:
+        return NavCommand(action="confirm_add", index=int(match.group(1)))
+    if content == "取消添加净值产品":
+        return NavCommand(action="cancel_add")
+
+    if "净值" not in content:
+        return None
+
+    if content == "查看净值配置":
+        return NavCommand(action="view_config")
+    if content == "开启净值监控":
+        return NavCommand(action="enable")
+    if content == "关闭净值监控":
+        return NavCommand(action="disable")
+
+    match = re.fullmatch(r"设置净值推送时间\s+([01]?\d|2[0-3]):([0-5]\d)", content)
+    if match:
+        return NavCommand(
+            action="set_time",
+            hour=int(match.group(1)),
+            minute=int(match.group(2)),
+        )
+
+    match = re.fullmatch(r"添加净值产品\s+(\S+)\s+(.+)", content)
+    if match:
+        provider = _normalize_provider_alias(match.group(1))
+        if not provider:
+            return NavCommand(action="unknown_provider", query=match.group(2).strip())
+        return NavCommand(
+            action="add_product",
+            provider=provider,
+            query=match.group(2).strip(),
+        )
+
+    match = re.fullmatch(r"删除净值产品\s+(\S+)", content)
+    if match:
+        return NavCommand(action="delete_product", code=match.group(1).strip())
+
+    target_date = parse_nav_query_date(content, base_date=base_date)
+    if target_date:
+        return NavCommand(action="query_date", target_date=target_date)
+
+    if content in ("立即查询净值", "查询净值", "净值监控"):
+        return NavCommand(action="query_latest")
+
+    return None
+
+
 def calculate_change(latest: NavRecord, previous: NavRecord) -> tuple[Decimal, Optional[Decimal]]:
     delta = latest.unit_nav - previous.unit_nav
     if previous.unit_nav == 0:
         return delta, None
     return delta, delta / previous.unit_nav * Decimal("100")
+
+
+def _normalize_provider_alias(value: str) -> str:
+    return PROVIDER_ALIASES.get((value or "").strip().lower()) or PROVIDER_ALIASES.get((value or "").strip())
 
 
 def format_nav_report(
@@ -309,6 +389,86 @@ def confirm_pending_nav_add(
     )
     clear_pending_nav_add(pending_path)
     return True, f"已添加净值产品：{candidate.name or candidate.code}"
+
+
+def query_nav_products(cfg, target_date: Optional[date] = None) -> list[ProductNavResult]:
+    products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
+    results = []
+    for item in products:
+        product = NavProduct(
+            provider=getattr(item, "provider", ""),
+            code=getattr(item, "code", ""),
+            name=getattr(item, "name", "") or getattr(item, "code", ""),
+        )
+        try:
+            provider = get_provider(product.provider)
+            if target_date:
+                query_result = provider.fetch_by_date(product, target_date)
+                results.append(ProductNavResult(product=product, query_result=query_result))
+            else:
+                records = provider.fetch_latest(product)
+                latest = records[0] if records else None
+                previous = records[1] if len(records) > 1 else None
+                results.append(ProductNavResult(product=product, latest=latest, previous=previous))
+        except Exception as exc:
+            logger.error("NAV query failed for %s %s: %s", product.provider, product.code, exc, exc_info=True)
+            results.append(ProductNavResult(product=product, error=str(exc)))
+    return results
+
+
+def build_nav_report(
+    cfg,
+    target_date: Optional[date] = None,
+    generated_at: Optional[datetime] = None,
+    title: str = None,
+) -> str:
+    products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
+    if not products:
+        return "当前未配置净值产品，请先发送：添加净值产品 信银 AF233276B"
+    if not title:
+        title = "理财净值查询" if target_date else "理财净值日报"
+    return format_nav_report(
+        query_nav_products(cfg, target_date=target_date),
+        title=title,
+        generated_at=generated_at,
+        target_date=target_date,
+    )
+
+
+def push_nav_report(cfg, target_date: Optional[date] = None, to_user: str = None) -> str:
+    from src.wechat_notifier import send_markdown
+
+    report = build_nav_report(cfg, target_date=target_date)
+    send_markdown(cfg.wechat, report, to_user)
+    return report
+
+
+def format_nav_config(cfg) -> str:
+    nav = cfg.nav_monitor
+    status = "开启" if nav.enabled else "关闭"
+    lines = [
+        "# 净值监控配置",
+        f"状态：{status}",
+        f"推送时间：{nav.push_hour:02d}:{nav.push_minute:02d}",
+        "",
+        "产品：",
+    ]
+    if not nav.products:
+        lines.append("- 暂无")
+    for index, product in enumerate(nav.products, 1):
+        label = PROVIDER_LABELS.get(product.provider, product.provider)
+        lines.append(f"{index}. {label} {product.code} {product.name}")
+    return "\n".join(lines)
+
+
+def delete_nav_product(cfg, code: str) -> tuple[bool, str]:
+    code_upper = (code or "").strip().upper()
+    products = getattr(cfg.nav_monitor, "products", [])
+    for index, product in enumerate(list(products)):
+        if getattr(product, "code", "").upper() == code_upper:
+            removed = products.pop(index)
+            return True, f"已删除净值产品：{getattr(removed, 'name', '') or code_upper}"
+    return False, f"未找到净值产品：{code}"
 
 
 def _candidate_to_dict(candidate: ProductCandidate) -> dict:
