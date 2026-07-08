@@ -143,7 +143,7 @@ def load_config(path: str) -> Config:
             file=sys.stderr,
         )
 
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     if data is None:

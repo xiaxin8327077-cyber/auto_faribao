@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from src.config import Config, save_config
+from src.config import Config, load_config, save_config
 from src.nav_monitor import (
     CiticWealthProvider,
     DateQueryResult,
@@ -54,6 +54,24 @@ def test_save_config_preserves_nav_monitor(tmp_path):
     assert data["nav_monitor"]["push_minute"] == 30
     assert data["nav_monitor"]["products"][0]["provider"] == "citic_wealth"
     assert data["nav_monitor"]["products"][0]["code"] == "AF233276B"
+
+
+def test_load_config_reads_utf8_nav_product_names(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+nav_monitor:
+  products:
+  - provider: citic_wealth
+    code: AF233276B
+    name: 慧盈象固收增强一年持有期5号B
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(str(path))
+
+    assert cfg.nav_monitor.products[0].name == "慧盈象固收增强一年持有期5号B"
 
 
 def test_parse_relative_dates():
