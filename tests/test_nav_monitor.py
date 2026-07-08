@@ -29,6 +29,14 @@ def test_nav_monitor_config_defaults_to_enabled_with_0800():
     assert cfg.nav_monitor.products == []
 
 
+def test_config_defaults_keep_readable_chinese_text():
+    cfg = Config({})
+
+    assert cfg.source.name_field == "任务名称"
+    assert cfg.source.person_names == ["刘非凡"]
+    assert "这是4位数字验证码" in cfg.captcha.prompt
+
+
 def test_save_config_preserves_nav_monitor(tmp_path):
     cfg = Config({
         "nav_monitor": {

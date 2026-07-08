@@ -25,6 +25,15 @@ class SourceConfig:
         # Filter values
         self.person_names = data.get("person_names", ["刘非凡"])
         self.status_values = data.get("status_values", ["进行中", "已完成"])
+        # Normalize legacy mojibake defaults when config omits these fields.
+        self.name_field = data.get("name_field", "任务名称")
+        self.start_field = data.get("start_field", "启动时间")
+        self.end_field = data.get("end_field", "预计完成时间")
+        self.person_field = data.get("person_field", "负责人")
+        self.status_field = data.get("status_field", "任务状态")
+        self.desc_field = data.get("desc_field", "任务描述")
+        self.person_names = data.get("person_names", ["刘非凡"])
+        self.status_values = data.get("status_values", ["进行中", "已完成"])
         # Cookies
         self.low_login_enable = data.get("low_login_enable", "1")
         self.utype = data.get("utype", "ww")
@@ -62,6 +71,13 @@ class CaptchaConfig:
             "这是4位数字验证码，请仔细识别后只返回4位数字，不要其他内容。\n"
             "识别规则：长线先排除，字符分四区；贯穿线条是干扰，成形才算数字；"
             "闭圈辨0和8，带尾巴多是9；右弧常为3，斜竖多1或7；折角看作4，上弯下收是2").strip()
+
+        if not data.get("prompt"):
+            self.prompt = (
+                "这是4位数字验证码，请仔细识别后只返回4位数字，不要其他内容。\n"
+                "识别规则：长线先排除，字符分四区；贯穿线条是干扰，成形才算数字；"
+                "闭圈辨0和8，带尾巴多是9；右弧常为3，斜竖多1或7；折角看作4，上弯下收是2"
+            ).strip()
 
 
 class WechatConfig:
