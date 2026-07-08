@@ -86,6 +86,39 @@ class SchedulerConfig:
         self.cache_cleanup_minute = int(data.get("cache_cleanup_minute", 0))
 
 
+class NavProductConfig:
+    def __init__(self, data: dict):
+        self.provider = data.get("provider", "")
+        self.code = data.get("code", "")
+        self.name = data.get("name", "")
+
+    def to_dict(self) -> dict:
+        return {
+            "provider": self.provider,
+            "code": self.code,
+            "name": self.name,
+        }
+
+
+class NavMonitorConfig:
+    def __init__(self, data: dict):
+        self.enabled = bool(data.get("enabled", True))
+        self.push_hour = int(data.get("push_hour", 8))
+        self.push_minute = int(data.get("push_minute", 0))
+        self.products = [
+            item if isinstance(item, NavProductConfig) else NavProductConfig(item)
+            for item in data.get("products", [])
+        ]
+
+    def to_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "push_hour": self.push_hour,
+            "push_minute": self.push_minute,
+            "products": [item.to_dict() for item in self.products],
+        }
+
+
 class Config:
     def __init__(self, data: dict):
         self.source = SourceConfig(data.get("source", {}))
@@ -93,6 +126,7 @@ class Config:
         self.captcha = CaptchaConfig(data.get("captcha", {}))
         self.wechat = WechatConfig(data.get("wechat", {}))
         self.scheduler = SchedulerConfig(data.get("scheduler", {}))
+        self.nav_monitor = NavMonitorConfig(data.get("nav_monitor", {}))
         self.host = data.get("host", "0.0.0.0")
         self.port = int(data.get("port", 8080))
 
@@ -130,6 +164,7 @@ def save_config(path: str, cfg: Config, original_data: dict = None) -> dict:
     data["scheduler"]["stats_push_minute"] = cfg.scheduler.stats_push_minute
     data["scheduler"]["cache_cleanup_hour"] = cfg.scheduler.cache_cleanup_hour
     data["scheduler"]["cache_cleanup_minute"] = cfg.scheduler.cache_cleanup_minute
+    data["nav_monitor"] = cfg.nav_monitor.to_dict()
 
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
