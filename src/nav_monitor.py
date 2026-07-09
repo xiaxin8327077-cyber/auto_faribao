@@ -51,6 +51,22 @@ PERIOD_COMMANDS = {
     "半年度净值": "half_year",
     "查询年度净值": "year",
     "年度净值": "year",
+    "查询近7天净值": "rolling_7d",
+    "近7天净值": "rolling_7d",
+    "查询近一月净值": "rolling_1m",
+    "近一月净值": "rolling_1m",
+    "查询近1月净值": "rolling_1m",
+    "近1月净值": "rolling_1m",
+    "查询近三月净值": "rolling_3m",
+    "近三月净值": "rolling_3m",
+    "查询近3月净值": "rolling_3m",
+    "近3月净值": "rolling_3m",
+    "查询近半年净值": "rolling_6m",
+    "近半年净值": "rolling_6m",
+    "查询近一年净值": "rolling_1y",
+    "近一年净值": "rolling_1y",
+    "查询近1年净值": "rolling_1y",
+    "近1年净值": "rolling_1y",
 }
 PERIOD_LABELS = {
     "week": "周度",
@@ -58,7 +74,20 @@ PERIOD_LABELS = {
     "quarter": "季度",
     "half_year": "半年度",
     "year": "年度",
+    "rolling_7d": "近7天",
+    "rolling_1m": "近一月",
+    "rolling_3m": "近三月",
+    "rolling_6m": "近半年",
+    "rolling_1y": "近一年",
 }
+ROLLING_PERIOD_DAYS = {
+    "rolling_7d": 7,
+    "rolling_1m": 30,
+    "rolling_3m": 90,
+    "rolling_6m": 180,
+    "rolling_1y": 365,
+}
+PERIOD_FETCH_LOOKBACK_DAYS = 14
 
 DEFAULT_PENDING_NAV_ADD_PATH = "/tmp/nav_monitor_pending_add.json"
 PENDING_NAV_ADD_TTL_SECONDS = 300
@@ -276,6 +305,8 @@ def calculate_change(latest: NavRecord, previous: NavRecord) -> tuple[Decimal, O
 
 
 def calculate_period_start(period: str, base_date: date) -> date:
+    if period in ROLLING_PERIOD_DAYS:
+        return base_date - timedelta(days=ROLLING_PERIOD_DAYS[period])
     if period == "week":
         return base_date - timedelta(days=base_date.weekday())
     if period == "month":
@@ -315,40 +346,36 @@ def build_nav_period_report(
         lines.append("当前未配置净值产品，请先发送：添加净值产品 信银 AF233276B")
         return "\n".join(lines)
 
-    for item in products:
+    fetch_start_date = start_date - timedelta(days=PERIOD_FETCH_LOOKBACK_DAYS)
+    for index, item in enumerate(products, 1):
         product = NavProduct(
             provider=getattr(item, "provider", ""),
             code=getattr(item, "code", ""),
             name=getattr(item, "name", "") or getattr(item, "code", ""),
         )
         lines.append("")
-        lines.append(f"### {_format_product_title(product)}")
+        lines.append(f"> **{index}. {_format_product_title(product)}**")
         try:
             provider = get_provider(product.provider)
-            records = provider.fetch_latest(product, as_of=base_date, start_date=start_date)
+            records = provider.fetch_latest(product, as_of=base_date, start_date=fetch_start_date)
             latest = _nearest_record_on_or_before(records, base_date)
             baseline = _nearest_record_on_or_before(records, start_date)
             if not latest:
-                lines.append("**状态**：暂无最新净值")
+                lines.append("状态：暂无最新净值")
                 continue
-            lines.append(f"**最新净值**：{_format_record(latest)}")
             if not baseline:
-                lines.append("**状态**：周期起点附近数据不足，无法计算收益")
+                lines.append(
+                    f"期末：{_format_period_endpoint(latest)}｜状态：周期起点附近数据不足，无法计算收益"
+                )
                 continue
 
-            lines.append(f"**期初净值**：{_format_record(baseline)}")
             delta, delta_pct = calculate_change(latest, baseline)
-            lines.append(f"**净值变动**：{_format_colored_change(delta, delta_pct)}")
-
             shares = _optional_decimal(getattr(item, "shares", None))
-            if shares is not None:
-                amount = delta * shares
-                lines.append(f"**持仓份额**：{_format_shares(shares)}")
-                lines.append(f"**估算收益**：{_wechat_color(f'{_format_money(amount)} 元', _change_color(amount))}")
+            _append_compact_period_summary(lines, latest, baseline, delta, delta_pct, shares)
         except Exception as exc:
             logger.error("NAV period stats failed for %s %s: %s", product.provider, product.code, exc, exc_info=True)
-            lines.append("**状态**：统计失败")
-            lines.append(f"**原因**：{exc}")
+            lines.append("状态：统计失败")
+            lines.append(f"原因：{exc}")
 
     return "\n".join(lines)
 
@@ -439,6 +466,31 @@ def _append_compact_latest_summary(lines: list[str], result: ProductNavResult):
         parts.append("暂无上期净值")
 
     lines.append("｜".join(parts))
+
+
+def _append_compact_period_summary(
+    lines: list[str],
+    latest: NavRecord,
+    baseline: NavRecord,
+    delta: Decimal,
+    delta_pct: Optional[Decimal],
+    shares: Optional[Decimal] = None,
+):
+    parts = []
+    shares = _optional_decimal(shares)
+    if shares is not None:
+        parts.append(f"份额：{_format_compact_shares(shares)}")
+    parts.append(f"期初：{_format_period_endpoint(baseline)}")
+    parts.append(f"期末：{_format_period_endpoint(latest)}")
+    parts.append(f"涨跌：{_format_colored_change(delta, delta_pct)}")
+    if shares is not None:
+        parts.append(f"收益：{_format_colored_money(delta * shares)}")
+
+    lines.append("｜".join(parts))
+
+
+def _format_period_endpoint(record: NavRecord) -> str:
+    return f"{_format_decimal(record.unit_nav)}（{record.nav_date:%Y-%m-%d}）"
 
 
 def _append_date_query(lines: list[str], query: DateQueryResult, shares: Optional[Decimal] = None):
@@ -595,7 +647,8 @@ def _format_shares(value: Decimal) -> str:
 
 def _format_compact_shares(value: Decimal) -> str:
     text = _format_shares(value)
-    return text + ("\u3000" * max(0, len("100000.00") - len(text)))
+    width = max(len("100000.00"), len(text))
+    return f"`{text.rjust(width)}`"
 
 
 def build_add_product_candidates(provider: "WealthProvider", query: str, limit: int = 5) -> list[ProductCandidate]:

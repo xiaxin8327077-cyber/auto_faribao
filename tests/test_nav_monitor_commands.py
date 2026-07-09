@@ -64,6 +64,11 @@ def test_parse_nav_period_and_shares_commands():
     quarterly = parse_nav_command("查询季度净值")
     half_year = parse_nav_command("查询半年度净值")
     yearly = parse_nav_command("查询年度净值")
+    rolling_7d = parse_nav_command("查询近7天净值")
+    rolling_1m = parse_nav_command("查询近一月净值")
+    rolling_3m = parse_nav_command("查询近三月净值")
+    rolling_6m = parse_nav_command("查询近半年净值")
+    rolling_1y = parse_nav_command("查询近一年净值")
     shares = parse_nav_command("设置净值份额 AF233276B 10000.50")
 
     assert weekly.action == "query_period"
@@ -72,6 +77,11 @@ def test_parse_nav_period_and_shares_commands():
     assert quarterly.period == "quarter"
     assert half_year.period == "half_year"
     assert yearly.period == "year"
+    assert rolling_7d.period == "rolling_7d"
+    assert rolling_1m.period == "rolling_1m"
+    assert rolling_3m.period == "rolling_3m"
+    assert rolling_6m.period == "rolling_6m"
+    assert rolling_1y.period == "rolling_1y"
     assert shares.action == "set_shares"
     assert shares.code == "AF233276B"
     assert str(shares.shares) == "10000.50"

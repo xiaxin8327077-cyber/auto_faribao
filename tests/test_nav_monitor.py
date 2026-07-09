@@ -110,6 +110,16 @@ def test_calculate_period_start_uses_natural_periods():
     assert calculate_period_start("year", base) == date(2026, 1, 1)
 
 
+def test_calculate_period_start_supports_rolling_day_periods():
+    base = date(2026, 7, 9)
+
+    assert calculate_period_start("rolling_7d", base) == date(2026, 7, 2)
+    assert calculate_period_start("rolling_1m", base) == date(2026, 6, 9)
+    assert calculate_period_start("rolling_3m", base) == date(2026, 4, 10)
+    assert calculate_period_start("rolling_6m", base) == date(2026, 1, 10)
+    assert calculate_period_start("rolling_1y", base) == date(2025, 7, 9)
+
+
 def test_calculate_change_and_latest_report_format():
     product = NavProduct("citic_wealth", "AF233276B", "慧盈象固收增强一年持有期5号B")
     latest = NavRecord(
@@ -211,10 +221,9 @@ def test_latest_report_includes_estimated_total_and_product_profit():
     assert "**持仓份额**" not in text
     assert "**预估收益**" not in text
     assert "> **1. 慧盈象固收增强一年持有期5号B（AF233276B）**" in text
-    pad4 = "\u3000" * 4
-    assert f"份额：10000{pad4}｜净值：1.078000（2026-07-07）｜涨跌：<font color=\"info\">-0.000100（-0.0093%）</font>｜收益：<font color=\"info\">-1.00 元</font>" in text
+    assert "份额：`    10000`｜净值：1.078000（2026-07-07）｜涨跌：<font color=\"info\">-0.000100（-0.0093%）</font>｜收益：<font color=\"info\">-1.00 元</font>" in text
     assert "> **2. 慧盈象固收增强六个月持有期1号B（AF233262B）**" in text
-    assert f"份额：20000{pad4}｜净值：1.070800（2026-07-07）｜涨跌：<font color=\"warning\">+0.000500（+0.0467%）</font>｜收益：<font color=\"warning\">10.00 元</font>" in text
+    assert "份额：`    20000`｜净值：1.070800（2026-07-07）｜涨跌：<font color=\"warning\">+0.000500（+0.0467%）</font>｜收益：<font color=\"warning\">10.00 元</font>" in text
 
 
 def test_latest_report_pads_compact_columns_for_alignment():
@@ -239,10 +248,8 @@ def test_latest_report_pads_compact_columns_for_alignment():
         generated_at=datetime(2026, 7, 8, 8, 0),
     )
 
-    pad8 = "\u3000" * 8
-    pad4 = "\u3000" * 4
-    assert f"份额：1{pad8}｜净值：1.000100（2026-07-07）" in text
-    assert f"份额：20000{pad4}｜净值：1.000100（2026-07-07）" in text
+    assert "份额：`        1`｜净值：1.000100（2026-07-07）" in text
+    assert "份额：`    20000`｜净值：1.000100（2026-07-07）" in text
 
 
 def test_date_miss_report_format():
@@ -334,12 +341,57 @@ def test_period_report_includes_return_and_amount(monkeypatch):
     assert "> **周期起点**：2026-07-01" in text
     assert "> **产品数量**" not in text
     assert "**机构**" not in text
-    assert "### 慧盈象固收增强一年持有期5号B（AF233276B）" in text
+    assert "> **1. 慧盈象固收增强一年持有期5号B（AF233276B）**" in text
     assert "**产品代码**" not in text
-    assert "**期初净值**：2026-07-01  1.076700" in text
-    assert "**净值变动**：<font color=\"warning\">+0.001300（+0.1207%）</font>" in text
-    assert "**持仓份额**：10000" in text
-    assert "**估算收益**：<font color=\"warning\">13.00 元</font>" in text
+    assert "**期初净值**" not in text
+    assert "**净值变动**" not in text
+    assert "**持仓份额**" not in text
+    assert "**估算收益**" not in text
+    assert "份额：`    10000`｜期初：1.076700（2026-07-01）｜期末：1.078000（2026-07-07）｜涨跌：<font color=\"warning\">+0.001300（+0.1207%）</font>｜收益：<font color=\"warning\">13.00 元</font>" in text
+
+
+def test_period_report_fetches_before_natural_start_for_baseline(monkeypatch):
+    calls = []
+    product_name = "南银理财悦稳最低持有91天3号-B份额"
+
+    class FakeProvider:
+        def fetch_latest(self, product, **kwargs):
+            calls.append(kwargs)
+            records = [
+                NavRecord("nanyin_wealth", "A32069", product_name, date(2026, 7, 8), Decimal("1.050881")),
+            ]
+            if kwargs["start_date"] <= date(2025, 12, 31):
+                records.append(
+                    NavRecord("nanyin_wealth", "A32069", product_name, date(2025, 12, 31), Decimal("1.041491"))
+                )
+            return records
+
+    monkeypatch.setattr("src.nav_monitor.get_provider", lambda provider: FakeProvider())
+    cfg = Config({
+        "nav_monitor": {
+            "products": [
+                {
+                    "provider": "nanyin_wealth",
+                    "code": "A32069",
+                    "name": product_name,
+                    "shares": 101423.76,
+                }
+            ]
+        }
+    })
+
+    text = build_nav_period_report(
+        cfg,
+        "year",
+        base_date=date(2026, 7, 9),
+        generated_at=datetime(2026, 7, 9, 10, 38),
+    )
+
+    assert calls[0]["start_date"] < date(2026, 1, 1)
+    assert "> **周期起点**：2026-01-01" in text
+    assert "期初：1.041491（2025-12-31）" in text
+    assert "期末：1.050881（2026-07-08）" in text
+    assert "｜收益：<font color=\"warning\">" in text
 
 
 def test_citic_provider_parses_history_and_candidates():
