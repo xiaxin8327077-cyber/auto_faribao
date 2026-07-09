@@ -545,7 +545,7 @@ AF233262B 20000
 2️⃣ 日报自动提交：{s.report_submit_hour:02d}:{s.report_submit_minute:02d}（工作日）
 3️⃣ 统计自动推送：{s.stats_push_hour:02d}:{s.stats_push_minute:02d}（周日/月末）
 4️⃣ 缓存自动清理：{s.cache_cleanup_hour:02d}:{s.cache_cleanup_minute:02d}（每月1号）
-5️⃣ 净值自动推送：{cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d}（每日，{'开启' if cfg.nav_monitor.enabled else '关闭'}）
+5️⃣ 净值自动推送：{cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d}（工作日，{'开启' if cfg.nav_monitor.enabled else '关闭'}）
 
 📝 修改指令：
 • 设置Cookies检查时间 09:45
@@ -1265,7 +1265,7 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         _persist_runtime_config(cfg)
         _send_wechat_text(
             cfg.wechat,
-            f"✅ 净值推送时间已修改\n\n新时间：{nav_command.hour:02d}:{nav_command.minute:02d}\n立即生效，重启后仍然有效。",
+            f"✅ 净值推送时间已修改\n\n新时间：{nav_command.hour:02d}:{nav_command.minute:02d}（工作日）\n立即生效，重启后仍然有效。",
             from_user_id,
         )
         return

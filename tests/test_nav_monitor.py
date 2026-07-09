@@ -586,6 +586,18 @@ def test_scheduler_nav_monitor_uses_independent_time_state():
     assert _should_run_nav_monitor(cfg, now, None) is False
 
 
+def test_scheduler_nav_monitor_runs_only_on_workday(monkeypatch):
+    import src.scheduler
+    from src.scheduler import _should_run_nav_monitor
+
+    cfg = Config({"nav_monitor": {"enabled": True, "push_hour": 8, "push_minute": 0}})
+    now = datetime(2026, 7, 11, 8, 0)
+
+    monkeypatch.setattr(src.scheduler, "_is_workday", lambda day: False)
+
+    assert _should_run_nav_monitor(cfg, now, None) is False
+
+
 def test_scheduler_nav_push_exception_does_not_notify_report_failure(monkeypatch):
     import src.nav_monitor
     import src.notifier

@@ -33,7 +33,7 @@ def start(cfg):
         f"report submit at {rh:02d}:{rm:02d} on weekdays, "
         f"stats push at {sh:02d}:{sm:02d} on Sun/month-end, "
         f"cache cleanup at {cch:02d}:{ccm:02d}, "
-        f"nav monitor at {cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d}"
+        f"nav monitor at {cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d} on weekdays"
     )
 
 
@@ -47,7 +47,7 @@ def update_runtime_config(cfg):
         f"report submit {rh:02d}:{rm:02d}, "
         f"stats push {sh:02d}:{sm:02d}, "
         f"cache cleanup {cch:02d}:{ccm:02d}, "
-        f"nav monitor {cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d}"
+        f"nav monitor {cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d} on weekdays"
     )
 
 
@@ -137,7 +137,8 @@ def _should_run_nav_monitor(cfg, now, last_nav_push_date):
         return False
     today_str = now.strftime("%Y-%m-%d")
     return (
-        now.hour == nav.push_hour
+        _is_workday(now.date())
+        and now.hour == nav.push_hour
         and now.minute == nav.push_minute
         and last_nav_push_date != today_str
     )
