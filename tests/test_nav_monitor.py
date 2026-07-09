@@ -126,7 +126,43 @@ def test_calculate_change_and_latest_report_format():
     assert delta_pct.quantize(Decimal("0.0001")) == Decimal("-0.0093")
     assert "慧盈象固收增强一年持有期5号B" in text
     assert "2026-07-07  1.078000" in text
-    assert "涨跌：-0.000100（-0.0093%）" in text
+    assert "**涨跌幅**：-0.000100（-0.0093%）" in text
+
+
+def test_latest_report_uses_daily_report_markdown_style():
+    product = NavProduct("citic_wealth", "AF233276B", "慧盈象固收增强一年持有期5号B")
+    latest = NavRecord(
+        provider="citic_wealth",
+        code="AF233276B",
+        name=product.name,
+        nav_date=date(2026, 7, 7),
+        unit_nav=Decimal("1.078000"),
+        cumulative_nav=Decimal("1.078000"),
+        source="test",
+    )
+    previous = NavRecord(
+        provider="citic_wealth",
+        code="AF233276B",
+        name=product.name,
+        nav_date=date(2026, 7, 6),
+        unit_nav=Decimal("1.078100"),
+        cumulative_nav=Decimal("1.078100"),
+        source="test",
+    )
+
+    text = format_nav_report(
+        [ProductNavResult(product=product, latest=latest, previous=previous)],
+        title="理财净值日报",
+        generated_at=datetime(2026, 7, 8, 8, 0),
+    )
+
+    assert text.startswith("## 📈 理财净值日报")
+    assert "> **查询时间**：2026-07-08 08:00" in text
+    assert "> **产品数量**：1" in text
+    assert "### 慧盈象固收增强一年持有期5号B" in text
+    assert "**最新净值**：2026-07-07  1.078000" in text
+    assert "**上期净值**：2026-07-06  1.078100" in text
+    assert "**涨跌幅**：-0.000100（-0.0093%）" in text
 
 
 def test_date_miss_report_format():
@@ -158,9 +194,9 @@ def test_date_miss_report_format():
         target_date=date(2026, 7, 2),
     )
 
-    assert "查询日期：2026-07-02" in text
-    assert "状态：该日未披露" in text
-    assert "最近披露：2026-06-26  1.000000" in text
+    assert "> **查询日期**：2026-07-02" in text
+    assert "**状态**：该日未披露" in text
+    assert "**最近披露**：2026-06-26  1.000000" in text
 
 
 def test_citic_provider_parses_history_and_candidates():

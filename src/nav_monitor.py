@@ -198,17 +198,27 @@ def format_nav_report(
     target_date: Optional[date] = None,
 ) -> str:
     generated_at = generated_at or datetime.now()
-    lines = [f"# {title}", f"查询时间：{generated_at:%Y-%m-%d %H:%M}"]
+    icon = "🔎" if target_date else "📈"
+    lines = [
+        f"## {icon} {title}",
+        "",
+        f"> **查询时间**：{generated_at:%Y-%m-%d %H:%M}",
+        f"> **产品数量**：{len(results)}",
+    ]
     if target_date:
-        lines.append(f"查询日期：{target_date:%Y-%m-%d}")
+        lines.append(f"> **查询日期**：{target_date:%Y-%m-%d}")
+    else:
+        lines.append("> **计算口径**：最新披露净值 vs 上一期披露净值")
 
     for result in results:
         lines.append("")
-        lines.append(f"## {result.product.name or result.product.code}")
-        lines.append(f"代码：{result.product.code}")
+        lines.append(f"### {result.product.name or result.product.code}")
+        lines.append(f"**机构**：{PROVIDER_LABELS.get(result.product.provider, result.product.provider)}")
+        lines.append(f"**代码**：{result.product.code}")
 
         if result.error:
-            lines.append(f"状态：查询失败：{result.error}")
+            lines.append(f"**状态**：查询失败")
+            lines.append(f"**原因**：{result.error}")
             continue
 
         if result.query_result:
@@ -216,44 +226,46 @@ def format_nav_report(
             continue
 
         if not result.latest:
-            lines.append("状态：暂无净值")
+            lines.append("**状态**：暂无净值")
             continue
 
-        lines.append(f"最新：{_format_record(result.latest)}")
+        lines.append(f"**最新净值**：{_format_record(result.latest)}")
         if result.previous:
-            lines.append(f"上期：{_format_record(result.previous)}")
+            lines.append(f"**上期净值**：{_format_record(result.previous)}")
             delta, delta_pct = calculate_change(result.latest, result.previous)
             if delta_pct is None:
-                lines.append(f"涨跌：{_format_decimal(delta)}（无法计算百分比）")
+                lines.append(f"**涨跌幅**：{_format_decimal(delta)}（无法计算百分比）")
             else:
-                lines.append(f"涨跌：{_format_decimal(delta)}（{_format_pct(delta_pct)}）")
+                lines.append(f"**涨跌幅**：{_format_decimal(delta)}（{_format_pct(delta_pct)}）")
         else:
-            lines.append("状态：暂无上一条净值，无法计算涨跌")
+            lines.append("**状态**：暂无上一条净值，无法计算涨跌")
 
     return "\n".join(lines)
 
 
 def _append_date_query(lines: list[str], query: DateQueryResult):
-    lines.append(f"查询日期：{query.target_date:%Y-%m-%d}")
+    lines.append(f"**查询日期**：{query.target_date:%Y-%m-%d}")
     if query.error:
-        lines.append(f"状态：查询失败：{query.error}")
+        lines.append("**状态**：查询失败")
+        lines.append(f"**原因**：{query.error}")
         return
     if not query.record:
-        lines.append("状态：未找到该日期之前的净值")
+        lines.append("**状态**：未找到该日期之前的净值")
         return
 
     if query.exact:
-        lines.append(f"净值：{_format_record(query.record)}")
+        lines.append("**状态**：精确命中")
+        lines.append(f"**净值**：{_format_record(query.record)}")
     else:
-        lines.append("状态：该日未披露")
-        lines.append(f"最近披露：{_format_record(query.record)}")
+        lines.append("**状态**：该日未披露")
+        lines.append(f"**最近披露**：{_format_record(query.record)}")
 
     if query.previous:
         delta, delta_pct = calculate_change(query.record, query.previous)
         if delta_pct is None:
-            lines.append(f"较上期：{_format_decimal(delta)}（无法计算百分比）")
+            lines.append(f"**较上期**：{_format_decimal(delta)}（无法计算百分比）")
         else:
-            lines.append(f"较上期：{_format_decimal(delta)}（{_format_pct(delta_pct)}）")
+            lines.append(f"**较上期**：{_format_decimal(delta)}（{_format_pct(delta_pct)}）")
 
 
 def _format_record(record: NavRecord) -> str:
