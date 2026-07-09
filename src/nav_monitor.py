@@ -308,7 +308,6 @@ def build_nav_period_report(
         f"> **统计周期**：{label}",
         f"> **周期起点**：{start_date:%Y-%m-%d}",
         f"> **查询时间**：{generated_at:%Y-%m-%d %H:%M}",
-        f"> **产品数量**：{len(products)}",
     ]
 
     if not products:
@@ -323,7 +322,7 @@ def build_nav_period_report(
             name=getattr(item, "name", "") or getattr(item, "code", ""),
         )
         lines.append("")
-        lines.append(f"### {product.name or product.code}")
+        lines.append(f"### {_format_product_title(product)}")
         try:
             provider = get_provider(product.provider)
             records = provider.fetch_latest(product, as_of=base_date, start_date=start_date)
@@ -378,18 +377,15 @@ def format_nav_report(
         f"## {icon} {title}",
         "",
         f"> **查询时间**：{generated_at:%Y-%m-%d %H:%M}",
-        f"> **产品数量**：{len(results)}",
     ]
     if total_amount is not None:
         lines.append(f"> **预估总收益**：{_format_colored_money(total_amount)}")
     if target_date:
         lines.append(f"> **查询日期**：{target_date:%Y-%m-%d}")
-    else:
-        lines.append("> **计算口径**：最新披露净值 vs 上一期披露净值")
 
     for result in results:
         lines.append("")
-        lines.append(f"### {result.product.name or result.product.code}")
+        lines.append(f"### {_format_product_title(result.product)}")
 
         if result.error:
             lines.append(f"**状态**：查询失败")
@@ -476,6 +472,13 @@ def _append_estimated_profit(lines: list[str], delta: Decimal, shares: Optional[
     amount = delta * shares
     lines.append(f"**持仓份额**：{_format_shares(shares)}")
     lines.append(f"**预估收益**：{_format_colored_money(amount)}")
+
+
+def _format_product_title(product: NavProduct) -> str:
+    name = product.name or product.code
+    if not product.code or name == product.code:
+        return name
+    return f"{name}（{product.code}）"
 
 
 def _format_record(record: NavRecord) -> str:

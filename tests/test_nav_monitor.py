@@ -174,10 +174,11 @@ def test_latest_report_uses_daily_report_markdown_style():
 
     assert text.startswith("## 📈 理财净值日报")
     assert "> **查询时间**：2026-07-08 08:00" in text
-    assert "> **产品数量**：1" in text
-    assert "### 慧盈象固收增强一年持有期5号B" in text
+    assert "> **产品数量**" not in text
+    assert "> **计算口径**" not in text
+    assert "### 慧盈象固收增强一年持有期5号B（AF233276B）" in text
     assert "**机构**" not in text
-    assert "**代码**" not in text
+    assert "**产品代码**" not in text
     assert "**最新净值**：2026-07-07  1.078000" in text
     assert "**上期净值**：2026-07-06  1.078100" in text
     assert "**涨跌幅**：<font color=\"info\">-0.000100（-0.0093%）</font>" in text
@@ -242,6 +243,9 @@ def test_date_miss_report_format():
     )
 
     assert "> **查询日期**：2026-07-02" in text
+    assert "> **产品数量**" not in text
+    assert "### 南银理财致远一年定开19期A份额（NYZY000022）" in text
+    assert "**产品代码**" not in text
     assert "**状态**：该日未披露" in text
     assert "**最近披露**：2026-06-26  1.000000" in text
 
@@ -296,8 +300,10 @@ def test_period_report_includes_return_and_amount(monkeypatch):
     assert "## 📊 理财净值统计" in text
     assert "> **统计周期**：月度" in text
     assert "> **周期起点**：2026-07-01" in text
+    assert "> **产品数量**" not in text
     assert "**机构**" not in text
-    assert "**代码**" not in text
+    assert "### 慧盈象固收增强一年持有期5号B（AF233276B）" in text
+    assert "**产品代码**" not in text
     assert "**期初净值**：2026-07-01  1.076700" in text
     assert "**净值变动**：<font color=\"warning\">0.001300（0.1207%）</font>" in text
     assert "**持仓份额**：10000" in text
