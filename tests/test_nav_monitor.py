@@ -19,6 +19,7 @@ from src.nav_monitor import (
     format_nav_report,
     parse_nav_query_date,
     save_pending_nav_add,
+    set_nav_product_shares_batch,
     set_nav_product_shares,
 )
 
@@ -180,6 +181,35 @@ def test_latest_report_uses_daily_report_markdown_style():
     assert "**最新净值**：2026-07-07  1.078000" in text
     assert "**上期净值**：2026-07-06  1.078100" in text
     assert "**涨跌幅**：<font color=\"info\">-0.000100（-0.0093%）</font>" in text
+
+
+def test_latest_report_includes_estimated_total_and_product_profit():
+    p1 = NavProduct("citic_wealth", "AF233276B", "慧盈象固收增强一年持有期5号B")
+    p2 = NavProduct("citic_wealth", "AF233262B", "慧盈象固收增强六个月持有期1号B")
+    text = format_nav_report(
+        [
+            ProductNavResult(
+                product=p1,
+                latest=NavRecord("citic_wealth", "AF233276B", p1.name, date(2026, 7, 7), Decimal("1.0780")),
+                previous=NavRecord("citic_wealth", "AF233276B", p1.name, date(2026, 7, 6), Decimal("1.0781")),
+                shares=Decimal("10000"),
+            ),
+            ProductNavResult(
+                product=p2,
+                latest=NavRecord("citic_wealth", "AF233262B", p2.name, date(2026, 7, 7), Decimal("1.0708")),
+                previous=NavRecord("citic_wealth", "AF233262B", p2.name, date(2026, 7, 6), Decimal("1.0703")),
+                shares=Decimal("20000"),
+            ),
+        ],
+        title="理财净值日报",
+        generated_at=datetime(2026, 7, 8, 8, 0),
+    )
+
+    assert "> **预估总收益**：<font color=\"warning\">9.00 元</font>" in text
+    assert "**持仓份额**：10000" in text
+    assert "**预估收益**：<font color=\"info\">-1.00 元</font>" in text
+    assert "**持仓份额**：20000" in text
+    assert "**预估收益**：<font color=\"warning\">10.00 元</font>" in text
 
 
 def test_date_miss_report_format():
@@ -483,6 +513,35 @@ def test_set_nav_product_shares_updates_existing_product():
     assert ok is True
     assert "已设置" in message
     assert cfg.nav_monitor.products[0].shares == Decimal("10000.5")
+
+
+def test_set_nav_product_shares_batch_updates_matches_and_reports_failures():
+    cfg = Config({
+        "nav_monitor": {
+            "products": [
+                {"provider": "citic_wealth", "code": "AF233276B", "name": "P1"},
+                {"provider": "citic_wealth", "code": "AF233262B", "name": "P2"},
+            ]
+        }
+    })
+
+    ok, message = set_nav_product_shares_batch(
+        cfg,
+        (
+            ("AF233276B", Decimal("10000.5")),
+            ("UNKNOWN", Decimal("3")),
+            ("AF233262B", Decimal("20000")),
+        ),
+    )
+
+    assert ok is True
+    assert "成功**：2" in message
+    assert "失败**：1" in message
+    assert "P1：10000.5" in message
+    assert "P2：20000" in message
+    assert "UNKNOWN：未找到净值产品" in message
+    assert cfg.nav_monitor.products[0].shares == Decimal("10000.5")
+    assert cfg.nav_monitor.products[1].shares == Decimal("20000")
 
 
 def test_scheduler_existing_times_do_not_include_nav_time():

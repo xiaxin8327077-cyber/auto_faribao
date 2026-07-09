@@ -179,7 +179,7 @@ def create_app(cfg: Config) -> Flask:
                     from_user_id = msg.get("FromUserName", "")
                     _send_wechat_text(
                         cfg.wechat,
-                        "❌ 无法识别净值指令\n\n示例：立即查询净值\n查询昨天净值\n查询净值 20260707\n查询月度净值\n添加净值产品 信银 AF233276B",
+                        "❌ 无法识别净值指令\n\n示例：立即查询净值\n查询昨天净值\n查询净值 20260707\n查询月度净值\n添加净值产品 信银 AF233276B\n批量设置净值份额",
                         from_user_id,
                     )
                     return "", 200
@@ -207,6 +207,9 @@ def create_app(cfg: Config) -> Flask:
 **查看净值配置**
 **设置净值推送时间 08:00**
 **设置净值份额 AF233276B 10000**
+**批量设置净值份额**
+AF233276B 10000
+AF233262B 20000
 **添加净值产品 信银 AF233276B**
 **添加净值产品 南银 NYZY000022**
 **确认添加净值产品 1** / **取消添加净值产品**
@@ -1234,6 +1237,7 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         format_product_candidates,
         get_provider,
         save_pending_nav_add,
+        set_nav_product_shares_batch,
         set_nav_product_shares,
     )
 
@@ -1278,6 +1282,17 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         if ok:
             _persist_runtime_config(cfg)
         _send_wechat_text(cfg.wechat, ("✅ " if ok else "❌ ") + message, from_user_id)
+        return
+
+    if action == "set_shares_batch":
+        ok, message = set_nav_product_shares_batch(
+            cfg,
+            nav_command.share_updates,
+            nav_command.share_errors,
+        )
+        if ok:
+            _persist_runtime_config(cfg)
+        _send_wechat_markdown(cfg.wechat, message, from_user_id)
         return
 
     if action == "confirm_add":

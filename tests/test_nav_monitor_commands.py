@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 
 from src.nav_monitor import parse_nav_command
 
@@ -74,6 +75,21 @@ def test_parse_nav_period_and_shares_commands():
     assert shares.action == "set_shares"
     assert shares.code == "AF233276B"
     assert str(shares.shares) == "10000.50"
+
+
+def test_parse_batch_nav_shares_command():
+    command = parse_nav_command(
+        "批量设置净值份额\n"
+        "AF233276B 10000.50\n"
+        "AF233262B 20000"
+    )
+
+    assert command.action == "set_shares_batch"
+    assert command.share_updates == (
+        ("AF233276B", Decimal("10000.50")),
+        ("AF233262B", Decimal("20000")),
+    )
+    assert command.share_errors == ()
 
 
 def test_daily_report_commands_are_not_nav_commands():

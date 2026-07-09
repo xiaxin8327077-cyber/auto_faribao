@@ -110,6 +110,7 @@ class ProductNavResult:
     latest: Optional[NavRecord] = None
     previous: Optional[NavRecord] = None
     query_result: Optional[DateQueryResult] = None
+    shares: Optional[Decimal] = None
     error: str = ""
 
 
@@ -122,6 +123,8 @@ class NavCommand:
     code: str = ""
     period: str = ""
     shares: Optional[Decimal] = None
+    share_updates: tuple[tuple[str, Decimal], ...] = ()
+    share_errors: tuple[str, ...] = ()
     index: int = 0
     hour: int = 0
     minute: int = 0
@@ -148,6 +151,10 @@ def parse_nav_query_date(text: str, base_date: Optional[date] = None) -> Optiona
 
 
 def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[NavCommand]:
+    batch_shares = _parse_batch_shares_command(text)
+    if batch_shares:
+        return batch_shares
+
     content = _normalize_command_text(text)
     if not content:
         return None
@@ -232,6 +239,33 @@ def _parse_add_product_command(content: str) -> NavCommand:
             return NavCommand(action="add_product_usage")
 
     return NavCommand(action="unknown_provider", query=rest)
+
+
+def _parse_batch_shares_command(text: str) -> Optional[NavCommand]:
+    raw = (text or "").replace("\u3000", " ").replace("\xa0", " ").strip()
+    if not raw.startswith("批量设置净值份额"):
+        return None
+
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return NavCommand(action="set_shares_batch")
+
+    updates = []
+    errors = []
+    first_line_rest = re.sub(r"^批量设置净值份额\s*", "", lines[0]).strip()
+    data_lines = ([first_line_rest] if first_line_rest else []) + lines[1:]
+    for line in data_lines:
+        match = re.fullmatch(r"(\S+)\s+([0-9]+(?:\.[0-9]+)?)", line)
+        if match:
+            updates.append((match.group(1).strip(), Decimal(match.group(2))))
+        else:
+            errors.append(f"{line}：格式应为 代码 份额")
+
+    return NavCommand(
+        action="set_shares_batch",
+        share_updates=tuple(updates),
+        share_errors=tuple(errors),
+    )
 
 
 def calculate_change(latest: NavRecord, previous: NavRecord) -> tuple[Decimal, Optional[Decimal]]:
@@ -339,12 +373,15 @@ def format_nav_report(
 ) -> str:
     generated_at = generated_at or datetime.now()
     icon = "🔎" if target_date else "📈"
+    total_amount = _sum_estimated_amounts(results)
     lines = [
         f"## {icon} {title}",
         "",
         f"> **查询时间**：{generated_at:%Y-%m-%d %H:%M}",
         f"> **产品数量**：{len(results)}",
     ]
+    if total_amount is not None:
+        lines.append(f"> **预估总收益**：{_format_colored_money(total_amount)}")
     if target_date:
         lines.append(f"> **查询日期**：{target_date:%Y-%m-%d}")
     else:
@@ -360,7 +397,7 @@ def format_nav_report(
             continue
 
         if result.query_result:
-            _append_date_query(lines, result.query_result)
+            _append_date_query(lines, result.query_result, result.shares)
             continue
 
         if not result.latest:
@@ -372,13 +409,14 @@ def format_nav_report(
             lines.append(f"**上期净值**：{_format_record(result.previous)}")
             delta, delta_pct = calculate_change(result.latest, result.previous)
             lines.append(f"**涨跌幅**：{_format_colored_change(delta, delta_pct)}")
+            _append_estimated_profit(lines, delta, result.shares)
         else:
             lines.append("**状态**：暂无上一条净值，无法计算涨跌")
 
     return "\n".join(lines)
 
 
-def _append_date_query(lines: list[str], query: DateQueryResult):
+def _append_date_query(lines: list[str], query: DateQueryResult, shares: Optional[Decimal] = None):
     lines.append(f"**查询日期**：{query.target_date:%Y-%m-%d}")
     if query.error:
         lines.append("**状态**：查询失败")
@@ -398,6 +436,46 @@ def _append_date_query(lines: list[str], query: DateQueryResult):
     if query.previous:
         delta, delta_pct = calculate_change(query.record, query.previous)
         lines.append(f"**较上期**：{_format_colored_change(delta, delta_pct)}")
+        _append_estimated_profit(lines, delta, shares)
+
+
+def _sum_estimated_amounts(results: list[ProductNavResult]) -> Optional[Decimal]:
+    amounts = [
+        amount
+        for result in results
+        for amount in [_result_estimated_amount(result)]
+        if amount is not None
+    ]
+    if not amounts:
+        return None
+    return sum(amounts, Decimal("0"))
+
+
+def _result_estimated_amount(result: ProductNavResult) -> Optional[Decimal]:
+    shares = _optional_decimal(result.shares)
+    if shares is None:
+        return None
+
+    if result.query_result:
+        query = result.query_result
+        if not query.record or not query.previous:
+            return None
+        delta, _ = calculate_change(query.record, query.previous)
+        return delta * shares
+
+    if not result.latest or not result.previous:
+        return None
+    delta, _ = calculate_change(result.latest, result.previous)
+    return delta * shares
+
+
+def _append_estimated_profit(lines: list[str], delta: Decimal, shares: Optional[Decimal]):
+    shares = _optional_decimal(shares)
+    if shares is None:
+        return
+    amount = delta * shares
+    lines.append(f"**持仓份额**：{_format_shares(shares)}")
+    lines.append(f"**预估收益**：{_format_colored_money(amount)}")
 
 
 def _format_record(record: NavRecord) -> str:
@@ -437,6 +515,10 @@ def _format_colored_change(delta: Decimal, delta_pct: Optional[Decimal]) -> str:
     else:
         text = f"{_format_decimal(delta)}（{_format_pct(delta_pct)}）"
     return _wechat_color(text, _change_color(delta))
+
+
+def _format_colored_money(value: Decimal) -> str:
+    return _wechat_color(f"{_format_money(value)} 元", _change_color(value))
 
 
 def _change_color(value: Decimal) -> str:
@@ -595,19 +677,20 @@ def query_nav_products(cfg, target_date: Optional[date] = None) -> list[ProductN
             code=getattr(item, "code", ""),
             name=getattr(item, "name", "") or getattr(item, "code", ""),
         )
+        shares = _optional_decimal(getattr(item, "shares", None))
         try:
             provider = get_provider(product.provider)
             if target_date:
                 query_result = provider.fetch_by_date(product, target_date)
-                results.append(ProductNavResult(product=product, query_result=query_result))
+                results.append(ProductNavResult(product=product, query_result=query_result, shares=shares))
             else:
                 records = provider.fetch_latest(product)
                 latest = records[0] if records else None
                 previous = records[1] if len(records) > 1 else None
-                results.append(ProductNavResult(product=product, latest=latest, previous=previous))
+                results.append(ProductNavResult(product=product, latest=latest, previous=previous, shares=shares))
         except Exception as exc:
             logger.error("NAV query failed for %s %s: %s", product.provider, product.code, exc, exc_info=True)
-            results.append(ProductNavResult(product=product, error=str(exc)))
+            results.append(ProductNavResult(product=product, shares=shares, error=str(exc)))
     return results
 
 
@@ -675,6 +758,56 @@ def set_nav_product_shares(cfg, code: str, shares: Decimal) -> tuple[bool, str]:
             product.shares = shares
             return True, f"已设置持仓份额：{product.name or product.code} {_format_shares(shares)}"
     return False, f"未找到净值产品：{code}"
+
+
+def set_nav_product_shares_batch(
+    cfg,
+    updates: tuple[tuple[str, Decimal], ...],
+    parse_errors: tuple[str, ...] = (),
+) -> tuple[bool, str]:
+    products = getattr(cfg.nav_monitor, "products", [])
+    by_code = {getattr(product, "code", "").upper(): product for product in products}
+    successes = []
+    failures = list(parse_errors or ())
+
+    for code, shares in updates:
+        code_upper = (code or "").strip().upper()
+        product = by_code.get(code_upper)
+        if not product:
+            failures.append(f"{code}：未找到净值产品")
+            continue
+        product.shares = shares
+        successes.append((product, shares))
+
+    ok = bool(successes)
+    title_icon = "✅" if ok else "❌"
+    title_text = "净值份额批量设置完成" if ok else "净值份额批量设置失败"
+    lines = [
+        f"## {title_icon} {title_text}",
+        "",
+        f"> **成功**：{len(successes)}",
+        f"> **失败**：{len(failures)}",
+    ]
+
+    if successes:
+        lines.append("")
+        lines.append("### 已设置")
+        for product, shares in successes:
+            lines.append(f"{product.name or product.code}：{_format_shares(shares)}")
+
+    if failures:
+        lines.append("")
+        lines.append("### 未设置")
+        lines.extend(failures)
+
+    if not updates and not parse_errors:
+        lines.append("")
+        lines.append("请按格式发送：")
+        lines.append("批量设置净值份额")
+        lines.append("AF233276B 10000")
+        lines.append("AF233262B 20000")
+
+    return ok, "\n".join(lines)
 
 
 def _candidate_to_dict(candidate: ProductCandidate) -> dict:
