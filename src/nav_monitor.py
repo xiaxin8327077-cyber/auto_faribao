@@ -383,9 +383,11 @@ def format_nav_report(
     if target_date:
         lines.append(f"> **查询日期**：{target_date:%Y-%m-%d}")
 
-    for result in results:
+    compact_latest = target_date is None
+    for index, result in enumerate(results, 1):
         lines.append("")
-        lines.append(f"### {_format_product_title(result.product)}")
+        title_prefix = f"{index}. " if compact_latest else ""
+        lines.append(f"### {title_prefix}{_format_product_title(result.product)}")
 
         if result.error:
             lines.append(f"**状态**：查询失败")
@@ -400,6 +402,10 @@ def format_nav_report(
             lines.append("**状态**：暂无净值")
             continue
 
+        if compact_latest:
+            _append_compact_latest_summary(lines, result)
+            continue
+
         lines.append(f"**最新净值**：{_format_record(result.latest)}")
         if result.previous:
             lines.append(f"**上期净值**：{_format_record(result.previous)}")
@@ -410,6 +416,27 @@ def format_nav_report(
             lines.append("**状态**：暂无上一条净值，无法计算涨跌")
 
     return "\n".join(lines)
+
+
+def _append_compact_latest_summary(lines: list[str], result: ProductNavResult):
+    if not result.latest:
+        lines.append("暂无净值")
+        return
+
+    shares = _optional_decimal(result.shares)
+    parts = []
+    if shares is not None:
+        parts.append(f"份额 {_format_shares(shares)}")
+    parts.append(f"净值 {result.latest.nav_date:%m-%d} {_format_decimal(result.latest.unit_nav)}")
+    if result.previous:
+        delta, delta_pct = calculate_change(result.latest, result.previous)
+        parts.append(f"涨跌 {_format_colored_change(delta, delta_pct)}")
+        if shares is not None:
+            parts.append(f"收益 {_format_colored_money(delta * shares)}")
+    else:
+        parts.append("暂无上期净值")
+
+    lines.append("｜".join(parts))
 
 
 def _append_date_query(lines: list[str], query: DateQueryResult, shares: Optional[Decimal] = None):

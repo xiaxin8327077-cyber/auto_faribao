@@ -141,8 +141,8 @@ def test_calculate_change_and_latest_report_format():
     assert delta == Decimal("-0.000100")
     assert delta_pct.quantize(Decimal("0.0001")) == Decimal("-0.0093")
     assert "慧盈象固收增强一年持有期5号B" in text
-    assert "2026-07-07  1.078000" in text
-    assert "**涨跌幅**：<font color=\"info\">-0.000100（-0.0093%）</font>" in text
+    assert "07-07 1.078000" in text
+    assert "涨跌 <font color=\"info\">-0.000100（-0.0093%）</font>" in text
 
 
 def test_latest_report_uses_daily_report_markdown_style():
@@ -176,12 +176,13 @@ def test_latest_report_uses_daily_report_markdown_style():
     assert "> **查询时间**：2026-07-08 08:00" in text
     assert "> **产品数量**" not in text
     assert "> **计算口径**" not in text
-    assert "### 慧盈象固收增强一年持有期5号B（AF233276B）" in text
+    assert "### 1. 慧盈象固收增强一年持有期5号B（AF233276B）" in text
     assert "**机构**" not in text
     assert "**产品代码**" not in text
-    assert "**最新净值**：2026-07-07  1.078000" in text
-    assert "**上期净值**：2026-07-06  1.078100" in text
-    assert "**涨跌幅**：<font color=\"info\">-0.000100（-0.0093%）</font>" in text
+    assert "**最新净值**" not in text
+    assert "**上期净值**" not in text
+    assert "**涨跌幅**" not in text
+    assert "07-07 1.078000｜涨跌 <font color=\"info\">-0.000100（-0.0093%）</font>" in text
 
 
 def test_latest_report_includes_estimated_total_and_product_profit():
@@ -207,10 +208,12 @@ def test_latest_report_includes_estimated_total_and_product_profit():
     )
 
     assert "> **预估总收益**：<font color=\"warning\">9.00 元</font>" in text
-    assert "**持仓份额**：10000" in text
-    assert "**预估收益**：<font color=\"info\">-1.00 元</font>" in text
-    assert "**持仓份额**：20000" in text
-    assert "**预估收益**：<font color=\"warning\">10.00 元</font>" in text
+    assert "**持仓份额**" not in text
+    assert "**预估收益**" not in text
+    assert "### 1. 慧盈象固收增强一年持有期5号B（AF233276B）" in text
+    assert "份额 10000｜净值 07-07 1.078000｜涨跌 <font color=\"info\">-0.000100（-0.0093%）</font>｜收益 <font color=\"info\">-1.00 元</font>" in text
+    assert "### 2. 慧盈象固收增强六个月持有期1号B（AF233262B）" in text
+    assert "份额 20000｜净值 07-07 1.070800｜涨跌 <font color=\"warning\">0.000500（0.0467%）</font>｜收益 <font color=\"warning\">10.00 元</font>" in text
 
 
 def test_date_miss_report_format():
