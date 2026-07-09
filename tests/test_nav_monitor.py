@@ -192,7 +192,9 @@ def test_latest_report_uses_daily_report_markdown_style():
     assert "**最新净值**" not in text
     assert "**上期净值**" not in text
     assert "**涨跌幅**" not in text
-    assert "净值：1.078000（2026-07-07）｜涨跌：<font color=\"info\">-0.000100（-0.0093%）</font>" in text
+    assert "净值：1.078000（2026-07-07）" in text
+    assert "涨跌：<font color=\"info\">-0.000100（-0.0093%）</font>" in text
+    assert "｜" not in text
 
 
 def test_latest_report_includes_estimated_total_and_product_profit():
@@ -221,9 +223,13 @@ def test_latest_report_includes_estimated_total_and_product_profit():
     assert "**持仓份额**" not in text
     assert "**预估收益**" not in text
     assert "> **1. 慧盈象固收增强一年持有期5号B（AF233276B）**" in text
-    assert "份额：`    10000`｜净值：1.078000（2026-07-07）｜涨跌：<font color=\"info\">-0.000100（-0.0093%）</font>｜收益：<font color=\"info\">-1.00 元</font>" in text
+    assert "份额：10000　净值：1.078000（2026-07-07）" in text
+    assert "涨跌：<font color=\"info\">-0.000100（-0.0093%）</font>　收益：<font color=\"info\">-1.00 元</font>" in text
     assert "> **2. 慧盈象固收增强六个月持有期1号B（AF233262B）**" in text
-    assert "份额：`    20000`｜净值：1.070800（2026-07-07）｜涨跌：<font color=\"warning\">+0.000500（+0.0467%）</font>｜收益：<font color=\"warning\">10.00 元</font>" in text
+    assert "份额：20000　净值：1.070800（2026-07-07）" in text
+    assert "涨跌：<font color=\"warning\">+0.000500（+0.0467%）</font>　收益：<font color=\"warning\">10.00 元</font>" in text
+    assert "｜" not in text
+    assert "`" not in text
 
 
 def test_latest_report_pads_compact_columns_for_alignment():
@@ -248,8 +254,10 @@ def test_latest_report_pads_compact_columns_for_alignment():
         generated_at=datetime(2026, 7, 8, 8, 0),
     )
 
-    assert "份额：`        1`｜净值：1.000100（2026-07-07）" in text
-    assert "份额：`    20000`｜净值：1.000100（2026-07-07）" in text
+    assert "份额：1　净值：1.000100（2026-07-07）" in text
+    assert "份额：20000　净值：1.000100（2026-07-07）" in text
+    assert "｜" not in text
+    assert "`" not in text
 
 
 def test_date_miss_report_format():
@@ -336,7 +344,7 @@ def test_period_report_includes_return_and_amount(monkeypatch):
         generated_at=datetime(2026, 7, 9, 9, 30),
     )
 
-    assert "## 📊 理财净值统计" in text
+    assert "## 📊 理财净值月报" in text
     assert "> **统计周期**：月度" in text
     assert "> **周期起点**：2026-07-01" in text
     assert "> **产品数量**" not in text
@@ -347,7 +355,21 @@ def test_period_report_includes_return_and_amount(monkeypatch):
     assert "**净值变动**" not in text
     assert "**持仓份额**" not in text
     assert "**估算收益**" not in text
-    assert "份额：`    10000`｜期初：1.076700（2026-07-01）｜期末：1.078000（2026-07-07）｜涨跌：<font color=\"warning\">+0.001300（+0.1207%）</font>｜收益：<font color=\"warning\">13.00 元</font>" in text
+    assert "份额：10000　期初：1.076700（2026-07-01）　期末：1.078000（2026-07-07）" in text
+    assert "涨跌：<font color=\"warning\">+0.001300（+0.1207%）</font>　收益：<font color=\"warning\">13.00 元</font>" in text
+    assert "｜" not in text
+    assert "`" not in text
+
+
+def test_period_report_uses_natural_period_titles():
+    cfg = Config({"nav_monitor": {"products": []}})
+
+    assert build_nav_period_report(cfg, "week").startswith("## 📊 理财净值周报")
+    assert build_nav_period_report(cfg, "month").startswith("## 📊 理财净值月报")
+    assert build_nav_period_report(cfg, "quarter").startswith("## 📊 理财净值季报")
+    assert build_nav_period_report(cfg, "half_year").startswith("## 📊 理财净值半年报")
+    assert build_nav_period_report(cfg, "year").startswith("## 📊 理财净值年报")
+    assert build_nav_period_report(cfg, "rolling_7d").startswith("## 📊 理财净值统计")
 
 
 def test_period_report_fetches_before_natural_start_for_baseline(monkeypatch):
@@ -391,7 +413,7 @@ def test_period_report_fetches_before_natural_start_for_baseline(monkeypatch):
     assert "> **周期起点**：2026-01-01" in text
     assert "期初：1.041491（2025-12-31）" in text
     assert "期末：1.050881（2026-07-08）" in text
-    assert "｜收益：<font color=\"warning\">" in text
+    assert "　收益：<font color=\"warning\">" in text
 
 
 def test_citic_provider_parses_history_and_candidates():
@@ -677,6 +699,69 @@ def test_scheduler_nav_monitor_runs_only_on_workday(monkeypatch):
     monkeypatch.setattr(src.scheduler, "_is_workday", lambda day: False)
 
     assert _should_run_nav_monitor(cfg, now, None) is False
+
+
+def test_scheduler_finds_due_nav_periods_on_first_workday(monkeypatch):
+    import src.scheduler
+    from src.scheduler import _nav_period_push_jobs
+
+    monkeypatch.setattr(src.scheduler, "_is_workday", lambda day: day.weekday() < 5)
+
+    assert _nav_period_push_jobs(date(2026, 7, 6)) == [("week", date(2026, 7, 5))]
+    assert _nav_period_push_jobs(date(2026, 7, 1)) == [
+        ("month", date(2026, 6, 30)),
+        ("quarter", date(2026, 6, 30)),
+        ("half_year", date(2026, 6, 30)),
+    ]
+    assert _nav_period_push_jobs(date(2026, 1, 1)) == [
+        ("month", date(2025, 12, 31)),
+        ("quarter", date(2025, 12, 31)),
+        ("half_year", date(2025, 12, 31)),
+        ("year", date(2025, 12, 31)),
+    ]
+
+
+def test_scheduler_nav_weekly_period_push_rolls_to_first_workday(monkeypatch):
+    import src.scheduler
+    from src.scheduler import _nav_period_push_jobs
+
+    holiday = date(2026, 7, 6)
+    monkeypatch.setattr(src.scheduler, "_is_workday", lambda day: day.weekday() < 5 and day != holiday)
+
+    assert _nav_period_push_jobs(date(2026, 7, 6)) == []
+    assert _nav_period_push_jobs(date(2026, 7, 7)) == [("week", date(2026, 7, 5))]
+
+
+def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
+    import src.nav_monitor
+    import src.scheduler
+    from src.scheduler import _run_nav_monitor_push
+
+    calls = []
+
+    def fake_daily(cfg):
+        calls.append(("daily", None))
+        return "daily"
+
+    def fake_period(cfg, period, base_date, to_user=None):
+        calls.append((period, base_date))
+        return period
+
+    monkeypatch.setattr(src.nav_monitor, "push_nav_report", fake_daily)
+    monkeypatch.setattr(src.nav_monitor, "push_nav_period_report", fake_period)
+    monkeypatch.setattr(
+        src.scheduler,
+        "_nav_period_push_jobs",
+        lambda day: [("week", date(2026, 7, 5)), ("month", date(2026, 6, 30))],
+    )
+
+    _run_nav_monitor_push(Config({}), day=date(2026, 7, 6))
+
+    assert calls == [
+        ("daily", None),
+        ("week", date(2026, 7, 5)),
+        ("month", date(2026, 6, 30)),
+    ]
 
 
 def test_scheduler_nav_push_exception_does_not_notify_report_failure(monkeypatch):

@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+from datetime import date, timedelta
 from src.beijing_time import now as beijing_now, today
 from src.pending_confirmation import handle_pending_timeout_if_needed
 
@@ -74,7 +75,7 @@ def _run(cfg):
         if _should_run_nav_monitor(current_cfg, now, last_nav_push_date):
             last_nav_push_date = today_str
             logger.info("Scheduler triggered: nav monitor push")
-            _run_nav_monitor_push(current_cfg)
+            _run_nav_monitor_push(current_cfg, now.date())
 
         if _is_workday(now.date()):
             if (now.hour == ch and
@@ -144,6 +145,57 @@ def _should_run_nav_monitor(cfg, now, last_nav_push_date):
     )
 
 
+def _nav_period_push_jobs(day: date) -> list[tuple[str, date]]:
+    if not _is_workday(day):
+        return []
+
+    jobs = []
+    one_day = timedelta(days=1)
+
+    week_start = day - timedelta(days=day.weekday())
+    if _is_first_workday_since(week_start, day):
+        jobs.append(("week", week_start - one_day))
+
+    month_start = date(day.year, day.month, 1)
+    if _is_first_workday_since(month_start, day):
+        previous_period_end = month_start - one_day
+        jobs.append(("month", previous_period_end))
+
+        quarter_start = _quarter_start(day)
+        if month_start == quarter_start:
+            jobs.append(("quarter", previous_period_end))
+
+        half_year_start = _half_year_start(day)
+        if month_start == half_year_start:
+            jobs.append(("half_year", previous_period_end))
+
+        if day.month == 1:
+            jobs.append(("year", previous_period_end))
+
+    return jobs
+
+
+def _is_first_workday_since(start_day: date, day: date) -> bool:
+    if not _is_workday(day):
+        return False
+    cursor = start_day
+    while cursor < day:
+        if _is_workday(cursor):
+            return False
+        cursor += timedelta(days=1)
+    return True
+
+
+def _quarter_start(day: date) -> date:
+    month = ((day.month - 1) // 3) * 3 + 1
+    return date(day.year, month, 1)
+
+
+def _half_year_start(day: date) -> date:
+    month = 1 if day.month <= 6 else 7
+    return date(day.year, month, 1)
+
+
 def _run_cookies_check(cfg):
     from src.cookies_checker import check_cookies, CookiesError
     from src.notifier import notify_cookies_expired
@@ -183,10 +235,15 @@ def _run_auto_submit(cfg):
         notify_report_failure(cfg, str(e), report_source="unknown", smart_doc_status="unknown")
 
 
-def _run_nav_monitor_push(cfg):
+def _run_nav_monitor_push(cfg, day: date = None):
     try:
-        from src.nav_monitor import push_nav_report
+        from src.nav_monitor import push_nav_period_report, push_nav_report
         push_nav_report(cfg)
+        target_day = day or today()
+        to_user = getattr(cfg.wechat, "to_user", None)
+        for period, base_date in _nav_period_push_jobs(target_day):
+            logger.info("Scheduler triggered: nav period push %s as of %s", period, base_date)
+            push_nav_period_report(cfg, period, base_date=base_date, to_user=to_user)
     except Exception as e:
         logger.error(f"Scheduler nav monitor push failed: {e}", exc_info=True)
         if _wechat_is_configured(cfg):

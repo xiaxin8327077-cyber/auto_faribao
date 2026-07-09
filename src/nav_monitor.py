@@ -80,6 +80,13 @@ PERIOD_LABELS = {
     "rolling_6m": "近半年",
     "rolling_1y": "近一年",
 }
+PERIOD_REPORT_TITLES = {
+    "week": "理财净值周报",
+    "month": "理财净值月报",
+    "quarter": "理财净值季报",
+    "half_year": "理财净值半年报",
+    "year": "理财净值年报",
+}
 ROLLING_PERIOD_DAYS = {
     "rolling_7d": 7,
     "rolling_1m": 30,
@@ -333,8 +340,9 @@ def build_nav_period_report(
     start_date = calculate_period_start(period, base_date)
     products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
     label = PERIOD_LABELS.get(period, period)
+    report_title = PERIOD_REPORT_TITLES.get(period, "理财净值统计")
     lines = [
-        "## 📊 理财净值统计",
+        f"## 📊 {report_title}",
         "",
         f"> **统计周期**：{label}",
         f"> **周期起点**：{start_date:%Y-%m-%d}",
@@ -453,19 +461,20 @@ def _append_compact_latest_summary(lines: list[str], result: ProductNavResult):
         return
 
     shares = _optional_decimal(result.shares)
-    parts = []
+    first_parts = []
     if shares is not None:
-        parts.append(f"份额：{_format_compact_shares(shares)}")
-    parts.append(f"净值：{_format_decimal(result.latest.unit_nav)}（{result.latest.nav_date:%Y-%m-%d}）")
+        first_parts.append(f"份额：{_format_compact_shares(shares)}")
+    first_parts.append(f"净值：{_format_decimal(result.latest.unit_nav)}（{result.latest.nav_date:%Y-%m-%d}）")
+    lines.append("　".join(first_parts))
+
     if result.previous:
         delta, delta_pct = calculate_change(result.latest, result.previous)
-        parts.append(f"涨跌：{_format_colored_change(delta, delta_pct)}")
+        second_parts = [f"涨跌：{_format_colored_change(delta, delta_pct)}"]
         if shares is not None:
-            parts.append(f"收益：{_format_colored_money(delta * shares)}")
+            second_parts.append(f"收益：{_format_colored_money(delta * shares)}")
+        lines.append("　".join(second_parts))
     else:
-        parts.append("暂无上期净值")
-
-    lines.append("｜".join(parts))
+        lines.append("暂无上期净值")
 
 
 def _append_compact_period_summary(
@@ -476,17 +485,19 @@ def _append_compact_period_summary(
     delta_pct: Optional[Decimal],
     shares: Optional[Decimal] = None,
 ):
-    parts = []
+    first_parts = []
     shares = _optional_decimal(shares)
     if shares is not None:
-        parts.append(f"份额：{_format_compact_shares(shares)}")
-    parts.append(f"期初：{_format_period_endpoint(baseline)}")
-    parts.append(f"期末：{_format_period_endpoint(latest)}")
-    parts.append(f"涨跌：{_format_colored_change(delta, delta_pct)}")
-    if shares is not None:
-        parts.append(f"收益：{_format_colored_money(delta * shares)}")
+        first_parts.append(f"份额：{_format_compact_shares(shares)}")
+    first_parts.append(f"期初：{_format_period_endpoint(baseline)}")
+    first_parts.append(f"期末：{_format_period_endpoint(latest)}")
+    lines.append("　".join(first_parts))
 
-    lines.append("｜".join(parts))
+    second_parts = [f"涨跌：{_format_colored_change(delta, delta_pct)}"]
+    if shares is not None:
+        second_parts.append(f"收益：{_format_colored_money(delta * shares)}")
+
+    lines.append("　".join(second_parts))
 
 
 def _format_period_endpoint(record: NavRecord) -> str:
@@ -646,9 +657,7 @@ def _format_shares(value: Decimal) -> str:
 
 
 def _format_compact_shares(value: Decimal) -> str:
-    text = _format_shares(value)
-    width = max(len("100000.00"), len(text))
-    return f"`{text.rjust(width)}`"
+    return _format_shares(value)
 
 
 def build_add_product_candidates(provider: "WealthProvider", query: str, limit: int = 5) -> list[ProductCandidate]:
@@ -820,6 +829,19 @@ def push_nav_report(cfg, target_date: Optional[date] = None, to_user: str = None
     from src.wechat_notifier import send_markdown
 
     report = build_nav_report(cfg, target_date=target_date)
+    send_markdown(cfg.wechat, report, to_user)
+    return report
+
+
+def push_nav_period_report(
+    cfg,
+    period: str,
+    base_date: Optional[date] = None,
+    to_user: str = None,
+) -> str:
+    from src.wechat_notifier import send_markdown
+
+    report = build_nav_period_report(cfg, period, base_date=base_date)
     send_markdown(cfg.wechat, report, to_user)
     return report
 
