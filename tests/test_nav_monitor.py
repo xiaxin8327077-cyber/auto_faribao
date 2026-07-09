@@ -141,7 +141,7 @@ def test_calculate_change_and_latest_report_format():
     assert delta_pct.quantize(Decimal("0.0001")) == Decimal("-0.0093")
     assert "慧盈象固收增强一年持有期5号B" in text
     assert "2026-07-07  1.078000" in text
-    assert "**涨跌幅**：-0.000100（-0.0093%）" in text
+    assert "**涨跌幅**：<font color=\"info\">-0.000100（-0.0093%）</font>" in text
 
 
 def test_latest_report_uses_daily_report_markdown_style():
@@ -175,9 +175,11 @@ def test_latest_report_uses_daily_report_markdown_style():
     assert "> **查询时间**：2026-07-08 08:00" in text
     assert "> **产品数量**：1" in text
     assert "### 慧盈象固收增强一年持有期5号B" in text
+    assert "**机构**" not in text
+    assert "**代码**" not in text
     assert "**最新净值**：2026-07-07  1.078000" in text
     assert "**上期净值**：2026-07-06  1.078100" in text
-    assert "**涨跌幅**：-0.000100（-0.0093%）" in text
+    assert "**涨跌幅**：<font color=\"info\">-0.000100（-0.0093%）</font>" in text
 
 
 def test_date_miss_report_format():
@@ -264,10 +266,12 @@ def test_period_report_includes_return_and_amount(monkeypatch):
     assert "## 📊 理财净值统计" in text
     assert "> **统计周期**：月度" in text
     assert "> **周期起点**：2026-07-01" in text
+    assert "**机构**" not in text
+    assert "**代码**" not in text
     assert "**期初净值**：2026-07-01  1.076700" in text
-    assert "**净值变动**：0.001300（0.1207%）" in text
+    assert "**净值变动**：<font color=\"warning\">0.001300（0.1207%）</font>" in text
     assert "**持仓份额**：10000" in text
-    assert "**估算收益**：13.00 元" in text
+    assert "**估算收益**：<font color=\"warning\">13.00 元</font>" in text
 
 
 def test_citic_provider_parses_history_and_candidates():
@@ -308,6 +312,44 @@ def test_citic_provider_parses_history_and_candidates():
     assert candidates[0].code == "AF233276B"
     assert candidates[0].latest_nav_date == date(2026, 7, 7)
     assert candidates[0].latest_unit_nav == Decimal("1.0780")
+
+
+def test_citic_date_query_expands_history_window_for_older_target():
+    calls = []
+
+    class FakeCiticClient:
+        def get_json(self, path, params):
+            calls.append(params)
+            query_unit = params.get("queryUnit")
+            if query_unit == 1:
+                return {
+                    "code": "0000",
+                    "data": {
+                        "productNavPic": [
+                            {"prodCode": "AF233276B", "navDate": "20260608", "nav": "1.0760"},
+                        ]
+                    },
+                }
+            return {
+                "code": "0000",
+                "data": {
+                    "productNavPic": [
+                        {"prodCode": "AF233276B", "navDate": "20260430", "nav": "1.0737"},
+                        {"prodCode": "AF233276B", "navDate": "20260506", "nav": "1.0739"},
+                        {"prodCode": "AF233276B", "navDate": "20260708", "nav": "1.0778"},
+                    ]
+                },
+            }
+
+    provider = CiticWealthProvider(client=FakeCiticClient())
+    product = NavProduct("citic_wealth", "AF233276B", "慧盈象固收增强一年持有期5号B")
+
+    result = provider.fetch_by_date(product, date(2026, 5, 5))
+
+    assert calls[0]["queryUnit"] > 1
+    assert result.exact is False
+    assert result.record.nav_date == date(2026, 4, 30)
+    assert result.record.unit_nav == Decimal("1.0737")
 
 
 def test_nanyin_provider_parses_encrypted_payload_results():

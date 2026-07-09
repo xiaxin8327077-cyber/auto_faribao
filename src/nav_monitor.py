@@ -290,11 +290,9 @@ def build_nav_period_report(
         )
         lines.append("")
         lines.append(f"### {product.name or product.code}")
-        lines.append(f"**机构**：{PROVIDER_LABELS.get(product.provider, product.provider)}")
-        lines.append(f"**代码**：{product.code}")
         try:
             provider = get_provider(product.provider)
-            records = provider.fetch_latest(product, as_of=base_date)
+            records = provider.fetch_latest(product, as_of=base_date, start_date=start_date)
             latest = _nearest_record_on_or_before(records, base_date)
             baseline = _nearest_record_on_or_before(records, start_date)
             if not latest:
@@ -307,16 +305,13 @@ def build_nav_period_report(
 
             lines.append(f"**期初净值**：{_format_record(baseline)}")
             delta, delta_pct = calculate_change(latest, baseline)
-            if delta_pct is None:
-                lines.append(f"**净值变动**：{_format_decimal(delta)}（无法计算百分比）")
-            else:
-                lines.append(f"**净值变动**：{_format_decimal(delta)}（{_format_pct(delta_pct)}）")
+            lines.append(f"**净值变动**：{_format_colored_change(delta, delta_pct)}")
 
             shares = _optional_decimal(getattr(item, "shares", None))
             if shares is not None:
                 amount = delta * shares
                 lines.append(f"**持仓份额**：{_format_shares(shares)}")
-                lines.append(f"**估算收益**：{_format_money(amount)} 元")
+                lines.append(f"**估算收益**：{_wechat_color(f'{_format_money(amount)} 元', _change_color(amount))}")
         except Exception as exc:
             logger.error("NAV period stats failed for %s %s: %s", product.provider, product.code, exc, exc_info=True)
             lines.append("**状态**：统计失败")
@@ -358,8 +353,6 @@ def format_nav_report(
     for result in results:
         lines.append("")
         lines.append(f"### {result.product.name or result.product.code}")
-        lines.append(f"**机构**：{PROVIDER_LABELS.get(result.product.provider, result.product.provider)}")
-        lines.append(f"**代码**：{result.product.code}")
 
         if result.error:
             lines.append(f"**状态**：查询失败")
@@ -378,10 +371,7 @@ def format_nav_report(
         if result.previous:
             lines.append(f"**上期净值**：{_format_record(result.previous)}")
             delta, delta_pct = calculate_change(result.latest, result.previous)
-            if delta_pct is None:
-                lines.append(f"**涨跌幅**：{_format_decimal(delta)}（无法计算百分比）")
-            else:
-                lines.append(f"**涨跌幅**：{_format_decimal(delta)}（{_format_pct(delta_pct)}）")
+            lines.append(f"**涨跌幅**：{_format_colored_change(delta, delta_pct)}")
         else:
             lines.append("**状态**：暂无上一条净值，无法计算涨跌")
 
@@ -407,14 +397,27 @@ def _append_date_query(lines: list[str], query: DateQueryResult):
 
     if query.previous:
         delta, delta_pct = calculate_change(query.record, query.previous)
-        if delta_pct is None:
-            lines.append(f"**较上期**：{_format_decimal(delta)}（无法计算百分比）")
-        else:
-            lines.append(f"**较上期**：{_format_decimal(delta)}（{_format_pct(delta_pct)}）")
+        lines.append(f"**较上期**：{_format_colored_change(delta, delta_pct)}")
 
 
 def _format_record(record: NavRecord) -> str:
     return f"{record.nav_date:%Y-%m-%d}  {_format_decimal(record.unit_nav)}"
+
+
+def _citic_query_unit(earliest_date: Optional[date], today: Optional[date] = None) -> int:
+    if not earliest_date:
+        return 1
+    today = today or date.today()
+    age_days = (today - earliest_date).days
+    if age_days <= 35:
+        return 1
+    if age_days <= 100:
+        return 2
+    if age_days <= 170:
+        return 3
+    if age_days <= 370:
+        return 4
+    return 5
 
 
 def _format_decimal(value) -> str:
@@ -426,6 +429,30 @@ def _format_decimal(value) -> str:
 
 def _format_pct(value: Decimal) -> str:
     return f"{value.quantize(Decimal('0.0001'))}%"
+
+
+def _format_colored_change(delta: Decimal, delta_pct: Optional[Decimal]) -> str:
+    if delta_pct is None:
+        text = f"{_format_decimal(delta)}（无法计算百分比）"
+    else:
+        text = f"{_format_decimal(delta)}（{_format_pct(delta_pct)}）"
+    return _wechat_color(text, _change_color(delta))
+
+
+def _change_color(value: Decimal) -> str:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return "comment"
+    if amount > 0:
+        return "warning"
+    if amount < 0:
+        return "info"
+    return "comment"
+
+
+def _wechat_color(text: str, color: str) -> str:
+    return f'<font color="{color}">{text}</font>'
 
 
 def _format_money(value: Decimal) -> str:
@@ -725,9 +752,16 @@ class CiticWealthProvider(WealthProvider):
     def __init__(self, client=None):
         self.client = client or CiticHttpClient()
 
-    def fetch_latest(self, product: NavProduct, **kwargs) -> list[NavRecord]:
+    def fetch_latest(
+        self,
+        product: NavProduct,
+        as_of: Optional[date] = None,
+        start_date: Optional[date] = None,
+        **kwargs,
+    ) -> list[NavRecord]:
+        query_unit = _citic_query_unit(start_date or as_of)
         data = _unwrap_provider_response(
-            self.client.get_json(self.NAV_PATH, {"prodCode": product.code, "queryUnit": 1})
+            self.client.get_json(self.NAV_PATH, {"prodCode": product.code, "queryUnit": query_unit})
         )
         items = _first_list(data, "productNavPic", "list", "rows", "data")
         records = [
@@ -793,9 +827,15 @@ class NanyinWealthProvider(WealthProvider):
     def __init__(self, client=None):
         self.client = client or NanyinHttpClient()
 
-    def fetch_latest(self, product: NavProduct, as_of: Optional[date] = None, **kwargs) -> list[NavRecord]:
+    def fetch_latest(
+        self,
+        product: NavProduct,
+        as_of: Optional[date] = None,
+        start_date: Optional[date] = None,
+        **kwargs,
+    ) -> list[NavRecord]:
         end_date = as_of or date.today()
-        start_date = end_date - timedelta(days=120)
+        start_date = start_date or end_date - timedelta(days=120)
         payload = {
             "productCode": product.code,
             "startDate": start_date.isoformat(),
