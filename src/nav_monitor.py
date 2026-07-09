@@ -426,13 +426,13 @@ def _append_compact_latest_summary(lines: list[str], result: ProductNavResult):
     shares = _optional_decimal(result.shares)
     parts = []
     if shares is not None:
-        parts.append(f"份额 {_format_shares(shares)}")
-    parts.append(f"净值 {result.latest.nav_date:%m-%d} {_format_decimal(result.latest.unit_nav)}")
+        parts.append(f"份额：{_format_compact_shares(shares)}")
+    parts.append(f"净值：{_format_decimal(result.latest.unit_nav)}（{result.latest.nav_date:%Y-%m-%d}）")
     if result.previous:
         delta, delta_pct = calculate_change(result.latest, result.previous)
-        parts.append(f"涨跌 {_format_colored_change(delta, delta_pct)}")
+        parts.append(f"涨跌：{_format_colored_change(delta, delta_pct)}")
         if shares is not None:
-            parts.append(f"收益 {_format_colored_money(delta * shares)}")
+            parts.append(f"收益：{_format_colored_money(delta * shares)}")
     else:
         parts.append("暂无上期净值")
 
@@ -576,6 +576,11 @@ def _format_shares(value: Decimal) -> str:
     if normalized == normalized.to_integral():
         return str(normalized.quantize(Decimal("1")))
     return format(normalized, "f")
+
+
+def _format_compact_shares(value: Decimal) -> str:
+    text = _format_shares(value)
+    return text + ("\u3000" * max(0, len("100000.00") - len(text)))
 
 
 def build_add_product_candidates(provider: "WealthProvider", query: str, limit: int = 5) -> list[ProductCandidate]:
