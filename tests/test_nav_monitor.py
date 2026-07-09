@@ -176,7 +176,7 @@ def test_latest_report_uses_daily_report_markdown_style():
     assert "> **查询时间**：2026-07-08 08:00" in text
     assert "> **产品数量**" not in text
     assert "> **计算口径**" not in text
-    assert "### 1. 慧盈象固收增强一年持有期5号B（AF233276B）" in text
+    assert "> **1. 慧盈象固收增强一年持有期5号B（AF233276B）**" in text
     assert "**机构**" not in text
     assert "**产品代码**" not in text
     assert "**最新净值**" not in text
@@ -210,10 +210,10 @@ def test_latest_report_includes_estimated_total_and_product_profit():
     assert "> **预估总收益**：<font color=\"warning\">9.00 元</font>" in text
     assert "**持仓份额**" not in text
     assert "**预估收益**" not in text
-    assert "### 1. 慧盈象固收增强一年持有期5号B（AF233276B）" in text
+    assert "> **1. 慧盈象固收增强一年持有期5号B（AF233276B）**" in text
     pad4 = "\u3000" * 4
     assert f"份额：10000{pad4}｜净值：1.078000（2026-07-07）｜涨跌：<font color=\"info\">-0.000100（-0.0093%）</font>｜收益：<font color=\"info\">-1.00 元</font>" in text
-    assert "### 2. 慧盈象固收增强六个月持有期1号B（AF233262B）" in text
+    assert "> **2. 慧盈象固收增强六个月持有期1号B（AF233262B）**" in text
     assert f"份额：20000{pad4}｜净值：1.070800（2026-07-07）｜涨跌：<font color=\"warning\">+0.000500（+0.0467%）</font>｜收益：<font color=\"warning\">10.00 元</font>" in text
 
 

@@ -386,8 +386,10 @@ def format_nav_report(
     compact_latest = target_date is None
     for index, result in enumerate(results, 1):
         lines.append("")
-        title_prefix = f"{index}. " if compact_latest else ""
-        lines.append(f"### {title_prefix}{_format_product_title(result.product)}")
+        if compact_latest:
+            lines.append(f"> **{index}. {_format_product_title(result.product)}**")
+        else:
+            lines.append(f"### {_format_product_title(result.product)}")
 
         if result.error:
             lines.append(f"**状态**：查询失败")
