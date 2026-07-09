@@ -43,6 +43,39 @@ def test_parse_nav_product_commands():
     assert cancel.action == "cancel_add"
 
 
+def test_parse_nav_product_add_alias_and_usage():
+    alias = parse_nav_command("添加产品 信银 AF233276B")
+    stuck = parse_nav_command("添加净值产品 信银理财AF233276B")
+    usage = parse_nav_command("添加产品")
+
+    assert alias.action == "add_product"
+    assert alias.provider == "citic_wealth"
+    assert alias.query == "AF233276B"
+    assert stuck.action == "add_product"
+    assert stuck.provider == "citic_wealth"
+    assert stuck.query == "AF233276B"
+    assert usage.action == "add_product_usage"
+
+
+def test_parse_nav_period_and_shares_commands():
+    weekly = parse_nav_command("查询周度净值")
+    monthly = parse_nav_command("查询月度净值")
+    quarterly = parse_nav_command("查询季度净值")
+    half_year = parse_nav_command("查询半年度净值")
+    yearly = parse_nav_command("查询年度净值")
+    shares = parse_nav_command("设置净值份额 AF233276B 10000.50")
+
+    assert weekly.action == "query_period"
+    assert weekly.period == "week"
+    assert monthly.period == "month"
+    assert quarterly.period == "quarter"
+    assert half_year.period == "half_year"
+    assert yearly.period == "year"
+    assert shares.action == "set_shares"
+    assert shares.code == "AF233276B"
+    assert str(shares.shares) == "10000.50"
+
+
 def test_daily_report_commands_are_not_nav_commands():
     assert parse_nav_command("今日日报") is None
     assert parse_nav_command("今日状态") is None

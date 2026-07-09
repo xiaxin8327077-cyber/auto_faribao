@@ -40,6 +40,25 @@ PROVIDER_ALIASES = {
     "nanyin": "nanyin_wealth",
     "nanyin_wealth": "nanyin_wealth",
 }
+PERIOD_COMMANDS = {
+    "查询周度净值": "week",
+    "周度净值": "week",
+    "查询月度净值": "month",
+    "月度净值": "month",
+    "查询季度净值": "quarter",
+    "季度净值": "quarter",
+    "查询半年度净值": "half_year",
+    "半年度净值": "half_year",
+    "查询年度净值": "year",
+    "年度净值": "year",
+}
+PERIOD_LABELS = {
+    "week": "周度",
+    "month": "月度",
+    "quarter": "季度",
+    "half_year": "半年度",
+    "year": "年度",
+}
 
 DEFAULT_PENDING_NAV_ADD_PATH = "/tmp/nav_monitor_pending_add.json"
 PENDING_NAV_ADD_TTL_SECONDS = 300
@@ -101,6 +120,8 @@ class NavCommand:
     provider: str = ""
     query: str = ""
     code: str = ""
+    period: str = ""
+    shares: Optional[Decimal] = None
     index: int = 0
     hour: int = 0
     minute: int = 0
@@ -127,7 +148,7 @@ def parse_nav_query_date(text: str, base_date: Optional[date] = None) -> Optiona
 
 
 def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[NavCommand]:
-    content = (text or "").strip()
+    content = _normalize_command_text(text)
     if not content:
         return None
 
@@ -137,8 +158,14 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
     if content == "取消添加净值产品":
         return NavCommand(action="cancel_add")
 
+    if content.startswith("添加产品"):
+        return _parse_add_product_command(content)
+
     if "净值" not in content:
         return None
+
+    if content in PERIOD_COMMANDS:
+        return NavCommand(action="query_period", period=PERIOD_COMMANDS[content])
 
     if content == "查看净值配置":
         return NavCommand(action="view_config")
@@ -155,16 +182,16 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
             minute=int(match.group(2)),
         )
 
-    match = re.fullmatch(r"添加净值产品\s+(\S+)\s+(.+)", content)
+    match = re.fullmatch(r"设置净值份额\s+(\S+)\s+([0-9]+(?:\.[0-9]+)?)", content)
     if match:
-        provider = _normalize_provider_alias(match.group(1))
-        if not provider:
-            return NavCommand(action="unknown_provider", query=match.group(2).strip())
         return NavCommand(
-            action="add_product",
-            provider=provider,
-            query=match.group(2).strip(),
+            action="set_shares",
+            code=match.group(1).strip(),
+            shares=Decimal(match.group(2)),
         )
+
+    if content.startswith("添加净值产品"):
+        return _parse_add_product_command(content)
 
     match = re.fullmatch(r"删除净值产品\s+(\S+)", content)
     if match:
@@ -180,11 +207,129 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
     return None
 
 
+def _normalize_command_text(text: str) -> str:
+    content = (text or "").replace("\u3000", " ").replace("\xa0", " ").strip()
+    return re.sub(r"\s+", " ", content)
+
+
+def _parse_add_product_command(content: str) -> NavCommand:
+    rest = re.sub(r"^(添加净值产品|添加产品)\s*", "", content).strip()
+    if not rest:
+        return NavCommand(action="add_product_usage")
+
+    parts = rest.split(" ", 1)
+    if len(parts) == 2:
+        provider = _normalize_provider_alias(parts[0])
+        if provider:
+            return NavCommand(action="add_product", provider=provider, query=parts[1].strip())
+
+    for alias in sorted(PROVIDER_ALIASES, key=len, reverse=True):
+        if rest.lower().startswith(alias.lower()):
+            provider = _normalize_provider_alias(alias)
+            query = rest[len(alias):].strip()
+            if query:
+                return NavCommand(action="add_product", provider=provider, query=query)
+            return NavCommand(action="add_product_usage")
+
+    return NavCommand(action="unknown_provider", query=rest)
+
+
 def calculate_change(latest: NavRecord, previous: NavRecord) -> tuple[Decimal, Optional[Decimal]]:
     delta = latest.unit_nav - previous.unit_nav
     if previous.unit_nav == 0:
         return delta, None
     return delta, delta / previous.unit_nav * Decimal("100")
+
+
+def calculate_period_start(period: str, base_date: date) -> date:
+    if period == "week":
+        return base_date - timedelta(days=base_date.weekday())
+    if period == "month":
+        return date(base_date.year, base_date.month, 1)
+    if period == "quarter":
+        month = ((base_date.month - 1) // 3) * 3 + 1
+        return date(base_date.year, month, 1)
+    if period == "half_year":
+        month = 1 if base_date.month <= 6 else 7
+        return date(base_date.year, month, 1)
+    if period == "year":
+        return date(base_date.year, 1, 1)
+    raise ValueError(f"Unsupported period: {period}")
+
+
+def build_nav_period_report(
+    cfg,
+    period: str,
+    base_date: Optional[date] = None,
+    generated_at: Optional[datetime] = None,
+) -> str:
+    base_date = base_date or date.today()
+    generated_at = generated_at or datetime.now()
+    start_date = calculate_period_start(period, base_date)
+    products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
+    label = PERIOD_LABELS.get(period, period)
+    lines = [
+        "## 📊 理财净值统计",
+        "",
+        f"> **统计周期**：{label}",
+        f"> **周期起点**：{start_date:%Y-%m-%d}",
+        f"> **查询时间**：{generated_at:%Y-%m-%d %H:%M}",
+        f"> **产品数量**：{len(products)}",
+    ]
+
+    if not products:
+        lines.append("")
+        lines.append("当前未配置净值产品，请先发送：添加净值产品 信银 AF233276B")
+        return "\n".join(lines)
+
+    for item in products:
+        product = NavProduct(
+            provider=getattr(item, "provider", ""),
+            code=getattr(item, "code", ""),
+            name=getattr(item, "name", "") or getattr(item, "code", ""),
+        )
+        lines.append("")
+        lines.append(f"### {product.name or product.code}")
+        lines.append(f"**机构**：{PROVIDER_LABELS.get(product.provider, product.provider)}")
+        lines.append(f"**代码**：{product.code}")
+        try:
+            provider = get_provider(product.provider)
+            records = provider.fetch_latest(product, as_of=base_date)
+            latest = _nearest_record_on_or_before(records, base_date)
+            baseline = _nearest_record_on_or_before(records, start_date)
+            if not latest:
+                lines.append("**状态**：暂无最新净值")
+                continue
+            lines.append(f"**最新净值**：{_format_record(latest)}")
+            if not baseline:
+                lines.append("**状态**：周期起点附近数据不足，无法计算收益")
+                continue
+
+            lines.append(f"**期初净值**：{_format_record(baseline)}")
+            delta, delta_pct = calculate_change(latest, baseline)
+            if delta_pct is None:
+                lines.append(f"**净值变动**：{_format_decimal(delta)}（无法计算百分比）")
+            else:
+                lines.append(f"**净值变动**：{_format_decimal(delta)}（{_format_pct(delta_pct)}）")
+
+            shares = _optional_decimal(getattr(item, "shares", None))
+            if shares is not None:
+                amount = delta * shares
+                lines.append(f"**持仓份额**：{_format_shares(shares)}")
+                lines.append(f"**估算收益**：{_format_money(amount)} 元")
+        except Exception as exc:
+            logger.error("NAV period stats failed for %s %s: %s", product.provider, product.code, exc, exc_info=True)
+            lines.append("**状态**：统计失败")
+            lines.append(f"**原因**：{exc}")
+
+    return "\n".join(lines)
+
+
+def _nearest_record_on_or_before(records: list[NavRecord], target_date: date) -> Optional[NavRecord]:
+    eligible = [record for record in records if record.nav_date <= target_date]
+    if not eligible:
+        return None
+    return sorted(eligible, key=lambda record: record.nav_date, reverse=True)[0]
 
 
 def _normalize_provider_alias(value: str) -> str:
@@ -281,6 +426,17 @@ def _format_decimal(value) -> str:
 
 def _format_pct(value: Decimal) -> str:
     return f"{value.quantize(Decimal('0.0001'))}%"
+
+
+def _format_money(value: Decimal) -> str:
+    return f"{value.quantize(Decimal('0.01'))}"
+
+
+def _format_shares(value: Decimal) -> str:
+    normalized = value.normalize()
+    if normalized == normalized.to_integral():
+        return str(normalized.quantize(Decimal("1")))
+    return format(normalized, "f")
 
 
 def build_add_product_candidates(provider: "WealthProvider", query: str, limit: int = 5) -> list[ProductCandidate]:
@@ -469,7 +625,9 @@ def format_nav_config(cfg) -> str:
         lines.append("- 暂无")
     for index, product in enumerate(nav.products, 1):
         label = PROVIDER_LABELS.get(product.provider, product.provider)
-        lines.append(f"{index}. {label} {product.code} {product.name}")
+        shares = _optional_decimal(getattr(product, "shares", None))
+        shares_text = f" 持仓份额：{_format_shares(shares)}" if shares is not None else ""
+        lines.append(f"{index}. {label} {product.code} {product.name}{shares_text}")
     return "\n".join(lines)
 
 
@@ -480,6 +638,15 @@ def delete_nav_product(cfg, code: str) -> tuple[bool, str]:
         if getattr(product, "code", "").upper() == code_upper:
             removed = products.pop(index)
             return True, f"已删除净值产品：{getattr(removed, 'name', '') or code_upper}"
+    return False, f"未找到净值产品：{code}"
+
+
+def set_nav_product_shares(cfg, code: str, shares: Decimal) -> tuple[bool, str]:
+    code_upper = (code or "").strip().upper()
+    for product in getattr(cfg.nav_monitor, "products", []):
+        if getattr(product, "code", "").upper() == code_upper:
+            product.shares = shares
+            return True, f"已设置持仓份额：{product.name or product.code} {_format_shares(shares)}"
     return False, f"未找到净值产品：{code}"
 
 

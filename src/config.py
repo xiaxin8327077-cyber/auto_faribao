@@ -1,6 +1,7 @@
 import os
 import sys
 import yaml
+from decimal import Decimal, InvalidOperation
 
 
 class ConfigError(Exception):
@@ -107,13 +108,17 @@ class NavProductConfig:
         self.provider = data.get("provider", "")
         self.code = data.get("code", "")
         self.name = data.get("name", "")
+        self.shares = data.get("shares")
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "provider": self.provider,
             "code": self.code,
             "name": self.name,
         }
+        if self.shares is not None:
+            data["shares"] = _serialize_number(self.shares)
+        return data
 
 
 class NavMonitorConfig:
@@ -186,3 +191,13 @@ def save_config(path: str, cfg: Config, original_data: dict = None) -> dict:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
     return data
+
+
+def _serialize_number(value):
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return value
+    if decimal_value == decimal_value.to_integral_value():
+        return int(decimal_value)
+    return float(decimal_value)

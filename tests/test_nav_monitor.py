@@ -10,13 +10,16 @@ from src.nav_monitor import (
     NavRecord,
     ProductCandidate,
     ProductNavResult,
+    build_nav_period_report,
     build_add_product_candidates,
     calculate_change,
+    calculate_period_start,
     confirm_pending_nav_add,
     format_product_candidates,
     format_nav_report,
     parse_nav_query_date,
     save_pending_nav_add,
+    set_nav_product_shares,
 )
 
 
@@ -48,6 +51,7 @@ def test_save_config_preserves_nav_monitor(tmp_path):
                     "provider": "citic_wealth",
                     "code": "AF233276B",
                     "name": "P1",
+                    "shares": Decimal("10000.5"),
                 },
             ],
         }
@@ -62,6 +66,7 @@ def test_save_config_preserves_nav_monitor(tmp_path):
     assert data["nav_monitor"]["push_minute"] == 30
     assert data["nav_monitor"]["products"][0]["provider"] == "citic_wealth"
     assert data["nav_monitor"]["products"][0]["code"] == "AF233276B"
+    assert data["nav_monitor"]["products"][0]["shares"] == 10000.5
 
 
 def test_load_config_reads_utf8_nav_product_names(tmp_path):
@@ -92,6 +97,16 @@ def test_parse_relative_dates():
 
 def test_parse_compact_query_date():
     assert parse_nav_query_date("查询净值 20260707", date(2026, 7, 8)) == date(2026, 7, 7)
+
+
+def test_calculate_period_start_uses_natural_periods():
+    base = date(2026, 7, 9)
+
+    assert calculate_period_start("week", base) == date(2026, 7, 6)
+    assert calculate_period_start("month", base) == date(2026, 7, 1)
+    assert calculate_period_start("quarter", base) == date(2026, 7, 1)
+    assert calculate_period_start("half_year", base) == date(2026, 7, 1)
+    assert calculate_period_start("year", base) == date(2026, 1, 1)
 
 
 def test_calculate_change_and_latest_report_format():
@@ -197,6 +212,62 @@ def test_date_miss_report_format():
     assert "> **查询日期**：2026-07-02" in text
     assert "**状态**：该日未披露" in text
     assert "**最近披露**：2026-06-26  1.000000" in text
+
+
+def test_period_report_includes_return_and_amount(monkeypatch):
+    records = [
+        NavRecord(
+            provider="citic_wealth",
+            code="AF233276B",
+            name="慧盈象固收增强一年持有期5号B",
+            nav_date=date(2026, 7, 7),
+            unit_nav=Decimal("1.0780"),
+            cumulative_nav=None,
+            source="test",
+        ),
+        NavRecord(
+            provider="citic_wealth",
+            code="AF233276B",
+            name="慧盈象固收增强一年持有期5号B",
+            nav_date=date(2026, 7, 1),
+            unit_nav=Decimal("1.0767"),
+            cumulative_nav=None,
+            source="test",
+        ),
+    ]
+
+    class FakeProvider:
+        def fetch_latest(self, product, **kwargs):
+            return records
+
+    monkeypatch.setattr("src.nav_monitor.get_provider", lambda provider: FakeProvider())
+    cfg = Config({
+        "nav_monitor": {
+            "products": [
+                {
+                    "provider": "citic_wealth",
+                    "code": "AF233276B",
+                    "name": "慧盈象固收增强一年持有期5号B",
+                    "shares": 10000,
+                }
+            ]
+        }
+    })
+
+    text = build_nav_period_report(
+        cfg,
+        "month",
+        base_date=date(2026, 7, 9),
+        generated_at=datetime(2026, 7, 9, 9, 30),
+    )
+
+    assert "## 📊 理财净值统计" in text
+    assert "> **统计周期**：月度" in text
+    assert "> **周期起点**：2026-07-01" in text
+    assert "**期初净值**：2026-07-01  1.076700" in text
+    assert "**净值变动**：0.001300（0.1207%）" in text
+    assert "**持仓份额**：10000" in text
+    assert "**估算收益**：13.00 元" in text
 
 
 def test_citic_provider_parses_history_and_candidates():
@@ -354,6 +425,22 @@ def test_confirm_pending_nav_add_rejects_duplicate(tmp_path):
     assert ok is False
     assert "已存在" in message
     assert len(cfg.nav_monitor.products) == 1
+
+
+def test_set_nav_product_shares_updates_existing_product():
+    cfg = Config({
+        "nav_monitor": {
+            "products": [
+                {"provider": "citic_wealth", "code": "AF233276B", "name": "P1"},
+            ]
+        }
+    })
+
+    ok, message = set_nav_product_shares(cfg, "AF233276B", Decimal("10000.5"))
+
+    assert ok is True
+    assert "已设置" in message
+    assert cfg.nav_monitor.products[0].shares == Decimal("10000.5")
 
 
 def test_scheduler_existing_times_do_not_include_nav_time():

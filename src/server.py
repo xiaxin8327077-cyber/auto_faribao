@@ -166,6 +166,7 @@ def create_app(cfg: Config) -> Flask:
 
                 elif (
                     "净值" in content
+                    or content.strip().startswith("添加产品")
                     or content.strip().startswith("确认添加净值产品")
                     or content.strip() == "取消添加净值产品"
                 ):
@@ -178,7 +179,7 @@ def create_app(cfg: Config) -> Flask:
                     from_user_id = msg.get("FromUserName", "")
                     _send_wechat_text(
                         cfg.wechat,
-                        "❌ 无法识别净值指令\n\n示例：立即查询净值\n查询昨天净值\n查询净值 20260707\n添加净值产品 信银 AF233276B",
+                        "❌ 无法识别净值指令\n\n示例：立即查询净值\n查询昨天净值\n查询净值 20260707\n查询月度净值\n添加净值产品 信银 AF233276B",
                         from_user_id,
                     )
                     return "", 200
@@ -201,8 +202,11 @@ def create_app(cfg: Config) -> Flask:
 **立即查询净值** — 查询最新净值涨跌
 **查询昨天净值** / **查询前天净值**
 **查询净值 20260707** — 查询指定日期
+**查询周度净值** / **查询月度净值**
+**查询季度净值** / **查询半年度净值** / **查询年度净值**
 **查看净值配置**
 **设置净值推送时间 08:00**
+**设置净值份额 AF233276B 10000**
 **添加净值产品 信银 AF233276B**
 **添加净值产品 南银 NYZY000022**
 **确认添加净值产品 1** / **取消添加净值产品**
@@ -1221,6 +1225,7 @@ def _build_text_reply(msg: dict, content: str) -> str:
 def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
     from src.nav_monitor import (
         build_add_product_candidates,
+        build_nav_period_report,
         build_nav_report,
         cancel_pending_nav_add,
         confirm_pending_nav_add,
@@ -1229,6 +1234,7 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         format_product_candidates,
         get_provider,
         save_pending_nav_add,
+        set_nav_product_shares,
     )
 
     action = nav_command.action
@@ -1267,6 +1273,13 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         _send_wechat_text(cfg.wechat, ("✅ " if ok else "❌ ") + message, from_user_id)
         return
 
+    if action == "set_shares":
+        ok, message = set_nav_product_shares(cfg, nav_command.code, nav_command.shares)
+        if ok:
+            _persist_runtime_config(cfg)
+        _send_wechat_text(cfg.wechat, ("✅ " if ok else "❌ ") + message, from_user_id)
+        return
+
     if action == "confirm_add":
         if not _try_start_cmd("确认添加净值产品"):
             _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
@@ -1291,7 +1304,15 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         _send_wechat_text(cfg.wechat, "❌ 暂不支持该理财机构\n\n目前支持：信银、南银", from_user_id)
         return
 
-    if action in ("query_latest", "query_date"):
+    if action == "add_product_usage":
+        _send_wechat_text(
+            cfg.wechat,
+            "❌ 添加净值产品格式不正确\n\n示例：\n添加净值产品 信银 AF233276B\n添加净值产品 南银 NYZY000022\n添加产品 信银 AF233276B",
+            from_user_id,
+        )
+        return
+
+    if action in ("query_latest", "query_date", "query_period"):
         if not _try_start_cmd("净值查询"):
             _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
             return
@@ -1300,7 +1321,10 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
 
         def process_nav_query():
             try:
-                report = build_nav_report(cfg, target_date=target_date)
+                if action == "query_period":
+                    report = build_nav_period_report(cfg, nav_command.period)
+                else:
+                    report = build_nav_report(cfg, target_date=target_date)
                 _send_wechat_markdown(cfg.wechat, report, from_user_id)
             except Exception as e:
                 logger.error(f"NAV query command failed: {e}", exc_info=True)
