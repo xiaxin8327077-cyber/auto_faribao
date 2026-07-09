@@ -214,7 +214,7 @@ def test_latest_report_includes_estimated_total_and_product_profit():
     pad4 = "\u3000" * 4
     assert f"份额：10000{pad4}｜净值：1.078000（2026-07-07）｜涨跌：<font color=\"info\">-0.000100（-0.0093%）</font>｜收益：<font color=\"info\">-1.00 元</font>" in text
     assert "### 2. 慧盈象固收增强六个月持有期1号B（AF233262B）" in text
-    assert f"份额：20000{pad4}｜净值：1.070800（2026-07-07）｜涨跌：<font color=\"warning\">0.000500（0.0467%）</font>｜收益：<font color=\"warning\">10.00 元</font>" in text
+    assert f"份额：20000{pad4}｜净值：1.070800（2026-07-07）｜涨跌：<font color=\"warning\">+0.000500（+0.0467%）</font>｜收益：<font color=\"warning\">10.00 元</font>" in text
 
 
 def test_latest_report_pads_compact_columns_for_alignment():
@@ -337,7 +337,7 @@ def test_period_report_includes_return_and_amount(monkeypatch):
     assert "### 慧盈象固收增强一年持有期5号B（AF233276B）" in text
     assert "**产品代码**" not in text
     assert "**期初净值**：2026-07-01  1.076700" in text
-    assert "**净值变动**：<font color=\"warning\">0.001300（0.1207%）</font>" in text
+    assert "**净值变动**：<font color=\"warning\">+0.001300（+0.1207%）</font>" in text
     assert "**持仓份额**：10000" in text
     assert "**估算收益**：<font color=\"warning\">13.00 元</font>" in text
 

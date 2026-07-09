@@ -535,15 +535,28 @@ def _format_decimal(value) -> str:
         return str(value)
 
 
+def _format_signed_decimal(value) -> str:
+    text = _format_decimal(value)
+    try:
+        return f"+{text}" if Decimal(str(value)) > 0 else text
+    except (InvalidOperation, ValueError):
+        return text
+
+
 def _format_pct(value: Decimal) -> str:
     return f"{value.quantize(Decimal('0.0001'))}%"
 
 
+def _format_signed_pct(value: Decimal) -> str:
+    text = _format_pct(value)
+    return f"+{text}" if value > 0 else text
+
+
 def _format_colored_change(delta: Decimal, delta_pct: Optional[Decimal]) -> str:
     if delta_pct is None:
-        text = f"{_format_decimal(delta)}（无法计算百分比）"
+        text = f"{_format_signed_decimal(delta)}（无法计算百分比）"
     else:
-        text = f"{_format_decimal(delta)}（{_format_pct(delta_pct)}）"
+        text = f"{_format_signed_decimal(delta)}（{_format_signed_pct(delta_pct)}）"
     return _wechat_color(text, _change_color(delta))
 
 
