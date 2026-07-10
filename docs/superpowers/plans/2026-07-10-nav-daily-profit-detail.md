@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a mobile bottom sheet that shows the combined profit for each NAV date when cumulative profit is selected.
+**Goal:** Add a mobile bottom sheet that switches between combined profit by NAV date, natural month, and natural year when cumulative profit is selected.
 
 **Architecture:** Extend the existing cached dashboard payload with a `daily_profits` projection grouped from immutable ledger entries. Render that projection in the existing single-page dashboard; no new endpoint, provider request, or persisted state is introduced.
 
@@ -28,7 +28,7 @@ Expected: failure because `daily_profits` is missing.
 
 - [ ] **Step 3: Add the minimal projection**
 
-Group `profit_entries` by `nav_date` with `Decimal`, then return:
+Group `profit_entries` by `nav_date`, `nav_date[:7]`, and `nav_date[:4]` with `Decimal`, then return daily, monthly, and yearly projections.
 
 ```python
 "daily_profits": [
@@ -61,7 +61,7 @@ Expected: failure because the sheet is absent.
 
 - [ ] **Step 3: Implement the sheet and interaction**
 
-Add a fixed backdrop, bottom-aligned sheet, compact date/amount rows, close button, and JavaScript handlers for trigger click, backdrop click, close click, and Escape. Populate rows from `data.daily_profits` during `render(data)`.
+Add a fixed backdrop, bottom-aligned sheet, compact date/amount rows, close button, and JavaScript handlers for trigger click, backdrop click, close click, and Escape. Add an accessible segmented control that defaults to daily and switches to monthly or yearly cached projections without another API request.
 
 - [ ] **Step 4: Verify focused tests pass**
 

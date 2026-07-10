@@ -8,14 +8,15 @@ Make the cumulative-profit summary on the mobile NAV dashboard open a compact da
 
 - The cumulative-profit hero is a keyboard-accessible button-like control.
 - Activating it opens a bottom sheet over the current dashboard.
-- The sheet shows the cumulative total, the accounting start date, and one row per NAV date in reverse chronological order.
+- The sheet shows the cumulative total, the accounting start date, and a segmented `每日 / 每月 / 每年` control.
+- Daily is selected by default. Daily rows use NAV dates, monthly rows use natural calendar months, and yearly rows use natural calendar years; every view is reverse chronological.
 - Each row contains only the date and that day's combined profit. Positive values use orange-red, negative values use green, and zero uses the normal text color.
 - The sheet closes through the close icon, backdrop click, or Escape key. Body scrolling is restored after close.
 - Empty ledgers show a clear empty state instead of an empty list.
 
 ## Data
 
-`NavDashboardStore.payload()` adds `daily_profits`, built exclusively from immutable `profit_entries`. Entries are grouped by `nav_date`, summed with `Decimal`, sorted newest first, and serialized as `{date, amount}`. This is presentation data only; no state migration or new network request is required.
+`NavDashboardStore.payload()` adds `daily_profits`, `monthly_profits`, and `yearly_profits`, built exclusively from immutable `profit_entries`. Entries are grouped by NAV date, natural month, and natural year, summed with `Decimal`, and sorted newest first. This is presentation data only; no state migration or new network request is required.
 
 ## Safety
 
@@ -26,7 +27,7 @@ Make the cumulative-profit summary on the mobile NAV dashboard open a compact da
 
 ## Verification
 
-- Unit test grouping, summing, date ordering, and cumulative-total consistency.
+- Unit test daily, natural-month, and natural-year grouping, summing, ordering, and cumulative-total consistency.
 - Route/page test the required dialog structure and controls.
 - Run the full pytest suite and compile checks.
 - Verify the deployed page at 390px and confirm open, scroll, close, and invalid-link states.
