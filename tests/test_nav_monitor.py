@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -18,10 +19,419 @@ from src.nav_monitor import (
     format_product_candidates,
     format_nav_report,
     parse_nav_query_date,
+    query_nav_period_products,
     save_pending_nav_add,
     set_nav_product_shares_batch,
     set_nav_product_shares,
 )
+
+
+def _sample_nav_results_for_image():
+    p1 = NavProduct("citic_wealth", "AF233276B", "慧盈象固收增强一年持有期5号B")
+    p2 = NavProduct("nanyin_wealth", "A32069", "南银理财悦稳最低持有91天3号-B份额")
+    return [
+        ProductNavResult(
+            product=p1,
+            latest=NavRecord("citic_wealth", "AF233276B", p1.name, date(2026, 7, 8), Decimal("1.077800")),
+            previous=NavRecord("citic_wealth", "AF233276B", p1.name, date(2026, 7, 7), Decimal("1.078000")),
+            shares=Decimal("401133.95"),
+        ),
+        ProductNavResult(
+            product=p2,
+            latest=NavRecord("nanyin_wealth", "A32069", p2.name, date(2026, 7, 8), Decimal("1.050881")),
+            previous=NavRecord("nanyin_wealth", "A32069", p2.name, date(2026, 7, 7), Decimal("1.050853")),
+            shares=Decimal("101423.76"),
+        ),
+    ]
+
+
+def _sample_period_nav_results_for_image():
+    from src.nav_monitor import ProductPeriodNavResult
+
+    p1 = NavProduct("citic_wealth", "AF233276B", "慧盈象固收增强一年持有期5号B")
+    p2 = NavProduct("nanyin_wealth", "A32069", "南银理财悦稳最低持有91天3号-B份额")
+    return [
+        ProductPeriodNavResult(
+            product=p1,
+            latest=NavRecord("citic_wealth", "AF233276B", p1.name, date(2026, 7, 8), Decimal("1.078000")),
+            baseline=NavRecord("citic_wealth", "AF233276B", p1.name, date(2026, 7, 1), Decimal("1.076700")),
+            shares=Decimal("10000"),
+        ),
+        ProductPeriodNavResult(
+            product=p2,
+            latest=NavRecord("nanyin_wealth", "A32069", p2.name, date(2026, 7, 8), Decimal("1.050881")),
+            baseline=NavRecord("nanyin_wealth", "A32069", p2.name, date(2025, 12, 31), Decimal("1.041491")),
+            shares=Decimal("10000"),
+        ),
+    ]
+
+
+def test_nav_report_image_model_places_total_next_to_title():
+    from src.nav_report_image import build_nav_report_image_model
+
+    model = build_nav_report_image_model(
+        _sample_nav_results_for_image(),
+        title="理财净值日报",
+        generated_at=datetime(2026, 7, 9, 10, 55),
+    )
+
+    assert model.title == "理财净值日报"
+    assert model.query_line == "查询时间：2026-07-09 10:55    最新披露净值 vs 上一期披露净值"
+    assert model.total_amount == Decimal("-77.39")
+    assert model.weather == "rain"
+    assert model.rows[0].code == "AF233276B"
+    assert model.rows[0].nav_text == "1.077800"
+    assert model.rows[0].nav_date_text == "2026-07-08"
+    assert model.rows[0].change_text == "-0.000200"
+    assert model.rows[0].income_text == "-80.23 元"
+    assert model.rows[1].change_text == "+0.000028"
+    assert model.rows[1].income_text == "2.84 元"
+
+
+def test_nav_period_report_image_model_uses_period_columns():
+    from src.nav_report_image import build_nav_period_report_image_model
+
+    model = build_nav_period_report_image_model(
+        _sample_period_nav_results_for_image(),
+        title="理财净值月报",
+        period_label="月度",
+        start_date=date(2026, 7, 1),
+        generated_at=datetime(2026, 7, 9, 10, 55),
+    )
+
+    assert model.title == "理财净值月报"
+    assert model.query_line == "查询时间：2026-07-09 10:55    统计周期：月度    周期起点：2026-07-01"
+    assert model.total_amount == Decimal("106.90")
+    assert model.weather == "sun"
+    assert model.rows[0].start_nav_text == "1.076700"
+    assert model.rows[0].start_date_text == "2026-07-01"
+    assert model.rows[0].end_nav_text == "1.078000"
+    assert model.rows[0].end_date_text == "2026-07-08"
+    assert model.rows[0].change_text == "+0.001300"
+    assert model.rows[0].income_text == "13.00 元"
+
+
+def test_render_nav_period_report_image_creates_png(tmp_path):
+    from PIL import Image
+    from src.nav_report_image import render_nav_period_report_image
+
+    image_path = render_nav_period_report_image(
+        _sample_period_nav_results_for_image(),
+        title="理财净值月报",
+        period_label="月度",
+        start_date=date(2026, 7, 1),
+        generated_at=datetime(2026, 7, 9, 10, 55),
+        output_dir=tmp_path,
+    )
+
+    assert image_path.endswith(".png")
+    with Image.open(image_path) as image:
+        assert image.size[0] == 1320
+        assert image.size[1] < 500
+
+
+def test_render_nav_report_image_creates_compact_png(tmp_path):
+    from PIL import Image
+    from src.nav_report_image import render_nav_report_image
+
+    image_path = render_nav_report_image(
+        _sample_nav_results_for_image(),
+        title="理财净值日报",
+        generated_at=datetime(2026, 7, 9, 10, 55),
+        output_dir=tmp_path,
+    )
+
+    assert image_path.endswith(".png")
+    assert os.path.getsize(image_path) < 2 * 1024 * 1024
+    with Image.open(image_path) as image:
+        assert image.size[0] == 1320
+        assert image.size[1] < 500
+        assert image.getbbox() is not None
+
+
+def test_nav_report_image_total_uses_unrounded_product_amounts():
+    from src.nav_report_image import build_nav_report_image_model
+
+    products = [
+        ProductNavResult(
+            product=NavProduct("citic_wealth", "P1", "产品1"),
+            latest=NavRecord("citic_wealth", "P1", "产品1", date(2026, 7, 8), Decimal("1.000004")),
+            previous=NavRecord("citic_wealth", "P1", "产品1", date(2026, 7, 7), Decimal("1.000000")),
+            shares=Decimal("1000"),
+        ),
+        ProductNavResult(
+            product=NavProduct("citic_wealth", "P2", "产品2"),
+            latest=NavRecord("citic_wealth", "P2", "产品2", date(2026, 7, 8), Decimal("1.000004")),
+            previous=NavRecord("citic_wealth", "P2", "产品2", date(2026, 7, 7), Decimal("1.000000")),
+            shares=Decimal("1000"),
+        ),
+    ]
+
+    model = build_nav_report_image_model(products, generated_at=datetime(2026, 7, 9, 10, 55))
+
+    assert model.rows[0].income_text == "0.00 元"
+    assert model.rows[1].income_text == "0.00 元"
+    assert model.total_amount == Decimal("0.01")
+
+
+def test_push_nav_period_report_prefers_image_message(monkeypatch, tmp_path):
+    import src.nav_monitor as nav_monitor
+
+    cfg = Config(
+        {
+            "wechat": {"corpid": "c", "corpsecret": "s", "agentid": 1, "to_user": "all"},
+            "nav_monitor": {
+                "products": [
+                    {"provider": "citic_wealth", "code": "AF233276B", "name": "慧盈象固收增强一年持有期5号B"}
+                ]
+            },
+        }
+    )
+    monkeypatch.setattr(
+        nav_monitor,
+        "query_nav_period_products",
+        lambda cfg, period, base_date=None: (date(2026, 7, 1), _sample_period_nav_results_for_image()),
+    )
+
+    sent = []
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_image",
+        lambda wechat, image_path, to_user=None: sent.append(("image", os.path.exists(image_path), to_user)) or True,
+    )
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_markdown",
+        lambda wechat, content, to_user=None: sent.append(("markdown", content, to_user)) or True,
+    )
+
+    report = nav_monitor.push_nav_period_report(
+        cfg,
+        "month",
+        base_date=date(2026, 7, 9),
+        to_user="user1",
+        image_output_dir=tmp_path,
+    )
+
+    assert "理财净值月报" in report
+    assert [item[0] for item in sent] == ["image"]
+    assert sent[0][1] is True
+    assert sent[0][2] == "user1"
+
+
+def test_push_nav_period_report_falls_back_to_markdown_when_image_send_fails(monkeypatch, tmp_path):
+    import src.nav_monitor as nav_monitor
+
+    cfg = Config(
+        {
+            "wechat": {"corpid": "c", "corpsecret": "s", "agentid": 1, "to_user": "all"},
+            "nav_monitor": {
+                "products": [
+                    {"provider": "citic_wealth", "code": "AF233276B", "name": "慧盈象固收增强一年持有期5号B"}
+                ]
+            },
+        }
+    )
+    monkeypatch.setattr(
+        nav_monitor,
+        "query_nav_period_products",
+        lambda cfg, period, base_date=None: (date(2026, 7, 1), _sample_period_nav_results_for_image()),
+    )
+
+    sent = []
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_image",
+        lambda wechat, image_path, to_user=None: sent.append(("image", to_user)) or False,
+    )
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_markdown",
+        lambda wechat, content, to_user=None: sent.append(("markdown", to_user, content)) or True,
+    )
+
+    nav_monitor.push_nav_period_report(
+        cfg,
+        "month",
+        base_date=date(2026, 7, 9),
+        to_user="user1",
+        image_output_dir=tmp_path,
+    )
+
+    assert [item[0] for item in sent] == ["image", "markdown"]
+    assert "理财净值月报" in sent[1][2]
+
+
+def test_push_nav_report_prefers_image_message(monkeypatch, tmp_path):
+    import src.nav_monitor as nav_monitor
+
+    cfg = Config(
+        {
+            "wechat": {"corpid": "c", "corpsecret": "s", "agentid": 1, "to_user": "all"},
+            "nav_monitor": {
+                "products": [
+                    {"provider": "citic_wealth", "code": "AF233276B", "name": "慧盈象固收增强一年持有期5号B"}
+                ]
+            },
+        }
+    )
+    monkeypatch.setattr(
+        nav_monitor,
+        "query_nav_products",
+        lambda cfg, target_date=None: _sample_nav_results_for_image(),
+    )
+
+    sent = []
+
+    def fake_send_image(wechat, image_path, to_user=None):
+        sent.append(("image", image_path, os.path.exists(image_path), to_user))
+        return True
+
+    def fake_send_markdown(wechat, content, to_user=None):
+        sent.append(("markdown", content, to_user))
+        return True
+
+    monkeypatch.setattr("src.wechat_notifier.send_image", fake_send_image)
+    monkeypatch.setattr("src.wechat_notifier.send_markdown", fake_send_markdown)
+
+    report = nav_monitor.push_nav_report(cfg, to_user="user1", image_output_dir=tmp_path)
+
+    assert report.startswith("##")
+    assert [item[0] for item in sent] == ["image"]
+    assert sent[0][2] is True
+    assert sent[0][3] == "user1"
+    assert not os.path.exists(sent[0][1])
+
+
+def test_push_nav_report_falls_back_to_markdown_when_image_send_fails(monkeypatch, tmp_path):
+    import src.nav_monitor as nav_monitor
+
+    cfg = Config(
+        {
+            "wechat": {"corpid": "c", "corpsecret": "s", "agentid": 1, "to_user": "all"},
+            "nav_monitor": {
+                "products": [
+                    {"provider": "citic_wealth", "code": "AF233276B", "name": "慧盈象固收增强一年持有期5号B"}
+                ]
+            },
+        }
+    )
+    monkeypatch.setattr(
+        nav_monitor,
+        "query_nav_products",
+        lambda cfg, target_date=None: _sample_nav_results_for_image(),
+    )
+
+    sent = []
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_image",
+        lambda wechat, image_path, to_user=None: sent.append(("image", to_user)) or False,
+    )
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_markdown",
+        lambda wechat, content, to_user=None: sent.append(("markdown", to_user, content)) or True,
+    )
+
+    nav_monitor.push_nav_report(cfg, to_user="user1", image_output_dir=tmp_path)
+
+    assert [item[0] for item in sent] == ["image", "markdown"]
+    assert sent[1][1] == "user1"
+    assert "理财净值日报" in sent[1][2]
+
+
+def test_push_nav_evening_report_sends_only_today_disclosed_products(monkeypatch, tmp_path):
+    import src.nav_monitor as nav_monitor
+
+    cfg = Config(
+        {
+            "wechat": {"corpid": "c", "corpsecret": "s", "agentid": 1, "to_user": "all"},
+            "nav_monitor": {
+                "products": [
+                    {"provider": "citic_wealth", "code": "AF233276B", "name": "今日产品"},
+                    {"provider": "citic_wealth", "code": "AF233262B", "name": "昨日产品"},
+                ]
+            },
+        }
+    )
+    today_product = NavProduct("citic_wealth", "AF233276B", "今日产品")
+    old_product = NavProduct("citic_wealth", "AF233262B", "昨日产品")
+    monkeypatch.setattr(
+        nav_monitor,
+        "query_nav_products",
+        lambda cfg, target_date=None: [
+            ProductNavResult(
+                product=today_product,
+                latest=NavRecord("citic_wealth", "AF233276B", "今日产品", date(2026, 7, 9), Decimal("1.100000")),
+                previous=NavRecord("citic_wealth", "AF233276B", "今日产品", date(2026, 7, 8), Decimal("1.090000")),
+            ),
+            ProductNavResult(
+                product=old_product,
+                latest=NavRecord("citic_wealth", "AF233262B", "昨日产品", date(2026, 7, 8), Decimal("1.050000")),
+                previous=NavRecord("citic_wealth", "AF233262B", "昨日产品", date(2026, 7, 7), Decimal("1.040000")),
+            ),
+        ],
+    )
+    sent = []
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_image",
+        lambda wechat, image_path, to_user=None: sent.append(("image", os.path.exists(image_path), to_user)) or True,
+    )
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_markdown",
+        lambda wechat, content, to_user=None: sent.append(("markdown", content, to_user)) or True,
+    )
+
+    report = nav_monitor.push_nav_evening_report(
+        cfg,
+        as_of_date=date(2026, 7, 9),
+        to_user="user1",
+        image_output_dir=tmp_path,
+    )
+
+    assert "理财净值晚报" in report
+    assert "今日产品" in report
+    assert "昨日产品" not in report
+    assert [item[0] for item in sent] == ["image"]
+    assert sent[0][1] is True
+    assert sent[0][2] == "user1"
+
+
+def test_push_nav_evening_report_skips_when_no_today_disclosed_products(monkeypatch, tmp_path):
+    import src.nav_monitor as nav_monitor
+
+    cfg = Config(
+        {
+            "wechat": {"corpid": "c", "corpsecret": "s", "agentid": 1, "to_user": "all"},
+            "nav_monitor": {
+                "products": [
+                    {"provider": "citic_wealth", "code": "AF233276B", "name": "昨日产品"},
+                ]
+            },
+        }
+    )
+    product = NavProduct("citic_wealth", "AF233276B", "昨日产品")
+    monkeypatch.setattr(
+        nav_monitor,
+        "query_nav_products",
+        lambda cfg, target_date=None: [
+            ProductNavResult(
+                product=product,
+                latest=NavRecord("citic_wealth", "AF233276B", "昨日产品", date(2026, 7, 8), Decimal("1.100000")),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_image",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not send image")),
+    )
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_markdown",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not send markdown")),
+    )
+
+    report = nav_monitor.push_nav_evening_report(
+        cfg,
+        as_of_date=date(2026, 7, 9),
+        image_output_dir=tmp_path,
+    )
+
+    assert report == ""
 
 
 def test_nav_monitor_config_defaults_to_enabled_with_0800():
@@ -30,6 +440,9 @@ def test_nav_monitor_config_defaults_to_enabled_with_0800():
     assert cfg.nav_monitor.enabled is True
     assert cfg.nav_monitor.push_hour == 8
     assert cfg.nav_monitor.push_minute == 0
+    assert cfg.nav_monitor.evening_push_enabled is True
+    assert cfg.nav_monitor.evening_push_hour == 23
+    assert cfg.nav_monitor.evening_push_minute == 30
     assert cfg.nav_monitor.products == []
 
 
@@ -65,6 +478,9 @@ def test_save_config_preserves_nav_monitor(tmp_path):
     assert data["nav_monitor"]["enabled"] is True
     assert data["nav_monitor"]["push_hour"] == 8
     assert data["nav_monitor"]["push_minute"] == 30
+    assert data["nav_monitor"]["evening_push_enabled"] is True
+    assert data["nav_monitor"]["evening_push_hour"] == 23
+    assert data["nav_monitor"]["evening_push_minute"] == 30
     assert data["nav_monitor"]["products"][0]["provider"] == "citic_wealth"
     assert data["nav_monitor"]["products"][0]["code"] == "AF233276B"
     assert data["nav_monitor"]["products"][0]["shares"] == 10000.5
@@ -118,6 +534,8 @@ def test_calculate_period_start_supports_rolling_day_periods():
     assert calculate_period_start("rolling_3m", base) == date(2026, 4, 10)
     assert calculate_period_start("rolling_6m", base) == date(2026, 1, 10)
     assert calculate_period_start("rolling_1y", base) == date(2025, 7, 9)
+    assert calculate_period_start("rolling_2y", base) == date(2024, 7, 9)
+    assert calculate_period_start("rolling_3y", base) == date(2023, 7, 10)
 
 
 def test_calculate_change_and_latest_report_format():
@@ -416,6 +834,36 @@ def test_period_report_fetches_before_natural_start_for_baseline(monkeypatch):
     assert "　收益：<font color=\"warning\">" in text
 
 
+def test_period_query_uses_first_record_after_start_when_no_earlier_baseline(monkeypatch):
+    product_name = "慧盈象固收增强一年持有期5号B"
+
+    class FakeProvider:
+        def fetch_latest(self, product, **kwargs):
+            return [
+                NavRecord("citic_wealth", "AF233276B", product_name, date(2026, 7, 8), Decimal("1.077800")),
+                NavRecord("citic_wealth", "AF233276B", product_name, date(2023, 12, 29), Decimal("1.000000")),
+            ]
+
+    monkeypatch.setattr("src.nav_monitor.get_provider", lambda provider: FakeProvider())
+    cfg = Config({
+        "nav_monitor": {
+            "products": [
+                {
+                    "provider": "citic_wealth",
+                    "code": "AF233276B",
+                    "name": product_name,
+                }
+            ]
+        }
+    })
+
+    start_date, results = query_nav_period_products(cfg, "rolling_3y", base_date=date(2026, 7, 9))
+
+    assert start_date == date(2023, 7, 10)
+    assert results[0].baseline is not None
+    assert results[0].baseline.nav_date == date(2023, 12, 29)
+
+
 def test_citic_provider_parses_history_and_candidates():
     class FakeCiticClient:
         def get_json(self, path, params):
@@ -701,6 +1149,52 @@ def test_scheduler_nav_monitor_runs_only_on_workday(monkeypatch):
     assert _should_run_nav_monitor(cfg, now, None) is False
 
 
+def test_scheduler_nav_evening_push_runs_on_workday(monkeypatch):
+    import src.scheduler
+    from src.scheduler import _should_run_nav_evening_push
+
+    cfg = Config(
+        {
+            "nav_monitor": {
+                "enabled": True,
+                "evening_push_enabled": True,
+                "evening_push_hour": 23,
+                "evening_push_minute": 30,
+            }
+        }
+    )
+    now = datetime(2026, 7, 9, 23, 30)
+
+    monkeypatch.setattr(src.scheduler, "_is_workday", lambda day: True)
+
+    assert _should_run_nav_evening_push(cfg, now, None) is True
+    assert _should_run_nav_evening_push(cfg, now, "2026-07-09") is False
+
+    cfg.nav_monitor.evening_push_enabled = False
+    assert _should_run_nav_evening_push(cfg, now, None) is False
+
+
+def test_scheduler_nav_evening_push_runs_only_on_workday(monkeypatch):
+    import src.scheduler
+    from src.scheduler import _should_run_nav_evening_push
+
+    cfg = Config(
+        {
+            "nav_monitor": {
+                "enabled": True,
+                "evening_push_enabled": True,
+                "evening_push_hour": 23,
+                "evening_push_minute": 30,
+            }
+        }
+    )
+    now = datetime(2026, 7, 11, 23, 30)
+
+    monkeypatch.setattr(src.scheduler, "_is_workday", lambda day: False)
+
+    assert _should_run_nav_evening_push(cfg, now, None) is False
+
+
 def test_scheduler_finds_due_nav_periods_on_first_workday(monkeypatch):
     import src.scheduler
     from src.scheduler import _nav_period_push_jobs
@@ -762,6 +1256,96 @@ def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
         ("week", date(2026, 7, 5)),
         ("month", date(2026, 6, 30)),
     ]
+
+
+def test_scheduler_nav_evening_push_calls_evening_report(monkeypatch):
+    import src.nav_monitor
+    from src.scheduler import _run_nav_evening_push
+
+    calls = []
+
+    def fake_evening(cfg, as_of_date=None, to_user=None):
+        calls.append((as_of_date, to_user))
+        return "ok"
+
+    monkeypatch.setattr(src.nav_monitor, "push_nav_evening_report", fake_evening)
+
+    _run_nav_evening_push(
+        Config({"wechat": {"to_user": "user1"}}),
+        day=date(2026, 7, 9),
+    )
+
+    assert calls == [(date(2026, 7, 9), "user1")]
+
+
+def test_scheduler_nav_estimate_runs_on_workday(monkeypatch):
+    import src.scheduler
+    from src.scheduler import _should_run_nav_estimate
+
+    cfg = Config({"nav_monitor": {"estimate_enabled": True, "estimate_hour": 17, "estimate_minute": 30}})
+    now = datetime(2026, 7, 9, 17, 30)
+
+    monkeypatch.setattr(src.scheduler, "_is_workday", lambda day: True)
+
+    assert _should_run_nav_estimate(cfg, now, None) is True
+    assert _should_run_nav_estimate(cfg, now, "2026-07-09") is False
+
+
+def test_scheduler_nav_estimate_push_updates_profiles_before_estimate(monkeypatch):
+    import src.nav_holdings
+    from src.scheduler import _run_nav_estimate_push
+
+    calls = []
+
+    def fake_update(cfg, today=None, notify=False):
+        calls.append(("update", today, notify))
+        return []
+
+    def fake_push(cfg, to_user=None):
+        calls.append(("estimate", to_user))
+        return "ok"
+
+    monkeypatch.setattr(src.nav_holdings, "refresh_quarterly_profiles_if_due", fake_update)
+    monkeypatch.setattr(src.nav_holdings, "push_estimate_report", fake_push)
+
+    _run_nav_estimate_push(Config({"wechat": {"to_user": "XiaXin"}}), day=date(2026, 7, 9))
+
+    assert calls == [
+        ("update", date(2026, 7, 9), False),
+        ("estimate", "XiaXin"),
+    ]
+
+
+def test_confirm_add_triggers_background_profile_refresh(monkeypatch, tmp_path):
+    import src.nav_holdings as nav_holdings
+    import src.nav_monitor as nav_monitor
+
+    pending = tmp_path / "pending.json"
+    cfg = Config({"nav_monitor": {"products": []}})
+    candidate = ProductCandidate(
+        provider="citic_wealth",
+        code="AF233276B",
+        name="慧盈象固收增强一年持有期5号B",
+    )
+    nav_monitor.save_pending_nav_add([candidate], pending_path=str(pending), now=datetime(2026, 7, 9, 10, 0))
+    calls = []
+
+    monkeypatch.setattr(
+        nav_holdings,
+        "refresh_profile_for_product",
+        lambda cfg, product, notify=False: calls.append((product.code, notify)),
+    )
+
+    ok, message = nav_monitor.confirm_pending_nav_add(
+        cfg,
+        1,
+        pending_path=str(pending),
+        now=datetime(2026, 7, 9, 10, 1),
+    )
+
+    assert ok is True
+    assert "已添加" in message
+    assert calls == [("AF233276B", False)]
 
 
 def test_scheduler_nav_push_exception_does_not_notify_report_failure(monkeypatch):

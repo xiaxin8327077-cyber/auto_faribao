@@ -54,6 +54,14 @@ def _normalize_report_date(report_date: str = None) -> str:
         raise TargetError(f"日报日期格式不正确: {report_date}")
 
 
+def _previous_report_cutoff(before_date: str = None) -> str:
+    return _normalize_report_date(before_date)
+
+
+def _is_previous_report_date(row_date: str, cutoff: str) -> bool:
+    return not row_date or row_date < cutoff
+
+
 def _find_existing_report_row(page: Page, report_date: str):
     try:
         page.wait_for_selector("table tbody tr, .el-table__body tr", timeout=30000)
@@ -316,7 +324,7 @@ def get_previous_report_content(cfg: Config, before_date: str = None) -> str:
        - From plain text elements (view mode)
     """
     target = cfg.target
-    cutoff = _normalize_report_date(before_date) if before_date else None
+    cutoff = _previous_report_cutoff(before_date)
 
     logger.info("Logging in via API to read previous report...")
     try:
@@ -352,7 +360,7 @@ def get_previous_report_content(cfg: Config, before_date: str = None) -> str:
             for row in rows:
                 text = row.inner_text()
                 row_date = _extract_row_date(text)
-                if cutoff and row_date and row_date >= cutoff:
+                if not _is_previous_report_date(row_date, cutoff):
                     continue
 
                 logger.debug(f"Trying row with date {row_date or 'unknown'}")
@@ -471,6 +479,21 @@ def _extract_detail_from_expanded_row(element) -> str:
     If '详情' is not found, return empty string to try next strategy.
     """
     try:
+        detail_labels = ("详情", "工作内容", "日志内容", "内容", "工作详情")
+        for item in element.query_selector_all(".el-form-item"):
+            label_element = item.query_selector(".el-form-item__label")
+            content_element = item.query_selector(".el-form-item__content")
+            if not label_element or not content_element:
+                continue
+
+            label = (label_element.inner_text() or "").strip().rstrip(":：").strip()
+            if label not in detail_labels:
+                continue
+
+            content = (content_element.inner_text() or "").strip()
+            if len(content) >= 5:
+                return content
+
         text = (element.inner_text() or "").strip()
         if not text or len(text) < 10:
             return ""
@@ -481,7 +504,7 @@ def _extract_detail_from_expanded_row(element) -> str:
 
         detail_idx = -1
         for i, line in enumerate(lines):
-            if line in ("详情", "工作内容", "日志内容", "内容", "工作详情"):
+            if line in detail_labels:
                 detail_idx = i
                 break
 
@@ -1115,6 +1138,50 @@ def get_report_status(cfg: Config, report_date: str = None) -> dict:
             "project": project,
             "approved": approved,
         }
+    finally:
+        browser.close()
+        pw.stop()
+        _BROWSER_LOCK.release()
+
+
+def _read_report_content_from_row(page: Page, row) -> str:
+    try:
+        content = _read_content_by_expand_row(page, row)
+        if content:
+            return content
+    except Exception:
+        pass
+
+    try:
+        content = _read_content_from_row(row)
+        if content:
+            return content
+    except Exception:
+        pass
+
+    try:
+        return _read_content_by_open_dialog(page, row)
+    except Exception:
+        return ""
+
+
+def _find_report_content_on_pages(page: Page, report_date: str, max_pages: int = 12) -> str:
+    for page_index in range(max_pages):
+        row = _find_existing_report_row(page, report_date)
+        if row:
+            return _read_report_content_from_row(page, row)
+        if page_index == max_pages - 1 or not _go_to_next_page(page):
+            return ""
+        page.wait_for_timeout(1000)
+    return ""
+
+
+def get_report_content_by_date(cfg: Config, report_date: str) -> str:
+    """Read only the exact date's report content from OA, scanning paginated history."""
+    actual_date = _normalize_report_date(report_date)
+    pw, browser, context, page = _login_and_navigate(cfg)
+    try:
+        return _find_report_content_on_pages(page, actual_date)
     finally:
         browser.close()
         pw.stop()

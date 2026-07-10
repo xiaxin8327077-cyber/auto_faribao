@@ -17,6 +17,38 @@ class ExtractError(Exception):
     pass
 
 
+def _format_task_row(row: dict) -> str:
+    name = str(row.get("name") or "").strip()
+    if not name:
+        return ""
+
+    description = str(row.get("description") or "").strip()
+    project = str(row.get("project") or "").strip()
+    if project == "...":
+        project = ""
+
+    task_text = f"{name}：{description}" if description else name
+    return f"【{project}】{task_text}" if project else task_text
+
+
+def _format_task_rows(rows: list[dict]) -> list[str]:
+    tasks = [_format_task_row(row) for row in rows]
+    return [task for task in tasks if task]
+
+
+def _build_extract_eval_config(cfg: SourceConfig) -> dict:
+    return {
+        "tabId": cfg.tab_id,
+        "personField": cfg.person_field,
+        "statusField": cfg.status_field,
+        "nameField": cfg.name_field,
+        "personNames": cfg.person_names,
+        "statusValues": cfg.status_values,
+        "descField": cfg.desc_field,
+        "projectField": cfg.project_field,
+    }
+
+
 def extract_tasks(cfg: SourceConfig) -> list[str]:
     """Extract task names matching the configured filters."""
     last_error = None
@@ -72,7 +104,7 @@ def _extract_tasks_once(cfg: SourceConfig) -> list[str]:
                 page.wait_for_timeout(5000)
 
                 tasks = page.evaluate(
-                    """(cfg) => {
+                    """async (cfg) => {
                         const core = window.ContainerApp.containerSdk.smartSheetSdk.editor.getCore();
                         const table = core.base.getTableByTableId(cfg.tabId);
                         if (!table) return {error: 'table not found'};
@@ -94,6 +126,18 @@ def _extract_tasks_once(cfg: SourceConfig) -> list[str]:
                                         optionMaps[f.id] = opts;
                                     }
                                 } catch(e) {}
+                            }
+                        }
+
+                        const projectField = cfg.projectField
+                            ? fields.find(function(field) { return field.title === cfg.projectField; })
+                            : null;
+                        let projectLoadError = '';
+                        if (projectField && typeof projectField.preloadLocalLinkTable === 'function') {
+                            try {
+                                await projectField.preloadLocalLinkTable();
+                            } catch (e) {
+                                projectLoadError = String(e);
                             }
                         }
 
@@ -179,35 +223,60 @@ def _extract_tasks_once(cfg: SourceConfig) -> list[str]:
                             // Check person filter
                             if (!cfg.personNames.some(function(n) { return personName.includes(n); })) continue;
 
-                            // Get task name and description
+                            // Get task name, description, and linked project display name
                             const taskName = extractText(table.getCell(rid, nameFid));
-                            let taskText = taskName;
+                            let descText = '';
                             if (descFid) {
-                                const descText = extractText(table.getCell(rid, descFid));
-                                if (descText) {
-                                    taskText = taskName + '：' + descText;
+                                descText = extractText(table.getCell(rid, descFid));
+                            }
+
+                            let projectText = '';
+                            if (projectField) {
+                                try {
+                                    const standardCell = projectField.getStandardCell(rid);
+                                    const projectItems = standardCell && Array.isArray(standardCell.data)
+                                        ? standardCell.data
+                                        : [];
+                                    projectText = projectItems
+                                        .map(function(item) {
+                                            return item && item.text ? item.text.trim() : '';
+                                        })
+                                        .filter(function(text) { return text && text !== '...'; })
+                                        .join('、');
+                                } catch (e) {
+                                    projectText = '';
                                 }
                             }
 
-                            if (taskText) tasks.push(taskText);
+                            if (taskName) {
+                                tasks.push({
+                                    project: projectText,
+                                    name: taskName,
+                                    description: descText,
+                                });
+                            }
                         }
-                        return {tasks: tasks};
+                        return {
+                            tasks: tasks,
+                            projectFieldFound: !!projectField,
+                            projectLoadError: projectLoadError,
+                        };
                     }""",
-                    {
-                        "tabId": cfg.tab_id,
-                        "personField": cfg.person_field,
-                        "statusField": cfg.status_field,
-                        "nameField": cfg.name_field,
-                        "personNames": cfg.person_names,
-                        "statusValues": cfg.status_values,
-                        "descField": cfg.desc_field,
-                    },
+                    _build_extract_eval_config(cfg),
                 )
 
                 if "error" in tasks:
                     raise ExtractError(f"JS extraction failed: {tasks['error']}")
 
-                task_list = tasks.get("tasks", [])
+                if not tasks.get("projectFieldFound"):
+                    logger.warning("Smart sheet project field not found: %s", cfg.project_field)
+                elif tasks.get("projectLoadError"):
+                    logger.warning(
+                        "Smart sheet project relation preload failed: %s",
+                        tasks["projectLoadError"],
+                    )
+
+                task_list = _format_task_rows(tasks.get("tasks", []))
                 logger.info(f"Extracted {len(task_list)} tasks")
                 return task_list
 

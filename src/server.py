@@ -1,8 +1,10 @@
 import os
+import re
 import subprocess
 import threading
 import logging
-from flask import Flask, request, jsonify
+from datetime import date, timedelta
+from flask import Flask, request, jsonify, send_from_directory
 from src.config import Config
 from src.notifier import notify_report_success, notify_report_failure
 from src.target import submit_daily_report, get_previous_report_content, get_report_status, delete_daily_report, get_recent_reports, get_monthly_statistics, get_weekly_statistics
@@ -42,6 +44,13 @@ def _end_cmd():
         _cmd_name = ""
 
 
+def _finish_manual_qr_command(success: bool, message: str) -> None:
+    try:
+        logger.info("Manual QR command finished: success=%s, message=%s", success, message)
+    finally:
+        _end_cmd()
+
+
 def _current_cmd() -> str:
     with _cmd_lock:
         return _cmd_name
@@ -54,6 +63,373 @@ def _busy_reply() -> str:
 
 为避免资源冲突，同一时间只能执行一个操作。
 请等当前任务完成后再试～"""
+
+
+def _normalize_message_text(text: str) -> str:
+    content = (text or "").replace("\u3000", " ").replace("\xa0", " ").strip()
+    return re.sub(r"\s+", " ", content)
+
+
+def _contains_any(content: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in content for keyword in keywords)
+
+
+def _is_daily_report_query(content: str) -> bool:
+    return (
+        "日报" in content
+        and not _contains_any(content, ("状态", "提交了吗", "交了吗"))
+        and _contains_any(content, ("查询", "查", "看", "查看", "看看", "看下", "读取"))
+    )
+
+
+def _parse_daily_report_query_date(content: str, reference_date: date) -> date | None:
+    if not _is_daily_report_query(content):
+        return None
+
+    match = re.search(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)", content)
+    if match:
+        year, month, day = (int(value) for value in match.groups())
+    else:
+        match = re.search(r"(?<!\d)(20\d{2})[-/](\d{1,2})[-/](\d{1,2})(?!\d)", content)
+        if match:
+            year, month, day = (int(value) for value in match.groups())
+        else:
+            match = re.search(r"(?<!\d)(\d{1,2})月(\d{1,2})日?", content)
+            if match:
+                year = reference_date.year
+                month, day = (int(value) for value in match.groups())
+            elif "前天" in content:
+                return reference_date - timedelta(days=2)
+            elif "昨天" in content or "前一天" in content or "上一天" in content:
+                return reference_date - timedelta(days=1)
+            elif "今天" in content or "今日" in content:
+                return reference_date
+            else:
+                return None
+
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _has_daily_report_date_hint(content: str) -> bool:
+    return bool(
+        re.search(r"20\d{2}[-/]?\d{2}[-/]?\d{2}|\d{1,2}月\d{1,2}日?", content)
+        or _contains_any(content, ("今天", "今日", "昨天", "前天", "前一天", "上一天"))
+    )
+
+
+def _normalize_daily_report_command_text(text: str, reference_date: date | None = None) -> str:
+    content = _normalize_message_text(text)
+    if not content:
+        return content
+    if "净值" in content or ("收益" in content and "日报" not in content):
+        return content
+
+    daily_related = "日报" in content or _contains_any(content, ("今天提交了吗", "今日状态", "最近记录", "提交统计"))
+    if not daily_related:
+        return content
+
+    time_match = re.search(r"(\d{1,2})[:：](\d{2})", content)
+    if "日报" in content and "时间" in content and time_match:
+        return f"设置日报提交时间 {int(time_match.group(1)):02d}:{time_match.group(2)}"
+
+    if "日报" in content and _contains_any(content, ("重发", "重新", "再发", "重提", "删掉重发", "删除重发", "撤回重发")):
+        return "重新发送今日日报"
+    if "日报" in content and _contains_any(content, ("撤回", "撤销", "删除", "删掉", "取消")):
+        return "撤回今日日报"
+
+    if _contains_any(content, ("沿用", "用昨天", "按昨天", "照昨天", "根据前一天")) and _contains_any(content, ("日报", "提交")):
+        return "根据前一天内容发送"
+
+    if "日报" in content and _contains_any(content, ("昨天", "前一天", "上次", "上一天")) and _contains_any(content, ("内容", "读取", "查看", "看看", "看下")):
+        return "获取前一天日报"
+
+    if reference_date is None:
+        from src.beijing_time import today as beijing_today
+
+        reference_date = beijing_today()
+    query_date = _parse_daily_report_query_date(content, reference_date)
+    if query_date:
+        return f"查询日报 {query_date.isoformat()}"
+    if _is_daily_report_query(content) and _has_daily_report_date_hint(content):
+        return "查询日报 日期格式错误"
+
+    if "日报" in content and _contains_any(content, ("最近", "历史", "记录")):
+        return "最近记录"
+    if "日报" in content and _contains_any(content, ("本月", "这个月", "月度")) and _contains_any(content, ("统计", "情况", "提交", "交")):
+        return "本月统计"
+    if "日报" in content and _contains_any(content, ("本周", "这周", "这个周", "周度")) and _contains_any(content, ("统计", "情况", "提交", "交")):
+        return "本周统计"
+
+    if _contains_any(content, ("今天提交了吗", "今日状态")):
+        return "今日状态"
+    if "日报" in content and _contains_any(content, ("状态", "提交了吗", "交了吗")):
+        return "今日状态"
+    if "日报" in content and _contains_any(content, ("今天", "今日")) and _contains_any(content, ("查", "看", "看看")):
+        return "今日状态"
+
+    if "日报" in content and _contains_any(content, ("昨天", "前一天", "上次", "上一天")) and _contains_any(content, ("内容", "读取", "查看", "看看", "看下")):
+        return "获取前一天日报"
+    if "日报" in content and _contains_any(content, ("读取", "查看", "看看", "看下", "内容")):
+        return "读取日报"
+
+    if "日报" in content and _contains_any(content, ("发送", "提交", "发一下", "帮我发", "交一下", "补交", "发了", "提交一下")):
+        return "发送日报"
+
+    return content
+
+
+def _extract_command_product_code(content: str) -> str:
+    match = re.search(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]{3,})(?![A-Za-z0-9])", content or "")
+    return match.group(1).upper() if match else ""
+
+
+def _is_nav_command_message(text: str) -> bool:
+    content = _normalize_message_text(text)
+    if not content:
+        return False
+    if "日报" in content and "净值" not in content and "理财" not in content:
+        return False
+    if _contains_any(content, ("净值", "理财", "收益", "份额", "持仓", "画像", "预估", "涨跌")):
+        return True
+    if content.startswith("添加产品") or content.startswith("确认添加净值产品") or content == "取消添加净值产品":
+        return True
+
+    code = _extract_command_product_code(content)
+    if not code:
+        return False
+    if _contains_any(content, ("添加", "新增", "加一下", "加上", "加入", "删除", "删掉", "移除", "去掉", "份额")):
+        return True
+
+    try:
+        from src.nav_monitor import PROVIDER_ALIASES
+
+        lower_content = content.lower()
+        return any(alias and (alias in content or alias in lower_content) for alias in PROVIDER_ALIASES)
+    except Exception:
+        return False
+
+
+def _help_index_text() -> str:
+    return """# 📌 系统指令导航
+
+> <font color="info">直接说自然语言</font>
+> <font color="comment">日报、净值都支持口语表达</font>
+
+**常用示例**
+• **帮我发一下日报** <font color="comment">立即提交日报</font>
+• **今天日报提交了吗** <font color="comment">查询日报状态</font>
+• **本月日报提交情况** <font color="comment">查看月度统计</font>
+• **帮我看一下最近1个月的理财净值** <font color="comment">查询近一月净值统计</font>
+• **把 AF233276B 份额改成 401133.95** <font color="comment">修改持仓份额</font>
+
+**回复数字查看**
+• **1** 日报指令
+• **2** 净值指令
+• **3** 系统指令
+• **4** 运维指令
+• **0** 系统指令大全"""
+
+
+def _daily_help_text() -> str:
+    return """## 📝 日报指令
+
+> <font color="info">提交</font>
+• **发送日报** <font color="comment">读取智能文档并提交</font>
+• **帮我发一下日报** <font color="comment">自然语言提交</font>
+• **今天日报提交一下** <font color="comment">自然语言提交</font>
+• **根据前一天内容发送** <font color="comment">沿用上一条日报</font>
+• **沿用昨天日报提交** <font color="comment">自然语言沿用</font>
+• **重新发送今日日报** <font color="comment">删除后重新提交</font>
+• **日报重新发一下** <font color="comment">自然语言重发</font>
+
+> <font color="info">查询</font>
+• **今日状态** <font color="comment">查看今天是否已提交</font>
+• **今天日报提交了吗** <font color="comment">自然语言查询</font>
+• **最近记录** <font color="comment">最近5条记录</font>
+• **看看最近日报记录** <font color="comment">自然语言查询</font>
+• **本周统计** <font color="comment">本周提交情况</font>
+• **这周日报情况** <font color="comment">自然语言查询</font>
+• **本月统计** <font color="comment">本月提交情况</font>
+• **本月日报提交情况** <font color="comment">自然语言查询</font>
+
+> <font color="info">内容</font>
+• **读取日报** <font color="comment">读取智能文档内容</font>
+• **读取一下日报内容** <font color="comment">自然语言读取</font>
+• **查询2026-07-08日报** <font color="comment">查询指定日期OA日报正文</font>
+• **查昨天日报** <font color="comment">支持自然语言日期</font>
+• **获取前一天日报** <font color="comment">读取OA上一条</font>
+• **看下昨天日报内容** <font color="comment">自然语言读取</font>
+
+> <font color="info">管理</font>
+• **撤回今日日报** <font color="comment">删除已提交日报</font>
+• **把今天日报撤回** <font color="comment">自然语言撤回</font>
+• **设置日报提交时间 20:00** <font color="comment">修改定时提交时间</font>
+• **把日报提交时间改到 20:00** <font color="comment">自然语言修改</font>"""
+
+
+def _nav_query_help_text() -> str:
+    return """## 💹 理财净值指令 · 查询统计
+
+> <font color="info">查询</font>
+• **立即查询净值** <font color="comment">查询最新披露净值</font>
+• **帮我看下今天净值** <font color="comment">自然语言查询最新</font>
+• **查询昨天净值** <font color="comment">查询指定相对日期</font>
+• **查一下昨天理财收益** <font color="comment">自然语言查询</font>
+• **查询前天净值** <font color="comment">查询指定相对日期</font>
+• **查询净值 20260707** <font color="comment">YYYYMMDD 指定日期</font>
+
+> <font color="info">自然周期统计</font>
+• **查询周度净值** <font color="comment">自然周起点</font>
+• **上周理财表现** <font color="comment">自然语言周度</font>
+• **查询月度净值** <font color="comment">自然月起点</font>
+• **本月收益怎么样** <font color="comment">自然语言月度</font>
+• **查询季度净值** <font color="comment">自然季度起点</font>
+• **查询半年度净值** <font color="comment">自然半年起点</font>
+• **查询年度净值** <font color="comment">自然年起点</font>
+
+> <font color="info">滚动周期统计</font>
+• **查询近7天净值** <font color="comment">滚动7天</font>
+• **最近七天理财收益** <font color="comment">数字/汉字互通</font>
+• **查询近一月净值** <font color="comment">滚动30天</font>
+• **最近1个月理财净值** <font color="comment">自然语言近一月</font>
+• **查询近三月净值** <font color="comment">滚动90天</font>
+• **查询近半年净值** <font color="comment">滚动180天</font>
+• **查询近一年净值** <font color="comment">滚动365天</font>
+• **查询近两年净值** <font color="comment">滚动730天</font>
+• **查询近三年净值** <font color="comment">滚动1095天</font>"""
+
+
+def _nav_holdings_help_text() -> str:
+    return """## 📈 理财收益预估指令
+
+> 持仓画像默认后台使用，不主动推送；需要时可手动查看。
+• **收盘后预估一下理财涨跌**  按画像和行情预估方向
+• **用昨天行情预估理财涨跌**  指定使用昨日行情
+• **更新持仓画像**  手动抓取最新定期报告
+• **查看持仓画像**  查看全部产品画像摘要
+• **查看 AF233276B 持仓画像**  查看指定产品画像
+• **查看画像状态**  查看报告期和更新时间"""
+
+
+def _nav_settings_help_text() -> str:
+    return """## 💹 理财净值指令 · 产品设置
+
+> <font color="info">产品管理</font>
+• **查看净值配置** <font color="comment">查看监控产品与份额</font>
+• **看下净值的配置** <font color="comment">自然语言查看配置</font>
+• **添加净值产品 信银 AF233276B** <font color="comment">添加前会候选确认</font>
+• **加一下信银 AF233276B** <font color="comment">自然语言添加</font>
+• **删除净值产品 AF233276B** <font color="comment">移除监控产品</font>
+• **删除一下 AF233276B 产品** <font color="comment">自然语言删除</font>
+• **确认添加净值产品 1** <font color="comment">确认候选序号</font>
+• **取消添加净值产品** <font color="comment">取消候选</font>
+
+> <font color="info">份额管理</font>
+• **设置净值份额 AF233276B 10000** <font color="comment">设置持仓份额</font>
+• **把 AF233276B 份额改成 401133.95** <font color="comment">自然语言设置份额</font>
+• **批量设置净值份额** <font color="comment">多行批量更新</font>
+
+> <font color="info">监控开关</font>
+• **开启净值监控** <font color="comment">启用工作日定时推送</font>
+• **关闭净值监控** <font color="comment">停用工作日定时推送</font>"""
+
+
+def _nav_help_messages() -> list[str]:
+    return [_nav_query_help_text(), _nav_holdings_help_text(), _nav_settings_help_text()]
+
+
+def _nav_help_text() -> str:
+    return "\n\n".join(_nav_help_messages())
+
+
+def _system_help_text() -> str:
+    return """## ⚙️ 系统配置指令
+
+> <font color="info">配置查看</font>
+• **查看配置** <font color="comment">查看当前系统配置</font>
+• **当前配置** <font color="comment">同上</font>
+• **查看定时配置** <font color="comment">查看定时任务时间</font>
+• **定时任务** <font color="comment">同上</font>
+
+> <font color="info">时间设置</font>
+• **设置日报提交时间 20:00** <font color="comment">日报工作日提交时间</font>
+• **设置统计推送时间 21:00** <font color="comment">日报统计推送时间</font>
+• **设置Cookies检查时间 09:45** <font color="comment">Cookies 自动检查时间</font>
+• **设置缓存清理时间 04:00** <font color="comment">缓存清理时间</font>
+• **设置净值推送时间 08:00** <font color="comment">净值工作日推送时间</font>
+• **设置收益预估时间 17:30** <font color="comment">理财收益预估时间</font>
+
+> <font color="info">登录与数据</font>
+• **生成二维码** <font color="comment">扫码续期 Cookies</font>
+• **重新登录** <font color="comment">重新生成登录二维码</font>
+• **扫码登录** <font color="comment">同上</font>
+• **检查Cookies** <font color="comment">验证智能文档读取状态</font>
+• **Cookies状态** <font color="comment">同上</font>
+• **更新工作日历** <font color="comment">更新节假日数据</font>"""
+
+
+def _ops_help_text() -> str:
+    return """## 🖥️ 运维指令
+
+> <font color="info">服务状态</font>
+• **服务器状态** <font color="comment">查看内存、磁盘、运行时间</font>
+• **系统状态** <font color="comment">同上</font>
+• **运行服务** <font color="comment">查看服务和资源占用</font>
+• **查看日志** <font color="comment">最近日志</font>
+
+> <font color="info">维护操作</font>
+• **清理缓存** <font color="comment">清理系统缓存</font>
+• **重启服务** <font color="comment">重启 daily-report</font>
+
+> <font color="info">代理服务</font>
+• **启动Xray** <font color="comment">启动代理服务</font>
+• **停止Xray** <font color="comment">停止代理服务</font>
+• **重启Xray** <font color="comment">重启代理服务</font>
+• **启动Hy2** <font color="comment">启动 Hy2</font>
+• **停止Hy2** <font color="comment">停止 Hy2</font>
+• **重启Hy2** <font color="comment">重启 Hy2</font>"""
+
+
+def _format_schedule_config(cfg) -> str:
+    s = cfg.scheduler
+    nav = cfg.nav_monitor
+    return f"""⏰ 定时任务配置
+
+1️⃣ Cookies 检查：{s.cookie_check_hour:02d}:{s.cookie_check_minute:02d}（工作日）
+2️⃣ 日报自动提交：{s.report_submit_hour:02d}:{s.report_submit_minute:02d}（工作日）
+3️⃣ 统计自动推送：{s.stats_push_hour:02d}:{s.stats_push_minute:02d}（周日/月末）
+4️⃣ 缓存自动清理：{s.cache_cleanup_hour:02d}:{s.cache_cleanup_minute:02d}（每月1号）
+5️⃣ 净值自动推送：{nav.push_hour:02d}:{nav.push_minute:02d}（工作日，{'开启' if nav.enabled else '关闭'}）
+6️⃣ 净值晚间补发：{nav.evening_push_hour:02d}:{nav.evening_push_minute:02d}（工作日，有当日净值才发，{'开启' if nav.evening_push_enabled else '关闭'}）
+7️⃣ 理财收益预估：{nav.estimate_hour:02d}:{nav.estimate_minute:02d}（工作日，{'开启' if nav.estimate_enabled else '关闭'}）
+
+📝 修改指令：
+• 设置Cookies检查时间 09:45
+• 设置日报提交时间 20:00
+• 设置统计推送时间 21:00
+  • 设置缓存清理时间 04:00
+  • 设置净值推送时间 08:00
+  • 设置收益预估时间 17:30"""
+
+
+def _build_help_messages(text: str) -> list[str]:
+    content = _normalize_message_text(text)
+    if content in ("系统指令大全", "0"):
+        return [_daily_help_text(), *_nav_help_messages(), _system_help_text(), _ops_help_text()]
+    if content in ("日报指令", "1"):
+        return [_daily_help_text()]
+    if content in ("净值指令", "理财指令", "2"):
+        return _nav_help_messages()
+    if content in ("系统指令", "3"):
+        return [_system_help_text()]
+    if content in ("运维指令", "4"):
+        return [_ops_help_text()]
+    if content in ("指令", "帮助", "help", "菜单"):
+        return [_help_index_text()]
+    return []
 
 
 def create_app(cfg: Config) -> Flask:
@@ -80,6 +456,40 @@ def create_app(cfg: Config) -> Flask:
     @app.route("/", methods=["GET"])
     def index():
         return _render_web_ui()
+
+    @app.route("/nav", methods=["GET"])
+    def nav_dashboard_page():
+        from src.nav_dashboard import render_dashboard_page
+
+        return render_dashboard_page()
+
+    @app.route("/nav-assets/<path:filename>", methods=["GET"])
+    def nav_dashboard_asset(filename):
+        asset_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nav_assets")
+        return send_from_directory(asset_dir, filename)
+
+    @app.route("/api/nav-dashboard", methods=["GET"])
+    def nav_dashboard_data():
+        from src.nav_dashboard import get_dashboard_payload, request_is_authorized
+
+        if not request_is_authorized(request):
+            return jsonify({"error": "private_link_invalid"}), 403
+        return jsonify(get_dashboard_payload(cfg))
+
+    @app.route("/api/nav-dashboard/refresh", methods=["POST"])
+    def nav_dashboard_refresh():
+        from src.nav_dashboard import request_is_authorized, request_manual_refresh
+
+        if not request_is_authorized(request):
+            return jsonify({"error": "private_link_invalid"}), 403
+        result = request_manual_refresh(cfg)
+        if result.get("accepted"):
+            status_code = 202
+        elif result.get("status") == "cooldown":
+            status_code = 429
+        else:
+            status_code = 200
+        return jsonify(result), status_code
 
     @app.route("/api/submit", methods=["POST"])
     def api_submit():
@@ -128,6 +538,7 @@ def create_app(cfg: Config) -> Flask:
 
             if msg_type == "text":
                 content = extract_text_content(msg)
+                content = _normalize_daily_report_command_text(content)
                 from_user = msg.get("FromUserName", "")
 
                 if is_cookies_update_message(content):
@@ -164,12 +575,13 @@ def create_app(cfg: Config) -> Flask:
                         _handle_pending_no(cfg, from_user_id)
                     return "", 200
 
-                elif (
-                    "净值" in content
-                    or content.strip().startswith("添加产品")
-                    or content.strip().startswith("确认添加净值产品")
-                    or content.strip() == "取消添加净值产品"
-                ):
+                elif help_messages := _build_help_messages(content):
+                    from_user_id = msg.get("FromUserName", "")
+                    for help_text in help_messages:
+                        _send_wechat_markdown(cfg.wechat, help_text, from_user_id)
+                    return "", 200
+
+                elif _is_nav_command_message(content):
                     from src.nav_monitor import parse_nav_command
                     nav_command = parse_nav_command(content)
                     if nav_command:
@@ -219,6 +631,7 @@ AF233262B 20000
 
 ## 📄 内容查询
 **读取日报** — 读取智能文档
+**查询2026-07-08日报** — 查询指定日期OA日报正文
 **获取前一天日报** — 读取OA上一条
 
 ## 🗑️ 操作管理
@@ -255,7 +668,12 @@ AF233262B 20000
 
                     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
                     _send_wechat_text(cfg.wechat, "⏳ 已收到请求，正在准备企业微信扫码登录二维码...", from_user_id)
-                    started = start_renew_cookies_by_qr(config_path, from_user_id, "收到手动扫码登录指令")
+                    started = start_renew_cookies_by_qr(
+                        config_path,
+                        from_user_id,
+                        "收到手动扫码登录指令",
+                        on_complete=_finish_manual_qr_command,
+                    )
                     if not started:
                         _send_wechat_text(cfg.wechat, "ℹ️ 已有二维码登录续期任务正在进行中，请先完成当前扫码。", from_user_id)
                         _end_cmd()
@@ -495,6 +913,8 @@ AF233262B 20000
 💹 净值监控：
   • 状态：{'开启' if cfg.nav_monitor.enabled else '关闭'}
   • 推送时间：{cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d}
+  • 晚间补发：{cfg.nav_monitor.evening_push_hour:02d}:{cfg.nav_monitor.evening_push_minute:02d}（有当日净值才发，{'开启' if cfg.nav_monitor.evening_push_enabled else '关闭'}）
+  • 收益预估：{cfg.nav_monitor.estimate_hour:02d}:{cfg.nav_monitor.estimate_minute:02d}（{'开启' if cfg.nav_monitor.estimate_enabled else '关闭'}）
   • 产品数量：{len(cfg.nav_monitor.products)}"""
                         _send_wechat_text(cfg.wechat, reply, from_user_id)
                     except Exception as e:
@@ -540,21 +960,7 @@ AF233262B 20000
                 elif "查看定时配置" in content or "定时配置" in content or "定时任务" in content:
                     from_user_id = msg.get("FromUserName", "")
                     try:
-                        s = cfg.scheduler
-                        reply = f"""⏰ 定时任务配置
-
-1️⃣ Cookies 检查：{s.cookie_check_hour:02d}:{s.cookie_check_minute:02d}（工作日）
-2️⃣ 日报自动提交：{s.report_submit_hour:02d}:{s.report_submit_minute:02d}（工作日）
-3️⃣ 统计自动推送：{s.stats_push_hour:02d}:{s.stats_push_minute:02d}（周日/月末）
-4️⃣ 缓存自动清理：{s.cache_cleanup_hour:02d}:{s.cache_cleanup_minute:02d}（每月1号）
-5️⃣ 净值自动推送：{cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d}（工作日，{'开启' if cfg.nav_monitor.enabled else '关闭'}）
-
-📝 修改指令：
-• 设置Cookies检查时间 09:45
-• 设置日报提交时间 20:00
-• 设置统计推送时间 21:00
-• 设置缓存清理时间 04:00
-• 设置净值推送时间 08:00"""
+                        reply = _format_schedule_config(cfg)
                         _send_wechat_text(cfg.wechat, reply, from_user_id)
                     except Exception as e:
                         logger.error(f"View schedule config command failed: {e}", exc_info=True)
@@ -563,7 +969,6 @@ AF233262B 20000
 
                 elif ("设置Cookies检查时间" in content or "修改Cookies检查时间" in content):
                     from_user_id = msg.get("FromUserName", "")
-                    import re
                     time_match = re.search(r'(\d{1,2})[:：](\d{2})', content)
                     if not time_match:
                         _send_wechat_text(cfg.wechat,
@@ -597,7 +1002,6 @@ AF233262B 20000
 
                 elif ("设置统计推送时间" in content or "修改统计推送时间" in content):
                     from_user_id = msg.get("FromUserName", "")
-                    import re
                     time_match = re.search(r'(\d{1,2})[:：](\d{2})', content)
                     if not time_match:
                         _send_wechat_text(cfg.wechat,
@@ -631,7 +1035,6 @@ AF233262B 20000
 
                 elif ("设置缓存清理时间" in content or "修改缓存清理时间" in content):
                     from_user_id = msg.get("FromUserName", "")
-                    import re
                     time_match = re.search(r'(\d{1,2})[:：](\d{2})', content)
                     if not time_match:
                         _send_wechat_text(cfg.wechat,
@@ -665,7 +1068,6 @@ AF233262B 20000
 
                 elif "设置日报提交时间" in content or "修改日报提交时间" in content or "设置提交时间" in content or "修改提交时间" in content or "设置日报时间" in content:
                     from_user_id = msg.get("FromUserName", "")
-                    import re
                     time_match = re.search(r'(\d{1,2})[:：](\d{2})', content)
                     if not time_match:
                         _send_wechat_text(cfg.wechat,
@@ -1117,6 +1519,40 @@ AF233262B 20000
                     thread.start()
                     return "", 200
 
+                elif content == "查询日报 日期格式错误":
+                    from_user_id = msg.get("FromUserName", "")
+                    _send_wechat_text(
+                        cfg.wechat,
+                        "❌ 未识别到有效日期\n例如：查询日报 20260709",
+                        from_user_id,
+                    )
+                    return "", 200
+
+                elif query_match := re.fullmatch(r"查询日报 (\d{4}-\d{2}-\d{2})", content):
+                    from_user_id = msg.get("FromUserName", "")
+                    report_date = query_match.group(1)
+                    if not _try_start_cmd("查询指定日期日报"):
+                        _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
+                        return "", 200
+
+                    _send_wechat_text(cfg.wechat, f"⏳ 正在查询 {report_date} 的日报，请稍等...", from_user_id)
+
+                    def process_query_daily_report():
+                        try:
+                            from src.target import get_report_content_by_date
+
+                            report_content = get_report_content_by_date(cfg, report_date)
+                            reply = report_content or f"ℹ️ 未找到 {report_date} 的日报正文"
+                        except Exception as e:
+                            logger.error(f"Query daily report failed: {e}", exc_info=True)
+                            reply = f"❌ 查询失败\n{e}"
+                        finally:
+                            _end_cmd()
+                        _send_wechat_text(cfg.wechat, reply, from_user_id)
+
+                    threading.Thread(target=process_query_daily_report, daemon=True).start()
+                    return "", 200
+
                 elif "读取智能文档内容" in content or "读取日报" in content:
                     from_user_id = msg.get("FromUserName", "")
                     if not _try_start_cmd("读取智能文档"):
@@ -1230,14 +1666,14 @@ def _build_text_reply(msg: dict, content: str) -> str:
 def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
     from src.nav_monitor import (
         build_add_product_candidates,
-        build_nav_period_report,
-        build_nav_report,
         cancel_pending_nav_add,
         confirm_pending_nav_add,
         delete_nav_product,
         format_nav_config,
         format_product_candidates,
         get_provider,
+        push_nav_period_report,
+        push_nav_report,
         save_pending_nav_add,
         set_nav_product_shares_batch,
         set_nav_product_shares,
@@ -1247,6 +1683,65 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
 
     if action == "view_config":
         _send_wechat_markdown(cfg.wechat, format_nav_config(cfg), from_user_id)
+        return
+
+    if action == "view_holdings":
+        from src.nav_holdings import format_holdings_profiles
+
+        _send_wechat_markdown(cfg.wechat, format_holdings_profiles(code=nav_command.code), from_user_id)
+        return
+
+    if action == "view_holdings_status":
+        from src.nav_holdings import format_holdings_status
+
+        _send_wechat_markdown(cfg.wechat, format_holdings_status(), from_user_id)
+        return
+
+    if action == "estimate_holdings":
+        if not _try_start_cmd("理财收益预估"):
+            _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
+            return
+        market_date = nav_command.target_date
+        if market_date:
+            loading_text = f"⏳ 正在结合持仓画像和 {market_date:%Y-%m-%d} 行情预估，请稍等..."
+        else:
+            loading_text = "⏳ 正在结合持仓画像和市场行情预估，请稍等..."
+        _send_wechat_text(cfg.wechat, loading_text, from_user_id)
+
+        def process_estimate():
+            try:
+                from src.nav_holdings import push_estimate_report, refresh_quarterly_profiles_if_due
+
+                refresh_quarterly_profiles_if_due(cfg, notify=False)
+                push_estimate_report(cfg, to_user=from_user_id, market_date=market_date)
+            except Exception as e:
+                logger.error(f"NAV estimate command failed: {e}", exc_info=True)
+                _send_wechat_text(cfg.wechat, f"❌ 理财收益预估失败\n{e}", from_user_id)
+            finally:
+                _end_cmd()
+
+        threading.Thread(target=process_estimate, daemon=True).start()
+        return
+
+    if action == "update_holdings":
+        if not _try_start_cmd("更新持仓画像"):
+            _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
+            return
+        _send_wechat_text(cfg.wechat, "⏳ 正在检查官网最新定期报告并更新画像，请稍等...", from_user_id)
+
+        def process_update_holdings():
+            try:
+                from src.nav_holdings import format_profile_update_result, refresh_all_profiles
+
+                profiles = refresh_all_profiles(cfg)
+                _send_wechat_markdown(cfg.wechat, format_profile_update_result(profiles), from_user_id)
+            except Exception as e:
+                logger.error(f"Update holdings command failed: {e}", exc_info=True)
+                _send_wechat_text(cfg.wechat, f"❌ 更新持仓画像失败\n{e}", from_user_id)
+            finally:
+                _end_cmd()
+
+        threading.Thread(target=process_update_holdings, daemon=True).start()
         return
 
     if action == "enable":
@@ -1268,6 +1763,17 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         _send_wechat_text(
             cfg.wechat,
             f"✅ 净值推送时间已修改\n\n新时间：{nav_command.hour:02d}:{nav_command.minute:02d}（工作日）\n立即生效，重启后仍然有效。",
+            from_user_id,
+        )
+        return
+
+    if action == "set_estimate_time":
+        cfg.nav_monitor.estimate_hour = nav_command.hour
+        cfg.nav_monitor.estimate_minute = nav_command.minute
+        _persist_runtime_config(cfg)
+        _send_wechat_text(
+            cfg.wechat,
+            f"✅ 收益预估时间已修改\n\n新时间：{nav_command.hour:02d}:{nav_command.minute:02d}（工作日）\n立即生效，重启后仍然有效。",
             from_user_id,
         )
         return
@@ -1339,10 +1845,9 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         def process_nav_query():
             try:
                 if action == "query_period":
-                    report = build_nav_period_report(cfg, nav_command.period)
+                    push_nav_period_report(cfg, nav_command.period, to_user=from_user_id)
                 else:
-                    report = build_nav_report(cfg, target_date=target_date)
-                _send_wechat_markdown(cfg.wechat, report, from_user_id)
+                    push_nav_report(cfg, target_date=target_date, to_user=from_user_id)
             except Exception as e:
                 logger.error(f"NAV query command failed: {e}", exc_info=True)
                 _send_wechat_text(cfg.wechat, f"❌ 净值查询失败\n{e}", from_user_id)
@@ -1386,7 +1891,17 @@ def _persist_runtime_config(cfg: Config):
     with open(config_path, "r", encoding="utf-8") as f:
         original_data = yaml.safe_load(f) or {}
     save_config(config_path, cfg, original_data)
+    _sync_dashboard_after_config_save(cfg)
     update_runtime_config(cfg)
+
+
+def _sync_dashboard_after_config_save(cfg: Config):
+    try:
+        from src.nav_dashboard import sync_dashboard_portfolio
+
+        sync_dashboard_portfolio(cfg)
+    except Exception as exc:
+        logger.warning("NAV dashboard portfolio sync failed: %s", exc, exc_info=True)
 
 
 def _handle_manual_submit(content: str, report_date: str, cfg: Config):
@@ -1549,8 +2064,72 @@ async function submitReport() {{
 </html>"""
 
 
-def auto_submit_if_needed(cfg: Config):
+def _start_report_cookie_renewal(cfg: Config, cookies_error: Exception) -> None:
+    config_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "config.yaml",
+    )
+    completion_lock = threading.Lock()
+    completion_handled = False
+
+    def on_complete(success: bool, message: str) -> None:
+        nonlocal completion_handled
+        with completion_lock:
+            if completion_handled:
+                return
+            completion_handled = True
+
+        if not success:
+            _send_wechat_text(
+                cfg.wechat,
+                f"❌ Cookies 续期未完成\n{message}\n今日日报尚未提交。",
+            )
+            return
+
+        notify_cfg = cfg
+        try:
+            from src.config import load_config
+
+            notify_cfg = load_config(config_path)
+            auto_submit_if_needed(notify_cfg, precheck_cookies=False)
+        except Exception as exc:
+            logger.error(
+                "Cookie renewal succeeded but automatic report resume failed: %s",
+                exc,
+                exc_info=True,
+            )
+            notify_report_failure(
+                notify_cfg,
+                f"续期成功但自动继续提交失败: {exc}",
+            )
+
+    started = start_renew_cookies_by_qr(
+        config_path,
+        getattr(cfg.wechat, "to_user", None),
+        f"定时日报提交前检查发现 Cookies 已过期：{cookies_error}",
+        on_complete=on_complete,
+    )
+    with completion_lock:
+        callback_was_handled = completion_handled
+    if not started and not callback_was_handled:
+        _send_wechat_text(
+            cfg.wechat,
+            "ℹ️ 当前续期任务完成后请再次发送日报。",
+        )
+
+
+def auto_submit_if_needed(cfg: Config, *, precheck_cookies: bool = True) -> bool:
     """Called by scheduler at 17:45. Auto-submits if no manual report was provided."""
+    if precheck_cookies:
+        from src.cookies_checker import CookiesError, check_cookies
+
+        try:
+            check_cookies(cfg)
+        except CookiesError as exc:
+            logger.warning("Report submission Cookie preflight failed: %s", exc)
+            _start_report_cookie_renewal(cfg, exc)
+            return False
+
     logger.info("No manual report today — extracting from smart sheet...")
     try:
         from src.report_builder import build_report_with_meta
@@ -1565,7 +2144,7 @@ def auto_submit_if_needed(cfg: Config):
             smart_doc_status=getattr(e, "smart_doc_status", "unknown"),
             smart_doc_error=getattr(e, "smart_doc_error", ""),
         )
-        return
+        return False
 
     # 智能文档过期(cookies失效)时交互确认，不直接回退
     if source == "previous_report" and meta.get("smart_doc_status") == "error":
@@ -1573,9 +2152,9 @@ def auto_submit_if_needed(cfg: Config):
         if _is_cookies_expiry_error(smart_error):
             save_pending(report, source, meta)
             _send_pending_confirm_message(cfg, smart_error)
-            return
+            return False
 
-    _submit_and_notify(report, cfg, source, meta)
+    return _submit_and_notify(report, cfg, source, meta)
 
 
 def _submit_and_notify(content: str, cfg: Config, report_source: str = None,

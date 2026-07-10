@@ -77,6 +77,9 @@ nav_monitor:
   enabled: true
   push_hour: 8
   push_minute: 0
+  evening_push_enabled: true
+  evening_push_hour: 23
+  evening_push_minute: 30
   products:
   - provider: citic_wealth
     code: AF233276B

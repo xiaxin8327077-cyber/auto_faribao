@@ -22,6 +22,7 @@ class SourceConfig:
         self.person_field = data.get("person_field", "负责人")
         self.status_field = data.get("status_field", "任务状态")
         self.desc_field = data.get("desc_field", "任务描述")
+        self.project_field = data.get("project_field", "所属项目")
         self.max_desc_len = int(data.get("max_desc_len", 25))
         # Filter values
         self.person_names = data.get("person_names", ["刘非凡"])
@@ -126,6 +127,12 @@ class NavMonitorConfig:
         self.enabled = bool(data.get("enabled", True))
         self.push_hour = int(data.get("push_hour", 8))
         self.push_minute = int(data.get("push_minute", 0))
+        self.evening_push_enabled = bool(data.get("evening_push_enabled", True))
+        self.evening_push_hour = int(data.get("evening_push_hour", 23))
+        self.evening_push_minute = int(data.get("evening_push_minute", 30))
+        self.estimate_enabled = bool(data.get("estimate_enabled", True))
+        self.estimate_hour = int(data.get("estimate_hour", 17))
+        self.estimate_minute = int(data.get("estimate_minute", 30))
         self.products = [
             item if isinstance(item, NavProductConfig) else NavProductConfig(item)
             for item in data.get("products", [])
@@ -136,6 +143,12 @@ class NavMonitorConfig:
             "enabled": self.enabled,
             "push_hour": self.push_hour,
             "push_minute": self.push_minute,
+            "evening_push_enabled": self.evening_push_enabled,
+            "evening_push_hour": self.evening_push_hour,
+            "evening_push_minute": self.evening_push_minute,
+            "estimate_enabled": self.estimate_enabled,
+            "estimate_hour": self.estimate_hour,
+            "estimate_minute": self.estimate_minute,
             "products": [item.to_dict() for item in self.products],
         }
 

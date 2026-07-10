@@ -34,7 +34,9 @@ def start(cfg):
         f"report submit at {rh:02d}:{rm:02d} on weekdays, "
         f"stats push at {sh:02d}:{sm:02d} on Sun/month-end, "
         f"cache cleanup at {cch:02d}:{ccm:02d}, "
-        f"nav monitor at {cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d} on weekdays"
+        f"nav monitor at {cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d} on weekdays, "
+        f"nav evening check at {cfg.nav_monitor.evening_push_hour:02d}:{cfg.nav_monitor.evening_push_minute:02d} on weekdays, "
+        f"nav estimate at {cfg.nav_monitor.estimate_hour:02d}:{cfg.nav_monitor.estimate_minute:02d} on weekdays"
     )
 
 
@@ -48,7 +50,9 @@ def update_runtime_config(cfg):
         f"report submit {rh:02d}:{rm:02d}, "
         f"stats push {sh:02d}:{sm:02d}, "
         f"cache cleanup {cch:02d}:{ccm:02d}, "
-        f"nav monitor {cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d} on weekdays"
+        f"nav monitor {cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d} on weekdays, "
+        f"nav evening check {cfg.nav_monitor.evening_push_hour:02d}:{cfg.nav_monitor.evening_push_minute:02d} on weekdays, "
+        f"nav estimate {cfg.nav_monitor.estimate_hour:02d}:{cfg.nav_monitor.estimate_minute:02d} on weekdays"
     )
 
 
@@ -58,6 +62,8 @@ def _run(cfg):
     last_stats_date = None
     last_cache_cleanup_date = None
     last_nav_push_date = None
+    last_nav_evening_push_date = None
+    last_nav_estimate_date = None
     last_calendar_update_year = None
 
     while True:
@@ -76,6 +82,16 @@ def _run(cfg):
             last_nav_push_date = today_str
             logger.info("Scheduler triggered: nav monitor push")
             _run_nav_monitor_push(current_cfg, now.date())
+
+        if _should_run_nav_estimate(current_cfg, now, last_nav_estimate_date):
+            last_nav_estimate_date = today_str
+            logger.info("Scheduler triggered: nav estimate push")
+            _run_nav_estimate_push(current_cfg, now.date())
+
+        if _should_run_nav_evening_push(current_cfg, now, last_nav_evening_push_date):
+            last_nav_evening_push_date = today_str
+            logger.info("Scheduler triggered: nav evening push")
+            _run_nav_evening_push(current_cfg, now.date())
 
         if _is_workday(now.date()):
             if (now.hour == ch and
@@ -142,6 +158,32 @@ def _should_run_nav_monitor(cfg, now, last_nav_push_date):
         and now.hour == nav.push_hour
         and now.minute == nav.push_minute
         and last_nav_push_date != today_str
+    )
+
+
+def _should_run_nav_estimate(cfg, now, last_nav_estimate_date):
+    nav = getattr(cfg, "nav_monitor", None)
+    if not nav or not getattr(nav, "estimate_enabled", True):
+        return False
+    today_str = now.strftime("%Y-%m-%d")
+    return (
+        _is_workday(now.date())
+        and now.hour == nav.estimate_hour
+        and now.minute == nav.estimate_minute
+        and last_nav_estimate_date != today_str
+    )
+
+
+def _should_run_nav_evening_push(cfg, now, last_nav_evening_push_date):
+    nav = getattr(cfg, "nav_monitor", None)
+    if not nav or not getattr(nav, "enabled", False) or not getattr(nav, "evening_push_enabled", True):
+        return False
+    today_str = now.strftime("%Y-%m-%d")
+    return (
+        _is_workday(now.date())
+        and now.hour == nav.evening_push_hour
+        and now.minute == nav.evening_push_minute
+        and last_nav_evening_push_date != today_str
     )
 
 
@@ -256,6 +298,53 @@ def _run_nav_monitor_push(cfg, day: date = None):
                 )
             except Exception:
                 logger.error("NAV failure notification failed", exc_info=True)
+
+
+def _run_nav_estimate_push(cfg, day: date = None):
+    try:
+        from src.nav_holdings import push_estimate_report, refresh_quarterly_profiles_if_due
+
+        target_day = day or today()
+        refresh_quarterly_profiles_if_due(cfg, today=target_day, notify=False)
+        push_estimate_report(cfg, to_user=getattr(cfg.wechat, "to_user", None))
+    except Exception as e:
+        logger.error(f"Scheduler nav estimate push failed: {e}", exc_info=True)
+        if _wechat_is_configured(cfg):
+            try:
+                from src.wechat_notifier import send_text as _send_wechat_text
+
+                _send_wechat_text(
+                    cfg.wechat,
+                    f"❌ 理财收益预估失败\n{e}",
+                    getattr(cfg.wechat, "to_user", None),
+                )
+            except Exception:
+                logger.error("NAV estimate failure notification failed", exc_info=True)
+
+
+def _run_nav_evening_push(cfg, day: date = None):
+    try:
+        from src.nav_monitor import push_nav_evening_report
+
+        target_day = day or today()
+        push_nav_evening_report(
+            cfg,
+            as_of_date=target_day,
+            to_user=getattr(cfg.wechat, "to_user", None),
+        )
+    except Exception as e:
+        logger.error(f"Scheduler nav evening push failed: {e}", exc_info=True)
+        if _wechat_is_configured(cfg):
+            try:
+                from src.wechat_notifier import send_text as _send_wechat_text
+
+                _send_wechat_text(
+                    cfg.wechat,
+                    f"❌ 净值晚报推送失败\n{e}",
+                    getattr(cfg.wechat, "to_user", None),
+                )
+            except Exception:
+                logger.error("NAV evening failure notification failed", exc_info=True)
 
 
 def _wechat_is_configured(cfg) -> bool:

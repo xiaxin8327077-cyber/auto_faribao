@@ -8,6 +8,7 @@ import secrets
 import ssl
 import string
 import textwrap
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -20,6 +21,8 @@ from typing import Optional
 
 
 logger = logging.getLogger(__name__)
+
+_NAV_QUERY_LOCK = threading.Lock()
 
 
 class ProviderError(Exception):
@@ -67,6 +70,14 @@ PERIOD_COMMANDS = {
     "近一年净值": "rolling_1y",
     "查询近1年净值": "rolling_1y",
     "近1年净值": "rolling_1y",
+    "查询近两年净值": "rolling_2y",
+    "近两年净值": "rolling_2y",
+    "查询近2年净值": "rolling_2y",
+    "近2年净值": "rolling_2y",
+    "查询近三年净值": "rolling_3y",
+    "近三年净值": "rolling_3y",
+    "查询近3年净值": "rolling_3y",
+    "近3年净值": "rolling_3y",
 }
 PERIOD_LABELS = {
     "week": "周度",
@@ -79,6 +90,8 @@ PERIOD_LABELS = {
     "rolling_3m": "近三月",
     "rolling_6m": "近半年",
     "rolling_1y": "近一年",
+    "rolling_2y": "近两年",
+    "rolling_3y": "近三年",
 }
 PERIOD_REPORT_TITLES = {
     "week": "理财净值周报",
@@ -93,6 +106,8 @@ ROLLING_PERIOD_DAYS = {
     "rolling_3m": 90,
     "rolling_6m": 180,
     "rolling_1y": 365,
+    "rolling_2y": 730,
+    "rolling_3y": 1095,
 }
 PERIOD_FETCH_LOOKBACK_DAYS = 14
 
@@ -151,6 +166,15 @@ class ProductNavResult:
 
 
 @dataclass(frozen=True)
+class ProductPeriodNavResult:
+    product: NavProduct
+    latest: Optional[NavRecord] = None
+    baseline: Optional[NavRecord] = None
+    shares: Optional[Decimal] = None
+    error: str = ""
+
+
+@dataclass(frozen=True)
 class NavCommand:
     action: str
     target_date: Optional[date] = None
@@ -201,11 +225,34 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
     if content == "取消添加净值产品":
         return NavCommand(action="cancel_add")
 
+    match = re.fullmatch(r"查看\s+(\S+)\s+持仓画像", content)
+    if match:
+        return NavCommand(action="view_holdings", code=match.group(1).strip().upper())
+    if content in ("查看持仓画像", "持仓画像", "查看画像"):
+        return NavCommand(action="view_holdings")
+    if content in ("查看画像状态", "查看持仓画像状态", "画像状态"):
+        return NavCommand(action="view_holdings_status")
+    if content in ("更新持仓画像", "刷新持仓画像", "更新画像"):
+        return NavCommand(action="update_holdings")
+    match = re.search(r"([01]?\d|2[0-3])[:：]([0-5]\d)", content)
+    if match and _contains_any(content, ("预估", "收益预估", "理财预估")) and _contains_any(
+        content,
+        ("时间", "定时", "设置", "修改", "改到"),
+    ):
+        return NavCommand(
+            action="set_estimate_time",
+            hour=int(match.group(1)),
+            minute=int(match.group(2)),
+        )
+
+    if "预估" in content and _contains_any(content, ("理财", "收益", "涨跌", "净值")):
+        return NavCommand(
+            action="estimate_holdings",
+            target_date=parse_nav_query_date(content, base_date=base_date),
+        )
+
     if content.startswith("添加产品"):
         return _parse_add_product_command(content)
-
-    if "净值" not in content:
-        return None
 
     if content in PERIOD_COMMANDS:
         return NavCommand(action="query_period", period=PERIOD_COMMANDS[content])
@@ -225,6 +272,14 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
             minute=int(match.group(2)),
         )
 
+    match = re.fullmatch(r"设置(?:收益预估|理财预估|净值预估)时间\s+([01]?\d|2[0-3]):([0-5]\d)", content)
+    if match:
+        return NavCommand(
+            action="set_estimate_time",
+            hour=int(match.group(1)),
+            minute=int(match.group(2)),
+        )
+
     match = re.fullmatch(r"设置净值份额\s+(\S+)\s+([0-9]+(?:\.[0-9]+)?)", content)
     if match:
         return NavCommand(
@@ -240,6 +295,13 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
     if match:
         return NavCommand(action="delete_product", code=match.group(1).strip())
 
+    natural_command = _parse_natural_nav_command(content, base_date=base_date)
+    if natural_command:
+        return natural_command
+
+    if "净值" not in content:
+        return None
+
     target_date = parse_nav_query_date(content, base_date=base_date)
     if target_date:
         return NavCommand(action="query_date", target_date=target_date)
@@ -253,6 +315,136 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
 def _normalize_command_text(text: str) -> str:
     content = (text or "").replace("\u3000", " ").replace("\xa0", " ").strip()
     return re.sub(r"\s+", " ", content)
+
+
+def _parse_natural_nav_command(content: str, base_date: Optional[date] = None) -> Optional[NavCommand]:
+    if not _looks_like_natural_nav_text(content):
+        return None
+
+    code = _extract_product_code(content)
+    if "份额" in content and code:
+        shares = _extract_shares_value(content, code)
+        if shares is not None:
+            return NavCommand(action="set_shares", code=code, shares=shares)
+
+    if code and _contains_any(content, ("删除", "删掉", "移除", "去掉")):
+        return NavCommand(action="delete_product", code=code)
+
+    if code and _contains_any(content, ("添加", "新增", "加一下", "加上", "加入", "加")):
+        provider = _extract_provider_from_text(content)
+        if provider:
+            return NavCommand(action="add_product", provider=provider, query=code)
+
+    if "配置" in content and _contains_any(content, ("净值", "理财")):
+        return NavCommand(action="view_config")
+
+    period = _natural_period_from_text(content)
+    if period:
+        return NavCommand(action="query_period", period=period)
+
+    base_date = base_date or date.today()
+    target_date = parse_nav_query_date(content, base_date=base_date)
+    if target_date:
+        if target_date == base_date and _contains_any(content, ("今天", "今日", "当前", "现在", "最新")):
+            return NavCommand(action="query_latest")
+        return NavCommand(action="query_date", target_date=target_date)
+
+    if _contains_any(content, ("净值", "理财", "收益", "最新", "当前", "现在", "今天", "今日")):
+        return NavCommand(action="query_latest")
+
+    return None
+
+
+def _looks_like_natural_nav_text(content: str) -> bool:
+    if not content:
+        return False
+    if "日报" in content and "净值" not in content and "理财" not in content:
+        return False
+    if _extract_product_code(content):
+        return True
+    return _contains_any(
+        content,
+        (
+            "净值",
+            "理财",
+            "收益",
+            "份额",
+            "周报",
+            "月报",
+            "季报",
+            "年报",
+            "半年报",
+            "周度",
+            "月度",
+            "季度",
+            "年度",
+        ),
+    )
+
+
+def _contains_any(content: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in content for keyword in keywords)
+
+
+def _extract_product_code(content: str) -> str:
+    match = re.search(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]{3,})(?![A-Za-z0-9])", content or "")
+    return match.group(1).upper() if match else ""
+
+
+def _extract_provider_from_text(content: str) -> str:
+    lower_content = (content or "").lower()
+    for alias, provider in sorted(PROVIDER_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+        if alias and (alias in content or alias in lower_content):
+            return provider
+    return ""
+
+
+def _extract_shares_value(content: str, code: str) -> Optional[Decimal]:
+    escaped_code = re.escape(code)
+    match = re.search(
+        rf"(?i){escaped_code}.*?份额.*?([0-9]+(?:\.[0-9]+)?)",
+        content,
+    ) or re.search(
+        rf"(?i)份额.*?{escaped_code}.*?([0-9]+(?:\.[0-9]+)?)",
+        content,
+    )
+    if not match:
+        return None
+    try:
+        return Decimal(match.group(1))
+    except InvalidOperation:
+        return None
+
+
+def _natural_period_from_text(content: str) -> str:
+    one = r"(?:一|1|一个|1个)"
+    two = r"(?:两|二|2|两个|二个|2个)"
+    three = r"(?:三|3|三个|3个)"
+    six = r"(?:六|6|六个|6个)"
+    rolling_rules = (
+        ("rolling_7d", (r"(?:近|最近)\s*(?:7|七)\s*天", rf"(?:近|最近)\s*{one}\s*(?:周|星期)")),
+        ("rolling_1m", (rf"(?:近|最近)\s*{one}\s*月",)),
+        ("rolling_3m", (rf"(?:近|最近)\s*{three}\s*月",)),
+        ("rolling_6m", (r"(?:近|最近)\s*半\s*年", rf"(?:近|最近)\s*{six}\s*月")),
+        ("rolling_1y", (rf"(?:近|最近)\s*{one}\s*年",)),
+        ("rolling_2y", (rf"(?:近|最近)\s*{two}\s*年",)),
+        ("rolling_3y", (rf"(?:近|最近)\s*{three}\s*年",)),
+    )
+    for period, patterns in rolling_rules:
+        if any(re.search(pattern, content) for pattern in patterns):
+            return period
+
+    natural_rules = (
+        ("half_year", ("半年度", "半年报", "本半年", "上半年", "下半年")),
+        ("quarter", ("季度", "季报", "本季", "这个季度", "上季", "上季度")),
+        ("month", ("月度", "月报", "本月", "这个月", "上月", "月底")),
+        ("week", ("周度", "周报", "本周", "这周", "这个周", "上周")),
+        ("year", ("年度", "年报", "本年", "今年", "去年", "上年")),
+    )
+    for period, keywords in natural_rules:
+        if _contains_any(content, keywords):
+            return period
+    return ""
 
 
 def _parse_add_product_command(content: str) -> NavCommand:
@@ -367,7 +559,7 @@ def build_nav_period_report(
             provider = get_provider(product.provider)
             records = provider.fetch_latest(product, as_of=base_date, start_date=fetch_start_date)
             latest = _nearest_record_on_or_before(records, base_date)
-            baseline = _nearest_record_on_or_before(records, start_date)
+            baseline = _period_baseline_record(records, start_date)
             if not latest:
                 lines.append("状态：暂无最新净值")
                 continue
@@ -393,6 +585,94 @@ def _nearest_record_on_or_before(records: list[NavRecord], target_date: date) ->
     if not eligible:
         return None
     return sorted(eligible, key=lambda record: record.nav_date, reverse=True)[0]
+
+
+def _period_baseline_record(records: list[NavRecord], target_date: date) -> Optional[NavRecord]:
+    baseline = _nearest_record_on_or_before(records, target_date)
+    if baseline:
+        return baseline
+    eligible = [record for record in records if record.nav_date > target_date]
+    if not eligible:
+        return None
+    return sorted(eligible, key=lambda record: record.nav_date)[0]
+
+
+def query_nav_period_products(
+    cfg,
+    period: str,
+    base_date: Optional[date] = None,
+) -> tuple[date, list[ProductPeriodNavResult]]:
+    base_date = base_date or date.today()
+    start_date = calculate_period_start(period, base_date)
+    products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
+    fetch_start_date = start_date - timedelta(days=PERIOD_FETCH_LOOKBACK_DAYS)
+    results = []
+    for item in products:
+        product = NavProduct(
+            provider=getattr(item, "provider", ""),
+            code=getattr(item, "code", ""),
+            name=getattr(item, "name", "") or getattr(item, "code", ""),
+        )
+        shares = _optional_decimal(getattr(item, "shares", None))
+        try:
+            provider = get_provider(product.provider)
+            records = provider.fetch_latest(product, as_of=base_date, start_date=fetch_start_date)
+            results.append(
+                ProductPeriodNavResult(
+                    product=product,
+                    latest=_nearest_record_on_or_before(records, base_date),
+                    baseline=_period_baseline_record(records, start_date),
+                    shares=shares,
+                )
+            )
+        except Exception as exc:
+            logger.error("NAV period stats failed for %s %s: %s", product.provider, product.code, exc, exc_info=True)
+            results.append(ProductPeriodNavResult(product=product, shares=shares, error=str(exc)))
+    return start_date, results
+
+
+def format_nav_period_report_from_results(
+    period: str,
+    start_date: date,
+    results: list[ProductPeriodNavResult],
+    generated_at: Optional[datetime] = None,
+) -> str:
+    generated_at = generated_at or datetime.now()
+    label = PERIOD_LABELS.get(period, period)
+    report_title = PERIOD_REPORT_TITLES.get(period, "理财净值统计")
+    lines = [
+        f"## 📊 {report_title}",
+        "",
+        f"> **统计周期**：{label}",
+        f"> **周期起点**：{start_date:%Y-%m-%d}",
+        f"> **查询时间**：{generated_at:%Y-%m-%d %H:%M}",
+    ]
+
+    if not results:
+        lines.append("")
+        lines.append("当前未配置净值产品，请先发送：添加净值产品 信银 AF233276B")
+        return "\n".join(lines)
+
+    for index, result in enumerate(results, 1):
+        lines.append("")
+        lines.append(f"> **{index}. {_format_product_title(result.product)}**")
+        if result.error:
+            lines.append("状态：统计失败")
+            lines.append(f"原因：{result.error}")
+            continue
+        if not result.latest:
+            lines.append("状态：暂无最新净值")
+            continue
+        if not result.baseline:
+            lines.append(
+                f"期末：{_format_period_endpoint(result.latest)}　状态：周期起点附近数据不足，无法计算收益"
+            )
+            continue
+
+        delta, delta_pct = calculate_change(result.latest, result.baseline)
+        _append_compact_period_summary(lines, result.latest, result.baseline, delta, delta_pct, result.shares)
+
+    return "\n".join(lines)
 
 
 def _normalize_provider_alias(value: str) -> str:
@@ -776,34 +1056,103 @@ def confirm_pending_nav_add(
             }
         )
     )
+    try:
+        from src.nav_holdings import refresh_profile_for_product
+
+        refresh_profile_for_product(cfg, products[-1], notify=False)
+    except Exception:
+        logger.warning("Failed to refresh holding profile after adding %s", candidate.code, exc_info=True)
     clear_pending_nav_add(pending_path)
     return True, f"已添加净值产品：{candidate.name or candidate.code}"
 
 
-def query_nav_products(cfg, target_date: Optional[date] = None) -> list[ProductNavResult]:
+def nav_query_in_progress() -> bool:
+    return _NAV_QUERY_LOCK.locked()
+
+
+def _acquire_nav_query(query_source: str):
+    blocking = query_source != "dashboard"
+    acquired = _NAV_QUERY_LOCK.acquire(blocking=blocking)
+    if not acquired:
+        raise ProviderError("NAV query is already running")
+
+
+def query_nav_products(
+    cfg,
+    target_date: Optional[date] = None,
+    query_source: str = "enterprise",
+) -> list[ProductNavResult]:
     products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
     results = []
-    for item in products:
-        product = NavProduct(
-            provider=getattr(item, "provider", ""),
-            code=getattr(item, "code", ""),
-            name=getattr(item, "name", "") or getattr(item, "code", ""),
-        )
-        shares = _optional_decimal(getattr(item, "shares", None))
-        try:
-            provider = get_provider(product.provider)
-            if target_date:
-                query_result = provider.fetch_by_date(product, target_date)
-                results.append(ProductNavResult(product=product, query_result=query_result, shares=shares))
-            else:
-                records = provider.fetch_latest(product)
-                latest = records[0] if records else None
-                previous = records[1] if len(records) > 1 else None
-                results.append(ProductNavResult(product=product, latest=latest, previous=previous, shares=shares))
-        except Exception as exc:
-            logger.error("NAV query failed for %s %s: %s", product.provider, product.code, exc, exc_info=True)
-            results.append(ProductNavResult(product=product, shares=shares, error=str(exc)))
+    _acquire_nav_query(query_source)
+    try:
+        for item in products:
+            product = NavProduct(
+                provider=getattr(item, "provider", ""),
+                code=getattr(item, "code", ""),
+                name=getattr(item, "name", "") or getattr(item, "code", ""),
+            )
+            shares = _optional_decimal(getattr(item, "shares", None))
+            try:
+                provider = get_provider(product.provider)
+                if target_date:
+                    query_result = provider.fetch_by_date(product, target_date)
+                    results.append(ProductNavResult(product=product, query_result=query_result, shares=shares))
+                else:
+                    records = provider.fetch_latest(product)
+                    latest = records[0] if records else None
+                    previous = records[1] if len(records) > 1 else None
+                    results.append(ProductNavResult(product=product, latest=latest, previous=previous, shares=shares))
+            except Exception as exc:
+                logger.error("NAV query failed for %s %s: %s", product.provider, product.code, exc, exc_info=True)
+                results.append(ProductNavResult(product=product, shares=shares, error=str(exc)))
+        if target_date is None and query_source == "enterprise":
+            try:
+                from src.nav_dashboard import observe_enterprise_results
+
+                observe_enterprise_results(cfg, results)
+            except Exception:
+                logger.warning("Failed to publish NAV results to dashboard", exc_info=True)
+    finally:
+        _NAV_QUERY_LOCK.release()
     return results
+
+
+def query_nav_histories(
+    cfg,
+    start_date: date,
+    query_source: str = "dashboard",
+) -> tuple[dict[str, list[NavRecord]], list[str]]:
+    products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
+    histories = {}
+    errors = []
+    _acquire_nav_query(query_source)
+    try:
+        for item in products:
+            product = NavProduct(
+                provider=getattr(item, "provider", ""),
+                code=getattr(item, "code", ""),
+                name=getattr(item, "name", "") or getattr(item, "code", ""),
+            )
+            product_key = f"{product.provider}:{product.code.upper()}"
+            try:
+                provider = get_provider(product.provider)
+                histories[product_key] = provider.fetch_latest(
+                    product,
+                    start_date=start_date,
+                )
+            except Exception as exc:
+                logger.error(
+                    "NAV dashboard history query failed for %s %s: %s",
+                    product.provider,
+                    product.code,
+                    exc,
+                    exc_info=True,
+                )
+                errors.append(f"{product.code}: {exc}")
+    finally:
+        _NAV_QUERY_LOCK.release()
+    return histories, errors
 
 
 def build_nav_report(
@@ -825,11 +1174,111 @@ def build_nav_report(
     )
 
 
-def push_nav_report(cfg, target_date: Optional[date] = None, to_user: str = None) -> str:
-    from src.wechat_notifier import send_markdown
+def push_nav_report(
+    cfg,
+    target_date: Optional[date] = None,
+    to_user: str = None,
+    image_output_dir=None,
+) -> str:
+    from src.wechat_notifier import send_image, send_markdown
 
-    report = build_nav_report(cfg, target_date=target_date)
-    send_markdown(cfg.wechat, report, to_user)
+    products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
+    if not products:
+        report = build_nav_report(cfg, target_date=target_date)
+        send_markdown(cfg.wechat, report, to_user)
+        return report
+
+    generated_at = datetime.now()
+    title = "理财净值查询" if target_date else "理财净值日报"
+    results = query_nav_products(cfg, target_date=target_date)
+    report = format_nav_report(
+        results,
+        title=title,
+        generated_at=generated_at,
+        target_date=target_date,
+    )
+
+    image_path = ""
+    image_sent = False
+    try:
+        from src.nav_report_image import render_nav_report_image
+
+        image_path = render_nav_report_image(
+            results,
+            title=title,
+            generated_at=generated_at,
+            target_date=target_date,
+            output_dir=image_output_dir,
+        )
+        image_sent = send_image(cfg.wechat, image_path, to_user)
+    except Exception as exc:
+        logger.error("NAV report image send failed, falling back to markdown: %s", exc, exc_info=True)
+    finally:
+        if image_path:
+            try:
+                os.remove(image_path)
+            except OSError:
+                logger.warning("Failed to remove NAV report image: %s", image_path)
+
+    if not image_sent:
+        send_markdown(cfg.wechat, report, to_user)
+    return report
+
+
+def push_nav_evening_report(
+    cfg,
+    as_of_date: Optional[date] = None,
+    to_user: str = None,
+    image_output_dir=None,
+) -> str:
+    from src.wechat_notifier import send_image, send_markdown
+
+    products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
+    if not products:
+        logger.info("NAV evening report skipped: no products configured")
+        return ""
+
+    as_of_date = as_of_date or date.today()
+    generated_at = datetime.now()
+    results = [
+        result
+        for result in query_nav_products(cfg)
+        if result.latest and result.latest.nav_date == as_of_date
+    ]
+    if not results:
+        logger.info("NAV evening report skipped: no product disclosed NAV on %s", as_of_date)
+        return ""
+
+    title = "理财净值晚报"
+    report = format_nav_report(
+        results,
+        title=title,
+        generated_at=generated_at,
+    )
+
+    image_path = ""
+    image_sent = False
+    try:
+        from src.nav_report_image import render_nav_report_image
+
+        image_path = render_nav_report_image(
+            results,
+            title=title,
+            generated_at=generated_at,
+            output_dir=image_output_dir,
+        )
+        image_sent = send_image(cfg.wechat, image_path, to_user)
+    except Exception as exc:
+        logger.error("NAV evening report image send failed, falling back to markdown: %s", exc, exc_info=True)
+    finally:
+        if image_path:
+            try:
+                os.remove(image_path)
+            except OSError:
+                logger.warning("Failed to remove NAV evening report image: %s", image_path)
+
+    if not image_sent:
+        send_markdown(cfg.wechat, report, to_user)
     return report
 
 
@@ -838,11 +1287,50 @@ def push_nav_period_report(
     period: str,
     base_date: Optional[date] = None,
     to_user: str = None,
+    image_output_dir=None,
 ) -> str:
-    from src.wechat_notifier import send_markdown
+    from src.wechat_notifier import send_image, send_markdown
 
-    report = build_nav_period_report(cfg, period, base_date=base_date)
-    send_markdown(cfg.wechat, report, to_user)
+    products = getattr(getattr(cfg, "nav_monitor", None), "products", [])
+    if not products:
+        report = build_nav_period_report(cfg, period, base_date=base_date)
+        send_markdown(cfg.wechat, report, to_user)
+        return report
+
+    generated_at = datetime.now()
+    start_date, results = query_nav_period_products(cfg, period, base_date=base_date)
+    report = format_nav_period_report_from_results(
+        period,
+        start_date,
+        results,
+        generated_at=generated_at,
+    )
+
+    image_path = ""
+    image_sent = False
+    try:
+        from src.nav_report_image import render_nav_period_report_image
+
+        image_path = render_nav_period_report_image(
+            results,
+            title=PERIOD_REPORT_TITLES.get(period, "理财净值统计"),
+            period_label=PERIOD_LABELS.get(period, period),
+            start_date=start_date,
+            generated_at=generated_at,
+            output_dir=image_output_dir,
+        )
+        image_sent = send_image(cfg.wechat, image_path, to_user)
+    except Exception as exc:
+        logger.error("NAV period report image send failed, falling back to markdown: %s", exc, exc_info=True)
+    finally:
+        if image_path:
+            try:
+                os.remove(image_path)
+            except OSError:
+                logger.warning("Failed to remove NAV period report image: %s", image_path)
+
+    if not image_sent:
+        send_markdown(cfg.wechat, report, to_user)
     return report
 
 

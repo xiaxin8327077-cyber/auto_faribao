@@ -4,6 +4,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 DOC_BASE = "https://doc.weixin.qq.com"
 RENEW_LOCK = threading.Lock()
 QR_TIMEOUT_SECONDS = 120
+RenewCompleteCallback = Callable[[bool, str], None]
 
 
 def renew_cookies_by_qr(config_path: str, to_user: str = None, reason: str = "Cookies 已过期") -> tuple[bool, str]:
@@ -67,7 +69,43 @@ def _run_renew_subprocess(config_path: str, to_user: str = None, reason: str = "
         return False, str(e)
 
 
-def start_renew_cookies_by_qr(config_path: str, to_user: str = None, reason: str = "Cookies 已过期") -> bool:
+def _invoke_renew_complete_callback(
+    on_complete: RenewCompleteCallback | None,
+    success: bool,
+    message: str,
+) -> None:
+    if on_complete is None:
+        return
+
+    try:
+        on_complete(success, message)
+    except Exception:
+        logger.error("QR renew completion callback failed", exc_info=True)
+
+
+def _run_renew_in_background(
+    config_path: str,
+    to_user: str | None,
+    reason: str,
+    on_complete: RenewCompleteCallback | None = None,
+) -> None:
+    success = False
+    message = "二维码续期任务未完成"
+    try:
+        success, message = renew_cookies_by_qr(config_path, to_user, reason)
+    except Exception as exc:
+        message = str(exc)
+        logger.error("QR renew background task crashed: %s", exc, exc_info=True)
+    finally:
+        _invoke_renew_complete_callback(on_complete, success, message)
+
+
+def start_renew_cookies_by_qr(
+    config_path: str,
+    to_user: str = None,
+    reason: str = "Cookies 已过期",
+    on_complete: RenewCompleteCallback | None = None,
+) -> bool:
     if RENEW_LOCK.locked():
         try:
             cfg = load_config(config_path)
@@ -76,13 +114,18 @@ def start_renew_cookies_by_qr(config_path: str, to_user: str = None, reason: str
             pass
         return False
 
-    thread = threading.Thread(
-        target=renew_cookies_by_qr,
-        args=(config_path, to_user, reason),
-        daemon=True,
-        name="qr-cookie-renew",
-    )
-    thread.start()
+    try:
+        thread = threading.Thread(
+            target=_run_renew_in_background,
+            args=(config_path, to_user, reason, on_complete),
+            daemon=True,
+            name="qr-cookie-renew",
+        )
+        thread.start()
+    except Exception as exc:
+        logger.error("Failed to start QR renew background task: %s", exc, exc_info=True)
+        _invoke_renew_complete_callback(on_complete, False, str(exc))
+        return False
     return True
 
 

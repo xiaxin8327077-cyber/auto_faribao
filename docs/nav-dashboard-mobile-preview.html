@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>理财组合看板 - 手机版预览</title>
+  <style>
+    :root {
+      --bg: #f6f9fd;
+      --panel: rgba(255, 255, 255, 0.88);
+      --line: #dbe6f3;
+      --line-soft: #eaf1f8;
+      --text: #132239;
+      --muted: #728093;
+      --muted-2: #98a4b4;
+      --blue: #2068c8;
+      --blue-soft: #eaf4ff;
+      --green: #07944f;
+      --green-soft: #e6f7ef;
+      --red: #f05a24;
+      --red-soft: #fff0e7;
+      --shadow: 0 16px 42px rgba(38, 73, 118, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(219, 236, 255, 0.88), transparent 34%),
+        linear-gradient(180deg, #fbfdff 0%, var(--bg) 38%, #f8fafc 100%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
+
+    .phone {
+      width: min(100vw, 430px);
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: 24px 14px 28px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.12;
+      font-weight: 850;
+      color: #14233a;
+    }
+
+    .time {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    .clock {
+      width: 16px;
+      height: 16px;
+      border: 2px solid #8c98a8;
+      border-radius: 50%;
+      position: relative;
+      flex: 0 0 auto;
+    }
+
+    .clock::before,
+    .clock::after {
+      content: "";
+      position: absolute;
+      left: 6px;
+      top: 3px;
+      width: 2px;
+      height: 5px;
+      background: #8c98a8;
+      border-radius: 2px;
+      transform-origin: bottom center;
+    }
+
+    .clock::after {
+      top: 7px;
+      height: 4px;
+      transform: rotate(90deg);
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 146px;
+      padding: 22px 22px 20px;
+      border: 1px solid #bdd6f4;
+      border-radius: 13px;
+      background:
+        linear-gradient(96deg, rgba(239, 247, 255, 0.96) 0%, rgba(255, 255, 255, 0.9) 58%, rgba(231, 241, 255, 0.8) 100%);
+      box-shadow: var(--shadow);
+    }
+
+    .hero.profit {
+      border-color: #f5c38e;
+      background:
+        linear-gradient(96deg, rgba(255, 248, 236, 0.98) 0%, rgba(255, 255, 255, 0.91) 58%, rgba(255, 237, 201, 0.8) 100%);
+    }
+
+    .label-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 16px;
+      font-weight: 650;
+    }
+
+    .info {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 19px;
+      height: 19px;
+      border: 1.5px solid #9aa7b7;
+      border-radius: 50%;
+      color: #6e7b8b;
+      font-size: 12px;
+      line-height: 1;
+      font-weight: 800;
+    }
+
+    .total {
+      margin: 16px 0 10px;
+      color: var(--green);
+      font-size: 45px;
+      line-height: 0.96;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0;
+    }
+
+    .profit .total,
+    .profit .today-value {
+      color: var(--red);
+    }
+
+    .unit {
+      margin-left: 4px;
+      font-size: 20px;
+      font-weight: 800;
+    }
+
+    .today {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 16px;
+      font-size: 18px;
+      color: var(--muted);
+      font-weight: 650;
+    }
+
+    .today-value {
+      color: var(--green);
+      font-size: 22px;
+      font-weight: 850;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .basis {
+      margin-top: 10px;
+      color: var(--muted-2);
+      font-size: 12px;
+    }
+
+    .weather {
+      position: absolute;
+      right: 18px;
+      top: 30px;
+      width: 118px;
+      height: 88px;
+      opacity: 0.86;
+    }
+
+    .cloud {
+      position: absolute;
+      right: 10px;
+      top: 14px;
+      width: 92px;
+      height: 42px;
+      border-radius: 28px;
+      background: linear-gradient(180deg, #d7e6f8 0%, #c8daf1 100%);
+      filter: drop-shadow(0 12px 20px rgba(102, 140, 188, 0.18));
+    }
+
+    .cloud::before,
+    .cloud::after {
+      content: "";
+      position: absolute;
+      bottom: 19px;
+      border-radius: 50%;
+      background: inherit;
+    }
+
+    .cloud::before {
+      left: 14px;
+      width: 46px;
+      height: 46px;
+    }
+
+    .cloud::after {
+      right: 6px;
+      width: 56px;
+      height: 56px;
+    }
+
+    .rain {
+      position: absolute;
+      width: 8px;
+      height: 30px;
+      border-radius: 8px;
+      background: #9dc6f6;
+      transform: rotate(28deg);
+    }
+
+    .rain.one {
+      left: 42px;
+      top: 58px;
+    }
+
+    .rain.two {
+      left: 74px;
+      top: 58px;
+    }
+
+    .rain.three {
+      left: 102px;
+      top: 62px;
+      height: 24px;
+    }
+
+    .sun {
+      display: none;
+      position: absolute;
+      right: 16px;
+      top: 2px;
+      width: 78px;
+      height: 78px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #ffa526 0 44%, #ffd77a 45% 68%, rgba(255, 202, 83, 0.35) 69%);
+      box-shadow: 0 0 38px rgba(255, 174, 52, 0.38);
+    }
+
+    .profit .cloud,
+    .profit .rain {
+      display: none;
+    }
+
+    .profit .sun {
+      display: block;
+    }
+
+    .card {
+      margin-top: 10px;
+      padding: 18px 13px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--panel);
+      box-shadow: 0 10px 28px rgba(68, 93, 127, 0.07);
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      padding: 17px 10px;
+    }
+
+    .metric {
+      min-width: 0;
+      text-align: center;
+      border-right: 1px solid var(--line);
+    }
+
+    .metric:last-child {
+      border-right: 0;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .metric-value {
+      margin-top: 10px;
+      font-size: 20px;
+      font-weight: 850;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .insights {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+      padding: 14px 12px;
+      background: linear-gradient(90deg, rgba(235, 245, 255, 0.95), rgba(255, 255, 255, 0.92), rgba(236, 247, 255, 0.95));
+    }
+
+    .insight {
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      column-gap: 10px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .insight + .insight {
+      border-left: 1px solid var(--line);
+      padding-left: 13px;
+    }
+
+    .badge {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      font-size: 18px;
+      font-weight: 900;
+    }
+
+    .badge.down {
+      color: #1f6fd2;
+      background: #e2f0ff;
+    }
+
+    .badge.up {
+      color: var(--red);
+      background: #ffe9df;
+    }
+
+    .insight-label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .insight-main {
+      margin-top: 2px;
+      color: #174b95;
+      font-size: 15px;
+      font-weight: 850;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .insight-main.red {
+      color: var(--red);
+    }
+
+    .card-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 2px 2px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+      color: #14233a;
+      font-weight: 850;
+    }
+
+    .link {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .chevron {
+      width: 8px;
+      height: 8px;
+      border-top: 1.8px solid currentColor;
+      border-right: 1.8px solid currentColor;
+      transform: rotate(45deg);
+    }
+
+    .product {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) 62px 70px;
+      column-gap: 6px;
+      align-items: center;
+      min-height: 78px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .product:last-child {
+      border-bottom: 0;
+    }
+
+    .rank {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 15px;
+      font-weight: 850;
+    }
+
+    .rank.dim {
+      background: #eef2f6;
+      color: #243348;
+    }
+
+    .name {
+      min-width: 0;
+      font-size: 13px;
+      font-weight: 800;
+      display: -webkit-box;
+      white-space: normal;
+      overflow: hidden;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      line-height: 1.26;
+    }
+
+    .code {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .nav {
+      text-align: right;
+      font-size: 13px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .date {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .income {
+      text-align: right;
+      font-size: 13px;
+      font-weight: 850;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .change {
+      margin-top: 5px;
+      font-size: 12px;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .negative {
+      color: var(--green);
+    }
+
+    .positive {
+      color: var(--red);
+    }
+
+    .ranking {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+      margin-top: 14px;
+      padding: 13px 8px;
+      border-radius: 10px;
+      background: linear-gradient(90deg, rgba(249, 252, 255, 0.98), rgba(255, 255, 255, 0.98));
+    }
+
+    .rank-block {
+      min-width: 0;
+    }
+
+    .rank-block + .rank-block {
+      border-left: 1px solid var(--line-soft);
+      padding-left: 12px;
+    }
+
+    .rank-title {
+      margin: 0 0 10px;
+      font-size: 13px;
+      font-weight: 850;
+      color: var(--red);
+    }
+
+    .rank-title.green {
+      color: var(--green);
+    }
+
+    .rank-line {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr) auto;
+      gap: 7px;
+      align-items: center;
+      height: 27px;
+      font-size: 12px;
+      color: #26364d;
+    }
+
+    .rank-line strong {
+      color: inherit;
+      font-size: 13px;
+    }
+
+    .rank-line span {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .note {
+      margin-top: 13px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    @media (max-width: 370px) {
+      .phone {
+        padding-left: 10px;
+        padding-right: 10px;
+      }
+
+      h1 {
+        font-size: 26px;
+      }
+
+      .time {
+        font-size: 12px;
+      }
+
+      .hero {
+        padding-left: 18px;
+      }
+
+      .total {
+        font-size: 39px;
+      }
+
+      .weather {
+        right: 0;
+        transform: scale(0.86);
+      }
+
+      .name {
+        font-size: 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="phone" aria-label="理财组合看板手机版预览">
+    <header class="topbar">
+      <h1>理财组合看板</h1>
+      <div class="time">
+        <span class="clock" aria-hidden="true"></span>
+        <span>2026-07-09 23:30</span>
+      </div>
+    </header>
+
+    <section class="hero" aria-label="组合收益概览">
+      <div class="label-row">
+        <span>累计收益</span>
+        <span class="info">i</span>
+      </div>
+      <div class="total">-186.73<span class="unit">元</span></div>
+      <div class="today">
+        <span>今日收益</span>
+        <span class="info">i</span>
+        <span class="today-value">-80.23 元</span>
+      </div>
+      <div class="basis">自 2026-07-01 起按收益流水累计</div>
+      <div class="weather" aria-hidden="true">
+        <div class="sun"></div>
+        <div class="cloud"></div>
+        <div class="rain one"></div>
+        <div class="rain two"></div>
+        <div class="rain three"></div>
+      </div>
+    </section>
+
+    <section class="card metrics" aria-label="组合指标">
+      <div class="metric">
+        <div class="metric-label">估算市值(元)</div>
+        <div class="metric-value">688,245.31</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">已设份额</div>
+        <div class="metric-value">5/5</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">今日披露</div>
+        <div class="metric-value">2/5</div>
+      </div>
+    </section>
+
+    <section class="card insights" aria-label="今日贡献洞察">
+      <div class="insight">
+        <div class="badge down">↓</div>
+        <div>
+          <div class="insight-label">今日拖累主要来自</div>
+          <div class="insight-main">慧盈象5号B</div>
+        </div>
+      </div>
+      <div class="insight">
+        <div class="badge up">↗</div>
+        <div>
+          <div class="insight-label">最大贡献</div>
+          <div class="insight-main red">南银理财 +2.84</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-label="产品持仓">
+      <div class="card-title">
+        <h2>产品持仓（5）</h2>
+        <div class="link">查看全部 <span class="chevron"></span></div>
+      </div>
+
+      <div class="product">
+        <div class="rank">1</div>
+        <div>
+          <div class="name">慧盈象固收增强一年持有期5号B</div>
+          <div class="code">AF233276B</div>
+        </div>
+        <div class="nav">
+          <div>1.077800</div>
+          <div class="date">07-08</div>
+        </div>
+        <div class="income negative">
+          <div>-80.23 元</div>
+          <div class="change">-0.0186%</div>
+        </div>
+      </div>
+
+      <div class="product">
+        <div class="rank">2</div>
+        <div>
+          <div class="name">安盈象强债稳健六个月持有期1号B</div>
+          <div class="code">AF212017B</div>
+        </div>
+        <div class="nav">
+          <div>1.119500</div>
+          <div class="date">07-08</div>
+        </div>
+        <div class="income negative">
+          <div>-25.67 元</div>
+          <div class="change">-0.0625%</div>
+        </div>
+      </div>
+
+      <div class="product">
+        <div class="rank">3</div>
+        <div>
+          <div class="name">慧盈象FOF固收增强六个月持有期1号H</div>
+          <div class="code">AF247389H</div>
+        </div>
+        <div class="nav">
+          <div>1.031300</div>
+          <div class="date">07-08</div>
+        </div>
+        <div class="income negative">
+          <div>-39.82 元</div>
+          <div class="change">-0.0969%</div>
+        </div>
+      </div>
+
+      <div class="product">
+        <div class="rank dim">4</div>
+        <div>
+          <div class="name">南银理财悦稳最低持有91天3号-B份额</div>
+          <div class="code">A32069</div>
+        </div>
+        <div class="nav">
+          <div>1.050881</div>
+          <div class="date">07-08</div>
+        </div>
+        <div class="income positive">
+          <div>+2.84 元</div>
+          <div class="change">+0.0027%</div>
+        </div>
+      </div>
+
+      <div class="product">
+        <div class="rank dim">5</div>
+        <div>
+          <div class="name">慧盈象固收增强六个月持有期9号B</div>
+          <div class="code">AF233398B</div>
+        </div>
+        <div class="nav">
+          <div>1.095500</div>
+          <div class="date">07-08</div>
+        </div>
+        <div class="income negative">
+          <div>-43.86 元</div>
+          <div class="change">-0.0456%</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-label="收益贡献排行">
+      <div class="card-title">
+        <h2>收益贡献排行</h2>
+        <div class="link">单位：元</div>
+      </div>
+      <div class="ranking">
+        <div class="rank-block">
+          <p class="rank-title">TOP 3 贡献最多</p>
+          <div class="rank-line positive"><strong>1</strong><span>南银理财91天3号-B</span><b>+2.84</b></div>
+          <div class="rank-line"><strong>2</strong><span>慧盈象9号B</span><b>+0.00</b></div>
+          <div class="rank-line"><strong>3</strong><span>--</span><b>--</b></div>
+        </div>
+        <div class="rank-block">
+          <p class="rank-title green">TOP 3 拖累最多</p>
+          <div class="rank-line negative"><strong>1</strong><span>慧盈象5号B</span><b>-80.23</b></div>
+          <div class="rank-line negative"><strong>2</strong><span>慧盈象FOF 1号H</span><b>-39.82</b></div>
+          <div class="rank-line negative"><strong>3</strong><span>安盈象1号B</span><b>-25.67</b></div>
+        </div>
+      </div>
+      <div class="note">累计收益按 2026-07-01 起收益流水统计；份额变更只影响后续收益，产品删除不回退历史累计。</div>
+    </section>
+  </main>
+</body>
+</html>
