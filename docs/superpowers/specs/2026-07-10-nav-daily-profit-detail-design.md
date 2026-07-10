@@ -18,6 +18,8 @@ Make the cumulative-profit summary on the mobile NAV dashboard open a compact da
 
 `NavDashboardStore.payload()` adds `daily_profits`, `monthly_profits`, and `yearly_profits`, built exclusively from immutable `profit_entries`. Entries are grouped by NAV date, natural month, and natural year, summed with `Decimal`, and sorted newest first. This is presentation data only; no state migration or new network request is required.
 
+Manually supplied historical monthly totals are stored separately from NAV-date ledger entries. They contribute to cumulative, monthly, and yearly totals, but never appear in the daily view because no exact NAV date exists. Upserts are keyed by `YYYY-MM`, making a repeated import idempotent. Adding January through June 2026 changes the displayed accounting start to `2026-01-01` while the provider-backed NAV ledger continues to begin on `2026-07-01`, preventing historical values from being counted twice.
+
 ## Safety
 
 - Existing cumulative and daily accounting semantics remain unchanged.

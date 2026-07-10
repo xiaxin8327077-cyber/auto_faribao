@@ -87,3 +87,21 @@ At 390px, open the private dashboard, select cumulative profit, confirm newest-f
 - [ ] **Step 3: Back up and deploy scoped files**
 
 Back up `src/nav_dashboard.py` and `src/nav_dashboard_page.html`, upload only those files, compile, restart `daily-report`, and verify authenticated API/page responses.
+
+### Task 4: Historical Monthly Profit Import
+
+**Files:**
+- Modify: `src/nav_dashboard.py`
+- Test: `tests/test_nav_dashboard.py`
+
+- [ ] **Step 1: Write the failing historical import test**
+
+Import monthly totals twice and assert they are idempotent, included in cumulative/monthly/yearly totals, excluded from daily totals, and move the display base date without changing the provider-ledger constant.
+
+- [ ] **Step 2: Implement keyed manual monthly upserts**
+
+Persist validated `{period, amount}` records in `manual_period_profits`, keyed by `YYYY-MM`, and merge them only into cumulative/monthly/yearly payload projections.
+
+- [ ] **Step 3: Import the approved January-June 2026 totals**
+
+Use the store method on production after backup, then verify the six months total `7335.06` and the new cumulative total equals the prior NAV-ledger total plus that historical amount.
