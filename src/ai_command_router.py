@@ -3,7 +3,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Callable, Optional
 
 
@@ -171,8 +171,25 @@ def _router_system_prompt(current_date: date) -> str:
 kind只能是 command、diagnose、clarify。
 用户询问系统为什么未发送、为什么失败、为什么没有执行时使用diagnose。
 信息不足时使用clarify。不得输出Shell、代码、路径、URL或未列出的指令。
-允许的标准指令包括：日报查询/提交/撤回/定时设置；净值最新、日期、自然周期、滚动周期查询；净值产品、份额、画像和监控设置；查看配置、定时配置、Cookies、服务器状态、运行服务和日志。
-禁止把重启服务、清理缓存、代理服务操作转换为command。日期参数必须使用现有格式。"""
+
+kind为command时，canonical_command必须严格使用下列指令或参数模板，不得自行概括或改名：
+无参数指令：今日状态、最近记录、本周统计、本月统计、查看配置、查看定时配置、读取日报、获取前一天日报、检查Cookies、服务器状态、运行服务、查看日志、发送日报、重新发送今日日报、撤回今日日报、根据前一天内容发送、生成二维码、更新工作日历。
+日报参数指令：查询日报 YYYY-MM-DD；设置Cookies检查时间 HH:MM；设置统计推送时间 HH:MM；设置缓存清理时间 HH:MM；设置日报提交时间 HH:MM。
+净值查询指令：立即查询净值；查询净值 YYYYMMDD；查询周度净值；查询月度净值；查询季度净值；查询半年度净值；查询年度净值；查询近7天净值；查询近一月净值；查询近三月净值；查询近半年净值；查询近一年净值；查询近两年净值；查询近三年净值。
+净值配置指令：查看净值配置；开启净值监控；关闭净值监控；设置净值推送时间 HH:MM；设置收益预估时间 HH:MM；添加净值产品 机构 产品代码；删除净值产品 产品代码；设置净值份额 产品代码 数值；查看持仓画像；查看 产品代码 持仓画像；查看画像状态；更新持仓画像；预估理财涨跌。
+相对日期必须根据当前日期换算：日报使用YYYY-MM-DD，净值使用YYYYMMDD。中文时间要换算为24小时HH:MM。
+
+示例：
+用户：OA今天交上去了吗
+输出：{{"kind":"command","canonical_command":"今日状态","confidence":0.98,"reply":""}}
+用户：把日报提交时间改到晚上八点半
+输出：{{"kind":"command","canonical_command":"设置日报提交时间 20:30","confidence":0.98,"reply":""}}
+用户：帮我查询昨天的理财净值
+输出：{{"kind":"command","canonical_command":"查询净值 {current_date - timedelta(days=1):%Y%m%d}","confidence":0.98,"reply":""}}
+用户：为什么今天没有自动发送理财净值日报
+输出：{{"kind":"diagnose","canonical_command":"","confidence":0.98,"reply":"排查理财净值日报未发送原因"}}
+
+禁止把重启服务、清理缓存、启动或停止代理服务转换为command；遇到这些请求使用clarify并说明不支持。"""
 
 
 @dataclass(frozen=True)

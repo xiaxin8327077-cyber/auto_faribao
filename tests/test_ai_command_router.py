@@ -36,6 +36,24 @@ def test_router_parses_fenced_command_json_and_disables_thinking():
     assert client.calls[0][1]["max_tokens"] <= 500
 
 
+def test_router_prompt_lists_exact_canonical_templates_and_examples():
+    client = StubClient(
+        '{"kind":"clarify","canonical_command":"","confidence":0.4,'
+        '"reply":"请补充信息"}'
+    )
+
+    AiCommandRouter(client).route("说得不够清楚", date(2026, 7, 13))
+
+    prompt = client.calls[0][0][0]["content"]
+    assert "今日状态" in prompt
+    assert "设置日报提交时间 HH:MM" in prompt
+    assert "查询净值 YYYYMMDD" in prompt
+    assert "OA今天交上去了吗" in prompt
+    assert "设置日报提交时间 20:30" in prompt
+    assert "为什么今天没有自动发送理财净值日报" in prompt
+    assert '"kind":"diagnose"' in prompt
+
+
 def test_router_marks_model_routed_write_command_for_confirmation():
     client = StubClient(
         '{"kind":"command","canonical_command":"设置净值份额 AF233276B 10000",'
