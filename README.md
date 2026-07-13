@@ -772,11 +772,11 @@ LONGCAT_ENABLED=true
 LONGCAT_API_KEY=replace-with-server-secret
 LONGCAT_BASE_URL=https://api.longcat.chat/openai
 LONGCAT_MODEL=LongCat-2.0
-LONGCAT_DIAGNOSTIC_USERS=zhangsan,lisi
+LONGCAT_DIAGNOSTIC_USERS=*
 ```
 
 - 未设置 `LONGCAT_ENABLED=true` 或未配置 `LONGCAT_API_KEY` 时，AI功能关闭，系统保持原有行为。
-- `LONGCAT_DIAGNOSTIC_USERS` 填写允许读取脱敏日志和源码的企业微信用户ID；未配置时任何用户都不能发起线上诊断。
+- `LONGCAT_DIAGNOSTIC_USERS` 填写允许读取脱敏日志和源码的企业微信用户ID，多个用户使用英文逗号分隔；配置为 `*` 时不限制企业微信用户，未配置时任何用户都不能发起线上诊断。
 - API Key 只允许放在 Linux systemd 环境变量或权限为 `600` 的 EnvironmentFile 中，不得写入 `config.yaml`。
 - 修改环境变量后需要重启 `daily-report` 服务。
 

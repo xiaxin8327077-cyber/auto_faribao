@@ -98,7 +98,8 @@ class AiAssistant:
         return self._pending.cancel(user_id)
 
     def diagnostic_authorized(self, user_id: str) -> bool:
-        return user_id in self.settings.diagnostic_users
+        users = self.settings.diagnostic_users
+        return "*" in users or user_id in users
 
     def diagnose(self, question: str) -> str:
         return self._diagnostics.run(question)

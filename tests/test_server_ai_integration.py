@@ -1,7 +1,8 @@
 from datetime import date
 from types import SimpleNamespace
 
-from src.ai_assistant import AiMessageBridge
+from src.ai_assistant import AiAssistant, AiMessageBridge
+from src.longcat_client import LongCatSettings
 
 
 class FakeAssistant:
@@ -48,6 +49,14 @@ class FakeAssistant:
     def diagnose(self, question):
         self.diagnosis_calls.append(question)
         return "diagnostic report"
+
+
+def test_diagnostic_wildcard_authorizes_every_wechat_user():
+    assistant = AiAssistant(
+        LongCatSettings(diagnostic_users=frozenset({"*"}))
+    )
+
+    assert assistant.diagnostic_authorized("any-wechat-user") is True
 
 
 def _harness(assistant, *, busy=False, known=False, run_async=None):
