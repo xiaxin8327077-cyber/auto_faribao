@@ -122,7 +122,7 @@ class DiagnosticToolbox:
         lines = []
         log_path = self._root / "daily_send.log"
         if log_path.is_file():
-            lines.extend(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-500:])
+            lines.extend(_tail_text_file(log_path).splitlines()[-500:])
 
         try:
             result = self._command_runner(
@@ -200,7 +200,16 @@ class DiagnosticToolbox:
         ) or "指定范围没有内容"
 
     def _source_files(self):
-        for path in sorted(self._root.rglob("*.py")):
+        candidates = []
+        src_root = self._root / "src"
+        if src_root.is_dir():
+            candidates.extend(src_root.rglob("*.py"))
+        candidates.extend(
+            self._root / name
+            for name in _ALLOWED_TOP_LEVEL_SOURCE
+            if (self._root / name).is_file()
+        )
+        for path in sorted(candidates):
             try:
                 relative = path.relative_to(self._root)
             except ValueError:
@@ -244,3 +253,12 @@ def _source_path_allowed(relative: Path) -> bool:
     ) or (
         len(relative.parts) == 1 and relative.name in _ALLOWED_TOP_LEVEL_SOURCE
     )
+
+
+def _tail_text_file(path: Path, max_bytes: int = 1024 * 1024) -> str:
+    with path.open("rb") as file_handle:
+        file_handle.seek(0, 2)
+        size = file_handle.tell()
+        file_handle.seek(max(0, size - max_bytes))
+        data = file_handle.read(max_bytes)
+    return data.decode("utf-8", errors="replace")

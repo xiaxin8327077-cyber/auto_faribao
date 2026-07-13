@@ -79,4 +79,3 @@ def test_chat_request_uses_history_and_safe_generation_limits():
         {"role": "user", "content": "new question"},
     ]
     assert kwargs["max_tokens"] <= 1200
-

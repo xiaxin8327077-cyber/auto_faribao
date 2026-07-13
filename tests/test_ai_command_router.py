@@ -114,4 +114,3 @@ def test_pending_commands_are_isolated_cancelled_and_expire():
     store.save("user-a", "发送日报")
     now[0] = 161.0
     assert store.confirm("user-a") is None
-
