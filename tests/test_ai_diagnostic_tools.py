@@ -129,6 +129,16 @@ def test_log_search_uses_fixed_journal_command_and_redacts_secrets(tmp_path):
 def test_unknown_tool_and_invalid_query_are_rejected(tmp_path):
     toolbox = DiagnosticToolbox(_project(tmp_path), _cfg())
 
+    assert toolbox.allowed_tools() == frozenset(
+        {
+            "get_schedule_snapshot",
+            "get_service_snapshot",
+            "search_logs",
+            "search_source",
+            "read_source",
+        }
+    )
+
     with pytest.raises(DiagnosticToolError, match="不允许"):
         toolbox.execute("run_shell", {"command": "whoami"})
     with pytest.raises(DiagnosticToolError, match="过长"):

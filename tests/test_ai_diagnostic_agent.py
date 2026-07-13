@@ -14,74 +14,142 @@ class StubClient:
 
 
 class StubToolbox:
-    def __init__(self):
+    TOOL_NAMES = frozenset(
+        {
+            "get_schedule_snapshot",
+            "get_service_snapshot",
+            "search_logs",
+            "search_source",
+            "read_source",
+        }
+    )
+
+    def __init__(self, failures=None):
         self.calls = []
+        self.failures = set(failures or ())
 
     def descriptions(self):
         return "search_logs({query}); read_source({path,start_line,end_line})"
 
+    def allowed_tools(self):
+        return self.TOOL_NAMES
+
     def execute(self, name, arguments):
         self.calls.append((name, arguments))
-        if name not in {"search_logs", "read_source"}:
-            raise RuntimeError("not allowed")
+        if name in self.failures:
+            raise RuntimeError("private failure detail")
         return {"ok": True, "tool": name, "content": f"evidence from {name}"}
 
 
-def _tool(name="search_logs"):
+def _plan(*tools):
+    items = ",".join(
+        '{"tool":"%s","arguments":%s}' % (name, arguments)
+        for name, arguments in tools
+    )
+    return '{"tools":[%s]}' % items
+
+
+def _report(cause="08:08任务未触发"):
     return (
-        '{"action":"tool","tool":"%s","arguments":{"query":"nav"},'
-        '"reason":"查找定时日志"}' % name
+        "🔍 **理财净值日报诊断**\n\n"
+        f"**原因**\n{cause}\n\n"
+        "**诊断依据**\n• 定时配置为08:08\n• 当日日志没有触发记录\n\n"
+        "**建议处理**\n1. 检查工作日配置\n\n"
+        "置信度：中"
     )
 
 
-def _final():
-    return (
-        '{"action":"final","title":"理财净值日报诊断",'
-        '"cause":"08:08抓取接口超时",'
-        '"evidence":["08:08:01任务启动","08:08:20抓取超时"],'
-        '"recommendations":["检查数据源连通性","稍后手动查询"],'
-        '"confidence":"高"}'
+def test_agent_uses_one_plan_call_and_one_markdown_report_call():
+    client = StubClient(
+        [
+            _plan(
+                ("get_schedule_snapshot", "{}"),
+                (
+                    "search_logs",
+                    '{"query":"nav monitor","since_minutes":1440,"limit":80}',
+                ),
+            ),
+            _report(),
+        ]
     )
-
-
-def test_agent_calls_tools_then_formats_evidence_based_report():
-    client = StubClient([_tool(), _final()])
     toolbox = StubToolbox()
 
     report = DiagnosticAgent(client, toolbox).run("为什么今天没发净值日报")
 
-    assert toolbox.calls == [("search_logs", {"query": "nav"})]
-    assert "🔍 **理财净值日报诊断**" in report
-    assert "08:08抓取接口超时" in report
-    assert "08:08:01任务启动" in report
-    assert "置信度：高" in report
+    assert toolbox.calls == [
+        ("get_schedule_snapshot", {}),
+        (
+            "search_logs",
+            {"query": "nav monitor", "since_minutes": 1440, "limit": 80},
+        ),
+    ]
+    assert len(client.calls) == 2
     assert client.calls[0][1]["thinking"] is True
-    assert 0 < client.calls[0][1]["request_timeout_seconds"] <= 30
+    assert client.calls[1][1]["thinking"] is False
     assert "evidence from search_logs" in str(client.calls[1][0])
+    assert "**诊断依据**" in report
 
 
-def test_agent_requests_final_answer_after_three_evidence_calls():
-    client = StubClient([_tool(), _tool("read_source"), _tool(), _final()])
+def test_plan_deduplicates_calls_and_executes_at_most_three_tools():
+    client = StubClient(
+        [
+            _plan(
+                ("get_schedule_snapshot", "{}"),
+                ("get_schedule_snapshot", "{}"),
+                ("get_service_snapshot", "{}"),
+                ("search_logs", '{"query":"nav"}'),
+                ("search_source", '{"query":"scheduler"}'),
+            ),
+            _report(),
+        ]
+    )
+    toolbox = StubToolbox()
 
-    DiagnosticAgent(client, StubToolbox()).run("diagnose")
+    DiagnosticAgent(client, toolbox).run("diagnose")
 
-    final_request = client.calls[3][0][-1]["content"]
-    assert "已完成3次工具调用" in final_request
-    assert "立即输出final" in final_request
-    assert client.calls[2][1]["thinking"] is True
-    assert client.calls[3][1]["thinking"] is False
-
-
-def test_agent_stops_before_ninth_tool_call():
-    client = StubClient([_tool()] * 9)
-
-    with pytest.raises(DiagnosticAgentError, match="8次"):
-        DiagnosticAgent(client, StubToolbox(), max_tool_calls=8).run("diagnose")
+    assert toolbox.calls == [
+        ("get_schedule_snapshot", {}),
+        ("get_service_snapshot", {}),
+        ("search_logs", {"query": "nav"}),
+    ]
 
 
-def test_agent_enforces_total_deadline():
-    times = iter([0.0, 0.0, 31.0])
-    client = StubClient([_tool(), _final()])
+@pytest.mark.parametrize(
+    "plan",
+    [
+        "not-json",
+        '{"tools":"search_logs"}',
+        _plan(("run_shell", '{"command":"whoami"}')),
+        _plan(("search_logs", "[]")),
+    ],
+)
+def test_invalid_or_unauthorized_plan_executes_no_tools(plan):
+    toolbox = StubToolbox()
+
+    with pytest.raises(DiagnosticAgentError):
+        DiagnosticAgent(StubClient([plan]), toolbox).run("diagnose")
+
+    assert toolbox.calls == []
+
+
+def test_tool_failure_is_safely_included_for_final_analysis():
+    client = StubClient(
+        [_plan(("search_logs", '{"query":"nav"}')), _report("日志读取失败")]
+    )
+
+    report = DiagnosticAgent(
+        client, StubToolbox(failures={"search_logs"})
+    ).run("diagnose")
+
+    final_messages = str(client.calls[1][0])
+    assert "RuntimeError" in final_messages
+    assert "private failure detail" not in final_messages
+    assert "日志读取失败" in report
+
+
+def test_agent_enforces_total_deadline_before_report_call():
+    times = iter([0.0, 0.0, 1.0, 31.0])
+    client = StubClient([_plan(("search_logs", '{"query":"nav"}'))])
 
     with pytest.raises(DiagnosticAgentError, match="30秒"):
         DiagnosticAgent(
@@ -91,36 +159,26 @@ def test_agent_enforces_total_deadline():
             clock=lambda: next(times),
         ).run("diagnose")
 
+    assert len(client.calls) == 1
 
-def test_agent_rejects_invalid_json_and_unknown_action():
-    with pytest.raises(DiagnosticAgentError, match="响应格式异常"):
-        DiagnosticAgent(StubClient(["not-json"]), StubToolbox()).run("diagnose")
 
-    with pytest.raises(DiagnosticAgentError, match="响应格式异常"):
+def test_final_report_requires_sections_and_is_redacted():
+    missing_evidence = "**原因**\n未知\n\n**建议处理**\n稍后再试\n\n置信度：低"
+    with pytest.raises(DiagnosticAgentError, match="缺少"):
         DiagnosticAgent(
-            StubClient(['{"action":"delete","path":"/etc/passwd"}']),
+            StubClient([_plan(("search_logs", "{}")), missing_evidence]),
             StubToolbox(),
         ).run("diagnose")
 
-
-def test_final_report_requires_cause_and_evidence():
-    response = (
-        '{"action":"final","title":"诊断","cause":"",'
-        '"evidence":[],"recommendations":[],"confidence":"低"}'
-    )
-
-    with pytest.raises(DiagnosticAgentError, match="缺少证据"):
-        DiagnosticAgent(StubClient([response]), StubToolbox()).run("diagnose")
-
-
-def test_final_report_is_redacted_again_before_sending():
-    response = (
-        '{"action":"final","title":"诊断","cause":"password=secret-value",'
-        '"evidence":["Authorization: Bearer abc123"],'
-        '"recommendations":["检查环境变量"],"confidence":"中"}'
-    )
-
-    report = DiagnosticAgent(StubClient([response]), StubToolbox()).run("diagnose")
+    report = DiagnosticAgent(
+        StubClient(
+            [
+                _plan(("search_logs", "{}")),
+                _report("password=secret-value，Authorization: Bearer abc123"),
+            ]
+        ),
+        StubToolbox(),
+    ).run("diagnose")
 
     assert "secret-value" not in report
     assert "abc123" not in report

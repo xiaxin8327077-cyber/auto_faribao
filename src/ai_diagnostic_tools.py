@@ -38,6 +38,14 @@ def redact_text(text: str) -> str:
 
 
 class DiagnosticToolbox:
+    _TOOL_METHODS = {
+        "get_schedule_snapshot": "_get_schedule_snapshot",
+        "get_service_snapshot": "_get_service_snapshot",
+        "search_logs": "_search_logs",
+        "search_source": "_search_source",
+        "read_source": "_read_source",
+    }
+
     def __init__(
         self,
         project_root,
@@ -61,19 +69,16 @@ class DiagnosticToolbox:
             "read_source({path, start_line, end_line})"
         )
 
+    def allowed_tools(self) -> frozenset[str]:
+        return frozenset(self._TOOL_METHODS)
+
     def execute(self, name: str, arguments: dict) -> dict:
-        tools = {
-            "get_schedule_snapshot": self._get_schedule_snapshot,
-            "get_service_snapshot": self._get_service_snapshot,
-            "search_logs": self._search_logs,
-            "search_source": self._search_source,
-            "read_source": self._read_source,
-        }
-        tool = tools.get(name)
-        if tool is None:
+        method_name = self._TOOL_METHODS.get(name)
+        if method_name is None:
             raise DiagnosticToolError("该诊断工具不允许调用")
         if not isinstance(arguments, dict):
             raise DiagnosticToolError("诊断工具参数格式错误")
+        tool = getattr(self, method_name)
         content = redact_text(str(tool(arguments)))[:_MAX_OUTPUT_CHARS]
         return {"ok": True, "tool": name, "content": content}
 

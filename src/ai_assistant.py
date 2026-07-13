@@ -66,7 +66,7 @@ class AiAssistant:
             diagnostics=DiagnosticAgent(
                 diagnostic_client,
                 toolbox,
-                max_tool_calls=8,
+                max_tool_calls=3,
                 timeout_seconds=30,
             ),
             sessions=sessions,
