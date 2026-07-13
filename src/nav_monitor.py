@@ -573,7 +573,11 @@ def build_nav_period_report(
             provider = get_provider(product.provider)
             records = provider.fetch_latest(product, as_of=base_date, start_date=fetch_start_date)
             latest = _nearest_record_on_or_before(records, base_date)
-            baseline = _period_baseline_record(records, start_date)
+            baseline = _period_baseline_record(
+                records,
+                start_date,
+                include_target=period in ROLLING_PERIOD_DAYS,
+            )
             if not latest:
                 lines.append("状态：暂无最新净值")
                 continue
@@ -601,11 +605,24 @@ def _nearest_record_on_or_before(records: list[NavRecord], target_date: date) ->
     return sorted(eligible, key=lambda record: record.nav_date, reverse=True)[0]
 
 
-def _period_baseline_record(records: list[NavRecord], target_date: date) -> Optional[NavRecord]:
-    baseline = _nearest_record_on_or_before(records, target_date)
-    if baseline:
-        return baseline
-    eligible = [record for record in records if record.nav_date > target_date]
+def _period_baseline_record(
+    records: list[NavRecord],
+    target_date: date,
+    *,
+    include_target: bool = True,
+) -> Optional[NavRecord]:
+    eligible = [
+        record
+        for record in records
+        if (record.nav_date <= target_date if include_target else record.nav_date < target_date)
+    ]
+    if eligible:
+        return sorted(eligible, key=lambda record: record.nav_date, reverse=True)[0]
+    eligible = [
+        record
+        for record in records
+        if (record.nav_date > target_date if include_target else record.nav_date >= target_date)
+    ]
     if not eligible:
         return None
     return sorted(eligible, key=lambda record: record.nav_date)[0]
@@ -635,7 +652,11 @@ def query_nav_period_products(
                 ProductPeriodNavResult(
                     product=product,
                     latest=_nearest_record_on_or_before(records, base_date),
-                    baseline=_period_baseline_record(records, start_date),
+                    baseline=_period_baseline_record(
+                        records,
+                        start_date,
+                        include_target=period in ROLLING_PERIOD_DAYS,
+                    ),
                     shares=shares,
                 )
             )

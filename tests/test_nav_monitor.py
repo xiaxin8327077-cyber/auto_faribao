@@ -779,6 +779,42 @@ def test_period_report_includes_return_and_amount(monkeypatch):
     assert "`" not in text
 
 
+def test_natural_month_query_includes_first_day_profit(monkeypatch):
+    product_name = "慧盈象固收增强一年持有期5号B"
+
+    class FakeProvider:
+        def fetch_latest(self, product, **kwargs):
+            return [
+                NavRecord("citic_wealth", "AF233276B", product_name, date(2026, 7, 10), Decimal("1.0780")),
+                NavRecord("citic_wealth", "AF233276B", product_name, date(2026, 7, 1), Decimal("1.0785")),
+                NavRecord("citic_wealth", "AF233276B", product_name, date(2026, 6, 30), Decimal("1.0784")),
+            ]
+
+    monkeypatch.setattr("src.nav_monitor.get_provider", lambda provider: FakeProvider())
+    cfg = Config({
+        "nav_monitor": {
+            "products": [
+                {
+                    "provider": "citic_wealth",
+                    "code": "AF233276B",
+                    "name": product_name,
+                    "shares": 401133.95,
+                }
+            ]
+        }
+    })
+
+    start_date, results = query_nav_period_products(
+        cfg,
+        "month",
+        base_date=date(2026, 7, 13),
+    )
+
+    assert start_date == date(2026, 7, 1)
+    assert results[0].baseline is not None
+    assert results[0].baseline.nav_date == date(2026, 6, 30)
+
+
 def test_period_report_uses_natural_period_titles():
     cfg = Config({"nav_monitor": {"products": []}})
 
