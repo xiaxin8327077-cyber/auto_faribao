@@ -169,25 +169,7 @@ class AiMessageBridge:
             if not self._try_start_cmd("AI聊天"):
                 self._send_text(self._busy_reply(), user_id)
                 return AiPreparedMessage(content, handled=True)
-            self._send_text("⏳ LongCat 正在思考，请稍等...", user_id)
-
-            def run_chat():
-                try:
-                    answer = self._assistant.ask_chat(user_id, question)
-                    self._send_text(answer, user_id)
-                except Exception:
-                    logger.error("LongCat chat failed", exc_info=True)
-                    self._send_text("❌ AI助手暂时无法回答，请稍后再试。", user_id)
-                finally:
-                    self._end_cmd()
-
-            try:
-                self._run_async(run_chat)
-            except Exception:
-                logger.error("Failed to start LongCat chat worker", exc_info=True)
-                self._end_cmd()
-                self._send_text("❌ AI助手启动失败，命令锁已释放，请稍后再试。", user_id)
-            return AiPreparedMessage(content, handled=True)
+            return self._launch_chat(content, user_id, question)
 
         if self._is_known_command(stripped):
             return AiPreparedMessage(content)
@@ -219,6 +201,10 @@ class AiMessageBridge:
             self._send_text(route.reply, user_id)
             return AiPreparedMessage(content, handled=True)
 
+        if route.kind == "chat":
+            self._rename_cmd("AI聊天")
+            return self._launch_chat(content, user_id, stripped)
+
         if route.kind == "diagnose":
             if not self._assistant.diagnostic_authorized(user_id):
                 self._end_cmd()
@@ -249,6 +235,29 @@ class AiMessageBridge:
 
         self._end_cmd()
         self._send_text("请再补充一点信息。", user_id)
+        return AiPreparedMessage(content, handled=True)
+
+    def _launch_chat(
+        self, content: str, user_id: str, question: str
+    ) -> AiPreparedMessage:
+        self._send_text("⏳ LongCat 正在思考，请稍等...", user_id)
+
+        def run_chat():
+            try:
+                answer = self._assistant.ask_chat(user_id, question)
+                self._send_text(answer, user_id)
+            except Exception:
+                logger.error("LongCat chat failed", exc_info=True)
+                self._send_text("❌ AI助手暂时无法回答，请稍后再试。", user_id)
+            finally:
+                self._end_cmd()
+
+        try:
+            self._run_async(run_chat)
+        except Exception:
+            logger.error("Failed to start LongCat chat worker", exc_info=True)
+            self._end_cmd()
+            self._send_text("❌ AI助手启动失败，命令锁已释放，请稍后再试。", user_id)
         return AiPreparedMessage(content, handled=True)
 
     def _chat_question(self, content: str, user_id: str):

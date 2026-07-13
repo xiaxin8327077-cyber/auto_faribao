@@ -132,6 +132,45 @@ def test_unknown_read_command_is_normalized_for_existing_dispatch():
     assert ended == [True]
 
 
+def test_router_chat_reuses_the_held_command_lock_and_answers():
+    route = SimpleNamespace(
+        kind="chat", canonical_command="", risk="none", reply=""
+    )
+    assistant = FakeAssistant(route)
+    bridge, sent, _, starts, ended, names = _harness(assistant)
+
+    result = bridge.prepare(
+        "为什么台风没有影响南京？", "owner", date(2026, 7, 13)
+    )
+
+    assert result.handled is True
+    assert assistant.chat_calls == [("owner", "为什么台风没有影响南京？")]
+    assert starts == ["AI指令识别"]
+    assert sent[-1] == ("assistant answer", "owner")
+    assert ended == [True]
+    assert names == ["AI聊天"]
+
+
+def test_router_chat_start_failure_releases_the_held_command_lock():
+    def fail_to_start(_fn):
+        raise RuntimeError("thread unavailable")
+
+    route = SimpleNamespace(
+        kind="chat", canonical_command="", risk="none", reply=""
+    )
+    assistant = FakeAssistant(route)
+    bridge, sent, _, starts, ended, _ = _harness(
+        assistant, run_async=fail_to_start
+    )
+
+    result = bridge.prepare("普通问题", "owner", date(2026, 7, 13))
+
+    assert result.handled is True
+    assert starts == ["AI指令识别"]
+    assert ended == [True]
+    assert "启动失败" in sent[-1][0]
+
+
 def test_model_routed_write_command_requires_confirmation():
     route = SimpleNamespace(
         kind="command", canonical_command="设置净值份额 AF233276B 10000", risk="write", reply=""
