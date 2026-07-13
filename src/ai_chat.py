@@ -1,6 +1,8 @@
 import threading
 from collections import deque
 
+from src.longcat_client import LongCatUnavailableError
+
 
 class ChatSessionStore:
     def __init__(self, max_turns: int = 10):
@@ -53,11 +55,17 @@ class AiChatService:
             *self._store.history(user_id),
             {"role": "user", "content": question},
         ]
-        answer = self._client.complete(
-            messages,
-            max_tokens=1000,
-            temperature=0.3,
-            thinking=False,
-        )
+        for attempt in range(2):
+            try:
+                answer = self._client.complete(
+                    messages,
+                    max_tokens=1000,
+                    temperature=0.3,
+                    thinking=False,
+                )
+                break
+            except LongCatUnavailableError:
+                if attempt == 1:
+                    raise
         self._store.append_exchange(user_id, question, answer)
         return answer

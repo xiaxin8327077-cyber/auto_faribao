@@ -173,6 +173,11 @@ class AiMessageBridge:
 
         if self._is_known_command(stripped):
             return AiPreparedMessage(content)
+        if self._looks_like_casual_chat(stripped):
+            if not self._try_start_cmd("AI聊天"):
+                self._send_text(self._busy_reply(), user_id)
+                return AiPreparedMessage(content, handled=True)
+            return self._launch_chat(content, user_id, stripped)
         if not self._try_start_cmd("AI指令识别"):
             self._send_text(self._busy_reply(), user_id)
             return AiPreparedMessage(content, handled=True)
@@ -267,6 +272,31 @@ class AiMessageBridge:
         if self._assistant.chat_active(user_id):
             return content
         return None
+
+    @staticmethod
+    def _looks_like_casual_chat(content: str) -> bool:
+        normalized = "".join((content or "").split()).lower()
+        for mark in "，,。.!！?？~～":
+            normalized = normalized.replace(mark, "")
+        return normalized in {
+            "咪咪",
+            "咪咪在吗",
+            "咪咪在嘛",
+            "咪咪在不在",
+            "咪咪你好",
+            "在吗",
+            "在嘛",
+            "在不在",
+            "在吗咪咪",
+            "在嘛咪咪",
+            "在不在咪咪",
+            "你好",
+            "您好",
+            "嗨",
+            "哈喽",
+            "hello",
+            "hi",
+        }
 
     @staticmethod
     def _start_thread(fn):

@@ -1,6 +1,7 @@
 import pytest
 
 from src.ai_chat import AiChatService, ChatSessionStore
+from src.longcat_client import LongCatUnavailableError
 
 
 class StubClient:
@@ -79,3 +80,27 @@ def test_chat_request_uses_history_and_safe_generation_limits():
         {"role": "user", "content": "new question"},
     ]
     assert kwargs["max_tokens"] <= 1200
+
+
+def test_chat_retries_one_transient_unavailable_failure():
+    class FlakyClient:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise LongCatUnavailableError("temporary")
+            return "retry answer"
+
+    store = ChatSessionStore()
+    client = FlakyClient()
+
+    result = AiChatService(client, store).ask("user-a", "咪咪在吗")
+
+    assert result == "retry answer"
+    assert client.calls == 2
+    assert store.history("user-a") == [
+        {"role": "user", "content": "咪咪在吗"},
+        {"role": "assistant", "content": "retry answer"},
+    ]

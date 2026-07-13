@@ -151,6 +151,21 @@ def test_router_chat_reuses_the_held_command_lock_and_answers():
     assert names == ["AI聊天"]
 
 
+def test_casual_presence_greetings_bypass_command_router():
+    for text in ("咪咪在吗", "在嘛，咪咪"):
+        assistant = FakeAssistant()
+        bridge, sent, _, starts, ended, _ = _harness(assistant)
+
+        result = bridge.prepare(text, "owner", date(2026, 7, 13))
+
+        assert result.handled is True
+        assert assistant.route_calls == []
+        assert assistant.chat_calls == [("owner", text)]
+        assert starts == ["AI聊天"]
+        assert sent[-1] == ("assistant answer", "owner")
+        assert ended == [True]
+
+
 def test_router_chat_start_failure_releases_the_held_command_lock():
     def fail_to_start(_fn):
         raise RuntimeError("thread unavailable")
