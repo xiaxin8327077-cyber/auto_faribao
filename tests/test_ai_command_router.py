@@ -52,6 +52,10 @@ def test_router_prompt_lists_exact_canonical_templates_and_examples():
     assert "设置日报提交时间 20:30" in prompt
     assert "为什么今天没有自动发送理财净值日报" in prompt
     assert '"kind":"diagnose"' in prompt
+    assert "为什么台风没有影响南京" in prompt
+    assert '"kind":"chat"' in prompt
+    assert "缺少产品代码" in prompt
+    assert '"kind":"clarify"' in prompt
 
 
 def test_router_marks_model_routed_write_command_for_confirmation():
@@ -102,6 +106,19 @@ def test_router_accepts_diagnosis_and_clarification_results():
 
     assert diagnosis.kind == "diagnose"
     assert clarification.reply == "你想查询日报还是净值日报？"
+
+
+def test_router_accepts_chat_for_an_ordinary_question():
+    route = AiCommandRouter(
+        StubClient(
+            '{"kind":"chat","canonical_command":"","confidence":0.97,'
+            '"reply":""}'
+        )
+    ).route("为什么台风没有影响南京？", date(2026, 7, 13))
+
+    assert route.kind == "chat"
+    assert route.canonical_command == ""
+    assert route.risk == "none"
 
 
 def test_invalid_json_is_rejected_without_guessing():

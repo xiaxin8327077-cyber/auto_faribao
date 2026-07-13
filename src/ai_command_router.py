@@ -115,7 +115,7 @@ class AiCommandRouter:
         )
         data = _parse_route_json(response)
         kind = data.get("kind")
-        if kind not in {"command", "diagnose", "clarify"}:
+        if kind not in {"command", "diagnose", "chat", "clarify"}:
             raise AiRouteError("LongCat 响应格式异常")
 
         try:
@@ -143,6 +143,9 @@ class AiCommandRouter:
                 risk=risk,
             )
 
+        if kind == "chat":
+            return AiRoute(kind=kind, confidence=confidence)
+
         if not reply:
             reply = "请再补充一点信息。" if kind == "clarify" else text[:200]
         return AiRoute(kind=kind, confidence=confidence, reply=reply)
@@ -168,9 +171,11 @@ def _parse_route_json(text: str) -> dict:
 def _router_system_prompt(current_date: date) -> str:
     return f"""你是企业微信指令路由器，不执行任何操作。当前北京时间日期：{current_date:%Y-%m-%d}。
 只输出一个JSON对象，字段固定为 kind、canonical_command、confidence、reply。
-kind只能是 command、diagnose、clarify。
+kind只能是 command、diagnose、chat、clarify。
 用户询问系统为什么未发送、为什么失败、为什么没有执行时使用diagnose。
-信息不足时使用clarify。不得输出Shell、代码、路径、URL或未列出的指令。
+普通知识问答、天气、生活、工作讨论和闲聊使用chat，canonical_command和reply均留空。
+只有系统操作意图明确但缺少必要参数或存在冲突时才使用clarify。
+不得输出Shell、代码、路径、URL或未列出的指令。
 
 kind为command时，canonical_command必须严格使用下列指令或参数模板，不得自行概括或改名：
 无参数指令：今日状态、最近记录、本周统计、本月统计、查看配置、查看定时配置、读取日报、获取前一天日报、检查Cookies、服务器状态、运行服务、查看日志、发送日报、重新发送今日日报、撤回今日日报、根据前一天内容发送、生成二维码、更新工作日历。
@@ -188,6 +193,10 @@ kind为command时，canonical_command必须严格使用下列指令或参数模�
 输出：{{"kind":"command","canonical_command":"查询净值 {current_date - timedelta(days=1):%Y%m%d}","confidence":0.98,"reply":""}}
 用户：为什么今天没有自动发送理财净值日报
 输出：{{"kind":"diagnose","canonical_command":"","confidence":0.98,"reply":"排查理财净值日报未发送原因"}}
+用户：为什么台风没有影响南京，一开始不是说很强吗
+输出：{{"kind":"chat","canonical_command":"","confidence":0.98,"reply":""}}
+用户：帮我删除那个理财产品，但缺少产品代码
+输出：{{"kind":"clarify","canonical_command":"","confidence":0.55,"reply":"请提供要删除的产品代码。"}}
 
 禁止把重启服务、清理缓存、启动或停止代理服务转换为command；遇到这些请求使用clarify并说明不支持。"""
 
