@@ -59,6 +59,16 @@ def test_diagnostic_wildcard_authorizes_every_wechat_user():
     assert assistant.diagnostic_authorized("any-wechat-user") is True
 
 
+def test_diagnostic_client_reserves_fifteen_seconds_for_large_evidence_context():
+    assistant = AiAssistant.from_env(
+        object(),
+        ".",
+        env={"LONGCAT_ENABLED": "true", "LONGCAT_API_KEY": "test-key"},
+    )
+
+    assert assistant._diagnostics._client._timeout_seconds == 15
+
+
 def _harness(assistant, *, busy=False, known=False, run_async=None):
     sent_text = []
     sent_markdown = []

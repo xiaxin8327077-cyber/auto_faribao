@@ -55,7 +55,7 @@ class AiAssistant:
             settings.api_key,
             settings.base_url,
             settings.model,
-            timeout_seconds=10,
+            timeout_seconds=15,
         )
         sessions = ChatSessionStore(max_turns=10)
         toolbox = DiagnosticToolbox(project_root, cfg)
