@@ -73,7 +73,13 @@ class LongCatClient:
         max_tokens: int = 800,
         temperature: float = 0.0,
         thinking: bool = False,
+        request_timeout_seconds: Optional[float] = None,
     ) -> str:
+        request_timeout = self._timeout_seconds
+        if request_timeout_seconds is not None:
+            request_timeout = max(
+                0.1, min(self._timeout_seconds, float(request_timeout_seconds))
+            )
         try:
             response = self._session.post(
                 f"{self._base_url}/v1/chat/completions",
@@ -89,7 +95,7 @@ class LongCatClient:
                     "stream": False,
                     "thinking": {"type": "enabled" if thinking else "disabled"},
                 },
-                timeout=self._timeout_seconds,
+                timeout=request_timeout,
             )
         except requests.RequestException as exc:
             raise LongCatUnavailableError("LongCat 暂时不可用，请稍后再试") from exc

@@ -44,6 +44,14 @@ def _end_cmd():
         _cmd_name = ""
 
 
+def _rename_cmd(name: str) -> None:
+    """Rename the currently running command without changing lock ownership."""
+    global _cmd_name
+    with _cmd_lock:
+        if _cmd_busy:
+            _cmd_name = name
+
+
 def _finish_manual_qr_command(success: bool, message: str) -> None:
     try:
         logger.info("Manual QR command finished: success=%s, message=%s", success, message)
@@ -224,12 +232,14 @@ def _help_index_text() -> str:
 • **本月日报提交情况** <font color="comment">查看月度统计</font>
 • **帮我看一下最近1个月的理财净值** <font color="comment">查询近一月净值统计</font>
 • **把 AF233276B 份额改成 401133.95** <font color="comment">修改持仓份额</font>
+• **问助手 最近债券市场怎么样** <font color="comment">调用 LongCat 聊天</font>
 
 **回复数字查看**
 • **1** 日报指令
 • **2** 净值指令
 • **3** 系统指令
 • **4** 运维指令
+• **5** AI助手
 • **0** 系统指令大全"""
 
 
@@ -393,6 +403,21 @@ def _ops_help_text() -> str:
 • **重启Hy2** <font color="comment">重启 Hy2</font>"""
 
 
+def _ai_help_text() -> str:
+    return """## 🤖 AI助手
+
+> <font color="info">聊天</font>
+• **问助手 最近债券市场怎么样** <font color="comment">单次聊天</font>
+• **进入助手模式** <font color="comment">开启连续对话，保留最近10轮</font>
+• **退出助手模式** <font color="comment">退出并清除本次上下文</font>
+
+> <font color="info">线上诊断</font>
+• **为什么今天没自动发送理财净值日报** <font color="comment">只读检查任务、日志和代码</font>
+• **昨天日报为什么提交失败** <font color="comment">根据真实证据分析</font>
+
+> AI不会修改代码、配置、数据库或服务。模型识别出的写操作需要回复「确认执行」。"""
+
+
 def _format_schedule_config(cfg) -> str:
     s = cfg.scheduler
     nav = cfg.nav_monitor
@@ -418,7 +443,7 @@ def _format_schedule_config(cfg) -> str:
 def _build_help_messages(text: str) -> list[str]:
     content = _normalize_message_text(text)
     if content in ("系统指令大全", "0"):
-        return [_daily_help_text(), *_nav_help_messages(), _system_help_text(), _ops_help_text()]
+        return [_daily_help_text(), *_nav_help_messages(), _system_help_text(), _ops_help_text(), _ai_help_text()]
     if content in ("日报指令", "1"):
         return [_daily_help_text()]
     if content in ("净值指令", "理财指令", "2"):
@@ -427,13 +452,81 @@ def _build_help_messages(text: str) -> list[str]:
         return [_system_help_text()]
     if content in ("运维指令", "4"):
         return [_ops_help_text()]
+    if content in ("AI指令", "助手指令", "AI助手", "5"):
+        return [_ai_help_text()]
     if content in ("指令", "帮助", "help", "菜单"):
         return [_help_index_text()]
     return []
 
 
-def create_app(cfg: Config) -> Flask:
+def _is_existing_command(text: str) -> bool:
+    content = _normalize_message_text(text)
+    if not content:
+        return False
+    if is_cookies_update_message(content) or is_pending_confirmation_reply(content):
+        return True
+    if _build_help_messages(content):
+        return True
+
+    try:
+        from src.ai_command_router import classify_canonical_command
+
+        if classify_canonical_command(content):
+            return True
+    except Exception:
+        logger.warning("Failed to classify deterministic command", exc_info=True)
+
+    if _is_nav_command_message(content):
+        try:
+            from src.nav_monitor import parse_nav_command
+
+            if parse_nav_command(content):
+                return True
+        except Exception:
+            logger.warning("Failed to parse deterministic NAV command", exc_info=True)
+
+    if _match_proxy_cmd(content, "xray") or _match_proxy_cmd(content, "hysteria", "hy2"):
+        return True
+    return _contains_any(
+        content,
+        (
+            "重新登录", "扫码登录", "Cookies状态", "cookies状态", "检查cookies",
+            "历史记录", "最近日报", "提交统计", "周报统计", "当前配置",
+            "定时配置", "定时任务", "修改Cookies检查时间", "修改统计推送时间",
+            "修改缓存清理时间", "修改日报提交时间", "修改提交时间",
+            "设置提交时间", "修改日报时间", "设置日报时间", "系统状态",
+            "运行进程", "清除缓存", "清理临时", "最近日志", "重启服务",
+            "读取智能文档内容", "读取上次日报", "上一天日报", "用昨天内容提交",
+            "沿用昨日日报", "查询日报 日期格式错误", "今日日报",
+        ),
+    )
+
+
+def create_app(cfg: Config, ai_assistant=None) -> Flask:
     app = Flask(__name__)
+
+    if ai_assistant is None:
+        try:
+            from src.ai_assistant import AiAssistant
+
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ai_assistant = AiAssistant.from_env(cfg, project_root)
+        except Exception:
+            logger.error("Failed to initialize LongCat assistant; AI is disabled", exc_info=True)
+            ai_assistant = None
+
+    from src.ai_assistant import AiMessageBridge
+
+    ai_bridge = AiMessageBridge(
+        ai_assistant,
+        send_text=lambda text, user: _send_wechat_text(cfg.wechat, text, user),
+        send_markdown=lambda text, user: _send_wechat_markdown(cfg.wechat, text, user),
+        try_start_cmd=_try_start_cmd,
+        end_cmd=_end_cmd,
+        rename_cmd=_rename_cmd,
+        busy_reply=_busy_reply,
+        is_known_command=_is_existing_command,
+    )
 
     def _check_restart_flag():
         """Check if service was restarted via command, send confirmation if so."""
@@ -540,6 +633,13 @@ def create_app(cfg: Config) -> Flask:
                 content = extract_text_content(msg)
                 content = _normalize_daily_report_command_text(content)
                 from_user = msg.get("FromUserName", "")
+
+                from src.beijing_time import today as beijing_today
+
+                prepared = ai_bridge.prepare(content, from_user, beijing_today())
+                if prepared.handled:
+                    return "", 200
+                content = prepared.content
 
                 if is_cookies_update_message(content):
                     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")

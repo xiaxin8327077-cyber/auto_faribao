@@ -56,6 +56,7 @@ def test_agent_calls_tools_then_formats_evidence_based_report():
     assert "08:08:01任务启动" in report
     assert "置信度：高" in report
     assert client.calls[0][1]["thinking"] is True
+    assert 0 < client.calls[0][1]["request_timeout_seconds"] <= 30
     assert "evidence from search_logs" in str(client.calls[1][0])
 
 
@@ -98,4 +99,3 @@ def test_final_report_requires_cause_and_evidence():
 
     with pytest.raises(DiagnosticAgentError, match="缺少证据"):
         DiagnosticAgent(StubClient([response]), StubToolbox()).run("diagnose")
-

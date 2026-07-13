@@ -110,3 +110,15 @@ def test_complete_rejects_missing_message_content():
     with pytest.raises(LongCatResponseError, match="响应格式异常"):
         client.complete([{"role": "user", "content": "hello"}])
 
+
+def test_complete_can_reduce_timeout_for_a_bounded_agent_deadline():
+    session = FakeSession(
+        FakeResponse(payload={"choices": [{"message": {"content": "ok"}}]})
+    )
+    client = LongCatClient(api_key="secret-key", session=session, timeout_seconds=10)
+
+    client.complete(
+        [{"role": "user", "content": "hello"}], request_timeout_seconds=2.5
+    )
+
+    assert session.calls[0][1]["timeout"] == 2.5

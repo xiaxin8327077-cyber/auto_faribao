@@ -4,6 +4,7 @@ from src.config import Config
 from src.server import (
     _build_help_messages,
     _format_schedule_config,
+    _is_existing_command,
     _is_nav_command_message,
     _normalize_daily_report_command_text,
     create_app,
@@ -84,6 +85,7 @@ def test_help_default_is_navigation_index_only():
     assert "回复数字查看" in messages[0]
     assert "**1** 日报指令" in messages[0]
     assert "**0** 系统指令大全" in messages[0]
+    assert "**5** AI助手" in messages[0]
     assert "日报指令" in messages[0]
     assert "净值指令" in messages[0]
     assert "系统指令大全" in messages[0]
@@ -93,13 +95,14 @@ def test_help_default_is_navigation_index_only():
 def test_help_all_is_split_by_groups():
     messages = _build_help_messages("系统指令大全")
 
-    assert len(messages) == 6
+    assert len(messages) == 7
     assert messages[0].startswith("## 📝 日报指令")
     assert messages[1].startswith("## 💹 理财净值指令 · 查询统计")
     assert messages[2].startswith("## 📈 理财收益预估指令")
     assert messages[3].startswith("## 💹 理财净值指令 · 产品设置")
     assert messages[4].startswith("## ⚙️ 系统配置指令")
     assert messages[5].startswith("## 🖥️ 运维指令")
+    assert messages[6].startswith("## 🤖 AI助手")
     assert all(len(message) < 1800 for message in messages)
 
 
@@ -178,4 +181,15 @@ def test_help_navigation_accepts_number_replies():
     assert nav_messages[2].startswith("## 💹 理财净值指令 · 产品设置")
     assert _build_help_messages("3")[0].startswith("## ⚙️ 系统配置指令")
     assert _build_help_messages("4")[0].startswith("## 🖥️ 运维指令")
-    assert len(_build_help_messages("0")) == 6
+    assert _build_help_messages("5")[0].startswith("## 🤖 AI助手")
+    assert len(_build_help_messages("0")) == 7
+
+
+def test_existing_command_detection_keeps_deterministic_routes_out_of_ai():
+    assert _is_existing_command("立即查询净值") is True
+    assert _is_existing_command("发送日报") is True
+    assert _is_existing_command("查看定时配置") is True
+    assert _is_existing_command("重启服务") is True
+    assert _is_existing_command("停止Xray") is True
+    assert _is_existing_command("帮助") is True
+    assert _is_existing_command("帮我瞅瞅那个最近表现咋样") is False

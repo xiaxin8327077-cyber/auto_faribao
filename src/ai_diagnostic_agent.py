@@ -36,13 +36,16 @@ class DiagnosticAgent:
         ]
 
         while True:
-            if self._clock() - started_at > self._timeout_seconds:
+            elapsed = self._clock() - started_at
+            if elapsed > self._timeout_seconds:
                 raise DiagnosticAgentError("线上诊断超过30秒，已安全停止")
+            remaining = self._timeout_seconds - elapsed
             response = self._client.complete(
                 messages,
                 max_tokens=1200,
                 temperature=0.0,
                 thinking=True,
+                request_timeout_seconds=max(0.1, remaining),
             )
             data = _parse_json(response)
             action = data.get("action")
