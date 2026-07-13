@@ -47,3 +47,14 @@
 - [ ] Merge the verified branch into `master` and re-run `pytest -q`.
 - [ ] Run the Seoul deployment skill dry run, then execute the same three-file deployment.
 - [ ] Verify HTTP 200, active service, matching hashes, a Beijing-time snapshot, and a real casual chat response.
+
+### Task 4: Answer current-time questions locally
+
+**Files:**
+- Modify: `src/ai_assistant.py`
+- Test: `tests/test_server_ai_integration.py`
+
+- [ ] Add a failing bridge test for “现在几点钟”“当前时间”“几点了” that injects a fixed `now_fn`.
+- [ ] Verify the test fails because `AiMessageBridge` does not yet accept `now_fn`.
+- [ ] Recognize only explicit current-time phrases and return the injected Beijing time without acquiring a command lock or calling LongCat.
+- [ ] Run the bridge tests, full suite, compilation, and diff checks before deploying `src/ai_assistant.py`.

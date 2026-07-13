@@ -124,6 +124,7 @@ class AiMessageBridge:
         busy_reply: Callable[[], str],
         is_known_command: Callable[[str], bool],
         run_async: Optional[Callable[[Callable], None]] = None,
+        now_fn: Optional[Callable] = None,
     ):
         self._assistant = assistant
         self._send_text = send_text
@@ -134,6 +135,7 @@ class AiMessageBridge:
         self._busy_reply = busy_reply
         self._is_known_command = is_known_command
         self._run_async = run_async or self._start_thread
+        self._now_fn = now_fn or self._beijing_now
 
     def prepare(self, content: str, user_id: str, current_date: date) -> AiPreparedMessage:
         if not self._assistant or not self._assistant.enabled:
@@ -159,6 +161,11 @@ class AiMessageBridge:
         if stripped == "退出助手模式":
             self._assistant.exit_chat(user_id)
             self._send_text("✅ 已退出助手模式，并清除本次聊天上下文。", user_id)
+            return AiPreparedMessage(content, handled=True)
+
+        if self._looks_like_current_time_question(stripped):
+            current = self._now_fn()
+            self._send_text(f"🕒 当前北京时间：{current:%Y-%m-%d %H:%M:%S}", user_id)
             return AiPreparedMessage(content, handled=True)
 
         question = self._chat_question(stripped, user_id)
@@ -297,6 +304,36 @@ class AiMessageBridge:
             "hello",
             "hi",
         }
+
+    @staticmethod
+    def _looks_like_current_time_question(content: str) -> bool:
+        normalized = "".join((content or "").split()).lower()
+        for mark in "，,。.!！?？~～":
+            normalized = normalized.replace(mark, "")
+        return normalized in {
+            "现在几点",
+            "现在几点钟",
+            "现在几点了",
+            "现在是几点",
+            "现在是几点钟",
+            "现在时间",
+            "现在时间是多少",
+            "现在是什么时间",
+            "当前时间",
+            "当前几点",
+            "几点了",
+            "几点钟了",
+            "北京时间",
+            "当前北京时间",
+            "系统时间",
+            "服务器时间",
+        }
+
+    @staticmethod
+    def _beijing_now():
+        from src.beijing_time import now
+
+        return now()
 
     @staticmethod
     def _start_thread(fn):

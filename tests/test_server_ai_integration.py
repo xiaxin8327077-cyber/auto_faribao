@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 
 from src.ai_assistant import AiAssistant, AiMessageBridge
@@ -69,7 +69,7 @@ def test_diagnostic_client_reserves_fifteen_seconds_for_large_evidence_context()
     assert assistant._diagnostics._client._timeout_seconds == 15
 
 
-def _harness(assistant, *, busy=False, known=False, run_async=None):
+def _harness(assistant, *, busy=False, known=False, run_async=None, now_fn=None):
     sent_text = []
     sent_markdown = []
     ended = []
@@ -90,6 +90,7 @@ def _harness(assistant, *, busy=False, known=False, run_async=None):
         busy_reply=lambda: "BUSY",
         is_known_command=lambda _text: known,
         run_async=run_async or (lambda fn: fn()),
+        now_fn=now_fn,
     )
     return bridge, sent_text, sent_markdown, starts, ended, names
 
@@ -164,6 +165,24 @@ def test_casual_presence_greetings_bypass_command_router():
         assert starts == ["AI聊天"]
         assert sent[-1] == ("assistant answer", "owner")
         assert ended == [True]
+
+
+def test_current_time_questions_reply_locally_without_longcat():
+    for text in ("现在几点钟", "当前时间", "几点了"):
+        assistant = FakeAssistant()
+        bridge, sent, _, starts, ended, _ = _harness(
+            assistant,
+            now_fn=lambda: datetime(2026, 7, 13, 18, 20, 35),
+        )
+
+        result = bridge.prepare(text, "owner", date(2026, 7, 13))
+
+        assert result.handled is True
+        assert assistant.route_calls == []
+        assert assistant.chat_calls == []
+        assert starts == []
+        assert ended == []
+        assert sent == [("🕒 当前北京时间：2026-07-13 18:20:35", "owner")]
 
 
 def test_router_chat_start_failure_releases_the_held_command_lock():
