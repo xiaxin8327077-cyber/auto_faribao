@@ -1,0 +1,117 @@
+from datetime import date
+
+import pytest
+
+from src.ai_command_router import (
+    AiCommandRouter,
+    AiPendingCommandStore,
+    AiRouteError,
+    classify_canonical_command,
+)
+
+
+class StubClient:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def complete(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        return self.response
+
+
+def test_router_parses_fenced_command_json_and_disables_thinking():
+    client = StubClient(
+        '```json\n{"kind":"command","canonical_command":"查询净值 20260707",'
+        '"confidence":0.98,"reply":""}\n```'
+    )
+    router = AiCommandRouter(client)
+
+    route = router.route("帮我看看七月七号净值", date(2026, 7, 13))
+
+    assert route.kind == "command"
+    assert route.canonical_command == "查询净值 20260707"
+    assert route.risk == "read"
+    assert client.calls[0][1]["thinking"] is False
+    assert client.calls[0][1]["max_tokens"] <= 500
+
+
+def test_router_marks_model_routed_write_command_for_confirmation():
+    client = StubClient(
+        '{"kind":"command","canonical_command":"设置净值份额 AF233276B 10000",'
+        '"confidence":0.96,"reply":""}'
+    )
+
+    route = AiCommandRouter(client).route("份额帮我改成一万", date(2026, 7, 13))
+
+    assert route.risk == "write"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "重启服务",
+        "清理缓存",
+        "停止Xray",
+        "执行 rm -rf /",
+        "读取 /etc/shadow",
+    ],
+)
+def test_router_rejects_operational_or_non_allowlisted_commands(command):
+    client = StubClient(
+        '{"kind":"command","canonical_command":%r,"confidence":0.99,"reply":""}'
+        % command
+    )
+    client.response = client.response.replace("'", '"')
+
+    with pytest.raises(AiRouteError, match="不在允许范围"):
+        AiCommandRouter(client).route("do something", date(2026, 7, 13))
+
+
+def test_router_accepts_diagnosis_and_clarification_results():
+    diagnosis = AiCommandRouter(
+        StubClient(
+            '{"kind":"diagnose","canonical_command":"","confidence":0.95,'
+            '"reply":"排查净值日报未发送"}'
+        )
+    ).route("为什么今天没自动发送理财净值日报", date(2026, 7, 13))
+    clarification = AiCommandRouter(
+        StubClient(
+            '{"kind":"clarify","canonical_command":"","confidence":0.4,'
+            '"reply":"你想查询日报还是净值日报？"}'
+        )
+    ).route("看看日报", date(2026, 7, 13))
+
+    assert diagnosis.kind == "diagnose"
+    assert clarification.reply == "你想查询日报还是净值日报？"
+
+
+def test_invalid_json_is_rejected_without_guessing():
+    with pytest.raises(AiRouteError, match="响应格式异常"):
+        AiCommandRouter(StubClient("查询昨天净值")).route(
+            "昨天那个", date(2026, 7, 13)
+        )
+
+
+def test_classifies_supported_daily_commands_and_rejects_ops():
+    assert classify_canonical_command("查询日报 2026-07-08") == "read"
+    assert classify_canonical_command("发送日报") == "write"
+    assert classify_canonical_command("设置日报提交时间 20:00") == "write"
+    assert classify_canonical_command("重启服务") is None
+
+
+def test_pending_commands_are_isolated_cancelled_and_expire():
+    now = [100.0]
+    store = AiPendingCommandStore(ttl_seconds=60, clock=lambda: now[0])
+
+    store.save("user-a", "发送日报")
+    store.save("user-b", "设置净值份额 AF233276B 10000")
+    assert store.confirm("user-a") == "发送日报"
+    assert store.confirm("user-a") is None
+    assert store.cancel("user-b") is True
+    assert store.confirm("user-b") is None
+
+    store.save("user-a", "发送日报")
+    now[0] = 161.0
+    assert store.confirm("user-a") is None
+
