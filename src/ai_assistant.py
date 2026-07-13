@@ -180,7 +180,12 @@ class AiMessageBridge:
                 finally:
                     self._end_cmd()
 
-            self._run_async(run_chat)
+            try:
+                self._run_async(run_chat)
+            except Exception:
+                logger.error("Failed to start LongCat chat worker", exc_info=True)
+                self._end_cmd()
+                self._send_text("❌ AI助手启动失败，命令锁已释放，请稍后再试。", user_id)
             return AiPreparedMessage(content, handled=True)
 
         if self._is_known_command(stripped):
@@ -233,7 +238,12 @@ class AiMessageBridge:
                 finally:
                     self._end_cmd()
 
-            self._run_async(run_diagnosis)
+            try:
+                self._run_async(run_diagnosis)
+            except Exception:
+                logger.error("Failed to start LongCat diagnostic worker", exc_info=True)
+                self._end_cmd()
+                self._send_text("❌ 线上诊断启动失败，命令锁已释放，请稍后再试。", user_id)
             return AiPreparedMessage(content, handled=True)
 
         self._end_cmd()

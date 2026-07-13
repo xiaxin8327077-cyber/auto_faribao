@@ -761,6 +761,39 @@ FORM_SELECTORS = {
 - 新增企业微信指令：启动Xray/停止Xray/重启Xray、启动Hy2/停止Hy2/重启Hy2
 - 服务器状态新增 CPU 占用显示
 
+### 26. LongCat 企业微信智能助手（默认关闭）
+
+LongCat 仅用于现有指令的自然语言路由、显式聊天和只读线上诊断，不参与日报提交逻辑、净值计算、定时调度或消息去重。
+
+环境变量：
+
+```bash
+LONGCAT_ENABLED=true
+LONGCAT_API_KEY=replace-with-server-secret
+LONGCAT_BASE_URL=https://api.longcat.chat/openai
+LONGCAT_MODEL=LongCat-2.0
+LONGCAT_DIAGNOSTIC_USERS=zhangsan,lisi
+```
+
+- 未设置 `LONGCAT_ENABLED=true` 或未配置 `LONGCAT_API_KEY` 时，AI功能关闭，系统保持原有行为。
+- `LONGCAT_DIAGNOSTIC_USERS` 填写允许读取脱敏日志和源码的企业微信用户ID；未配置时任何用户都不能发起线上诊断。
+- API Key 只允许放在 Linux systemd 环境变量或权限为 `600` 的 EnvironmentFile 中，不得写入 `config.yaml`。
+- 修改环境变量后需要重启 `daily-report` 服务。
+
+企业微信示例：
+
+```text
+问助手 最近债券市场怎么样
+进入助手模式
+退出助手模式
+为什么今天没自动发送理财净值日报
+昨天日报为什么提交失败
+```
+
+现有确定性指令始终优先，不调用模型。系统有指令正在执行时，聊天、自然语言路由和线上诊断都不会调用 LongCat。模型识别出的设置、删除、提交等写操作需要回复 `确认执行`，也可以回复 `取消执行`。
+
+线上诊断限制为单并发、最多8次只读工具调用和30秒总时限。源码读取限制在项目Python文件内，禁止访问 `config.yaml`、`.env`、`data/`、`runtime/`、`backups/`、虚拟环境、Cookie和密钥；模型不能修改文件、配置、数据库或服务。
+
 ## 依赖
 
 ```

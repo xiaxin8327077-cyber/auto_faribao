@@ -20,6 +20,7 @@ _BLOCKED_PARTS = {
     "venv",
 }
 _MAX_OUTPUT_CHARS = 12000
+_ALLOWED_TOP_LEVEL_SOURCE = {"main.py", "status_page.py", "submit_for_date.py"}
 
 
 def redact_text(text: str) -> str:
@@ -174,7 +175,11 @@ class DiagnosticToolbox:
         relative = Path(raw_path)
         if not raw_path or relative.is_absolute() or ".." in relative.parts:
             raise DiagnosticToolError("源码路径不在允许范围")
-        if relative.suffix.lower() != ".py" or any(part in _BLOCKED_PARTS for part in relative.parts):
+        if (
+            relative.suffix.lower() != ".py"
+            or any(part in _BLOCKED_PARTS for part in relative.parts)
+            or not _source_path_allowed(relative)
+        ):
             raise DiagnosticToolError("源码路径不在允许范围")
         path = (self._root / relative).resolve()
         try:
@@ -201,6 +206,8 @@ class DiagnosticToolbox:
             except ValueError:
                 continue
             if any(part in _BLOCKED_PARTS for part in relative.parts):
+                continue
+            if not _source_path_allowed(relative):
                 continue
             yield path
 
@@ -229,3 +236,11 @@ def _bounded_int(value, minimum: int, maximum: int, label: str) -> int:
     if parsed < minimum or parsed > maximum:
         raise DiagnosticToolError(f"{label}超出允许范围")
     return parsed
+
+
+def _source_path_allowed(relative: Path) -> bool:
+    return (
+        len(relative.parts) >= 2 and relative.parts[0] == "src"
+    ) or (
+        len(relative.parts) == 1 and relative.name in _ALLOWED_TOP_LEVEL_SOURCE
+    )

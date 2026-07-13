@@ -3,6 +3,8 @@ import re
 import time
 from typing import Callable
 
+from src.ai_diagnostic_tools import redact_text
+
 
 class DiagnosticAgentError(RuntimeError):
     pass
@@ -118,7 +120,7 @@ def _format_report(data: dict) -> str:
             if str(item).strip()
         )
     lines.extend(["", f"置信度：{confidence or '低'}"])
-    return "\n".join(lines)[:3500]
+    return redact_text("\n".join(lines))[:3500]
 
 
 def _system_prompt(tool_descriptions: str) -> str:

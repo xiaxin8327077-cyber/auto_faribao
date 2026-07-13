@@ -64,6 +64,11 @@ def _current_cmd() -> str:
         return _cmd_name
 
 
+def _ai_command_in_progress() -> bool:
+    with _cmd_lock:
+        return _cmd_busy and _cmd_name.startswith("AI")
+
+
 def _busy_reply() -> str:
     return f"""⏳ 系统繁忙，请稍等
 
@@ -495,7 +500,7 @@ def _is_existing_command(text: str) -> bool:
             "定时配置", "定时任务", "修改Cookies检查时间", "修改统计推送时间",
             "修改缓存清理时间", "修改日报提交时间", "修改提交时间",
             "设置提交时间", "修改日报时间", "设置日报时间", "系统状态",
-            "运行进程", "清除缓存", "清理临时", "最近日志", "重启服务",
+            "运行进程", "清理缓存", "清除缓存", "清理临时", "最近日志", "重启服务",
             "读取智能文档内容", "读取上次日报", "上一天日报", "用昨天内容提交",
             "沿用昨日日报", "查询日报 日期格式错误", "今日日报",
         ),
@@ -633,6 +638,10 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
                 content = extract_text_content(msg)
                 content = _normalize_daily_report_command_text(content)
                 from_user = msg.get("FromUserName", "")
+
+                if _ai_command_in_progress():
+                    _send_wechat_text(cfg.wechat, _busy_reply(), from_user)
+                    return "", 200
 
                 from src.beijing_time import today as beijing_today
 

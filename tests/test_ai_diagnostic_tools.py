@@ -39,6 +39,7 @@ def _project(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (tmp_path / "main.py").write_text("print('needle')\n", encoding="utf-8")
+    (tmp_path / "research_login.py").write_text("print('research')\n", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("password: top-secret\n", encoding="utf-8")
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "secret.py").write_text("needle\n", encoding="utf-8")
@@ -85,6 +86,10 @@ def test_source_reader_allows_python_ranges_and_rejects_sensitive_paths(tmp_path
     for path in ("config.yaml", "data/secret.py", "../outside.py", "/etc/passwd"):
         with pytest.raises(DiagnosticToolError):
             toolbox.execute("read_source", {"path": path, "start_line": 1, "end_line": 2})
+    with pytest.raises(DiagnosticToolError):
+        toolbox.execute(
+            "read_source", {"path": "research_login.py", "start_line": 1, "end_line": 1}
+        )
 
 
 def test_source_reader_rejects_more_than_two_hundred_lines(tmp_path):
@@ -139,4 +144,3 @@ def test_redaction_covers_common_configuration_secrets():
     assert "def" not in redacted
     assert "ghi" not in redacted
     assert "normal=value" in redacted
-

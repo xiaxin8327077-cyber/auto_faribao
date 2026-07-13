@@ -3,6 +3,7 @@ from datetime import date
 from src.config import Config
 from src.server import (
     _build_help_messages,
+    _ai_command_in_progress,
     _format_schedule_config,
     _is_existing_command,
     _is_nav_command_message,
@@ -190,6 +191,16 @@ def test_existing_command_detection_keeps_deterministic_routes_out_of_ai():
     assert _is_existing_command("发送日报") is True
     assert _is_existing_command("查看定时配置") is True
     assert _is_existing_command("重启服务") is True
+    assert _is_existing_command("清理缓存") is True
     assert _is_existing_command("停止Xray") is True
     assert _is_existing_command("帮助") is True
     assert _is_existing_command("帮我瞅瞅那个最近表现咋样") is False
+
+
+def test_ai_command_state_is_detected_for_global_callback_gate(monkeypatch):
+    monkeypatch.setattr("src.server._cmd_busy", True)
+    monkeypatch.setattr("src.server._cmd_name", "AI线上诊断")
+    assert _ai_command_in_progress() is True
+
+    monkeypatch.setattr("src.server._cmd_name", "净值查询")
+    assert _ai_command_in_progress() is False

@@ -99,3 +99,17 @@ def test_final_report_requires_cause_and_evidence():
 
     with pytest.raises(DiagnosticAgentError, match="缺少证据"):
         DiagnosticAgent(StubClient([response]), StubToolbox()).run("diagnose")
+
+
+def test_final_report_is_redacted_again_before_sending():
+    response = (
+        '{"action":"final","title":"诊断","cause":"password=secret-value",'
+        '"evidence":["Authorization: Bearer abc123"],'
+        '"recommendations":["检查环境变量"],"confidence":"中"}'
+    )
+
+    report = DiagnosticAgent(StubClient([response]), StubToolbox()).run("diagnose")
+
+    assert "secret-value" not in report
+    assert "abc123" not in report
+    assert "[REDACTED]" in report

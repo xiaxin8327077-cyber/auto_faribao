@@ -50,7 +50,7 @@ class FakeAssistant:
         return "diagnostic report"
 
 
-def _harness(assistant, *, busy=False, known=False):
+def _harness(assistant, *, busy=False, known=False, run_async=None):
     sent_text = []
     sent_markdown = []
     ended = []
@@ -70,7 +70,7 @@ def _harness(assistant, *, busy=False, known=False):
         rename_cmd=lambda name: names.append(name),
         busy_reply=lambda: "BUSY",
         is_known_command=lambda _text: known,
-        run_async=lambda fn: fn(),
+        run_async=run_async or (lambda fn: fn()),
     )
     return bridge, sent_text, sent_markdown, starts, ended, names
 
@@ -177,3 +177,22 @@ def test_diagnosis_requires_authorization_and_uses_markdown_when_allowed():
     assert names == ["AI线上诊断"]
     assert ended == [True]
 
+
+def test_async_start_failure_releases_chat_and_diagnosis_locks():
+    def fail_to_start(_fn):
+        raise RuntimeError("thread unavailable")
+
+    chat = FakeAssistant()
+    bridge, sent, _, _, ended, _ = _harness(chat, run_async=fail_to_start)
+    result = bridge.prepare("问助手 你好", "owner", date(2026, 7, 13))
+    assert result.handled is True
+    assert ended == [True]
+    assert "启动失败" in sent[-1][0]
+
+    route = SimpleNamespace(kind="diagnose", canonical_command="", risk="none", reply="")
+    diagnosis = FakeAssistant(route)
+    bridge, sent, _, _, ended, _ = _harness(diagnosis, run_async=fail_to_start)
+    result = bridge.prepare("为什么今天没发", "owner", date(2026, 7, 13))
+    assert result.handled is True
+    assert ended == [True]
+    assert "启动失败" in sent[-1][0]
