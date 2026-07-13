@@ -245,7 +245,7 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
             minute=int(match.group(2)),
         )
 
-    if "预估" in content and _contains_any(content, ("理财", "收益", "涨跌", "净值")):
+    if _looks_like_nav_prediction(content):
         return NavCommand(
             action="estimate_holdings",
             target_date=parse_nav_query_date(content, base_date=base_date),
@@ -315,6 +315,20 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
 def _normalize_command_text(text: str) -> str:
     content = (text or "").replace("\u3000", " ").replace("\xa0", " ").strip()
     return re.sub(r"\s+", " ", content)
+
+
+def _looks_like_nav_prediction(content: str) -> bool:
+    if not _contains_any(content, ("理财", "收益", "净值", "产品")):
+        return False
+    if _contains_any(content, ("预测", "预估")):
+        return True
+    return _contains_any(
+        content,
+        (
+            "能涨", "能跌", "会涨", "会跌", "会不会涨", "会不会跌",
+            "能不能涨", "能不能跌", "涨不涨", "跌不跌", "走势",
+        ),
+    )
 
 
 def _parse_natural_nav_command(content: str, base_date: Optional[date] = None) -> Optional[NavCommand]:

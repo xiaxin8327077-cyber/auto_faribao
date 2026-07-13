@@ -61,6 +61,22 @@ def test_parse_nav_holdings_and_estimate_commands():
     assert status.action == "view_holdings_status"
 
 
+def test_prediction_language_takes_priority_over_latest_nav_query():
+    base = date(2026, 7, 13)
+
+    today_prediction = parse_nav_command("今天我的理财能涨吗", base)
+    direction_prediction = parse_nav_command("我的理财会不会跌", base)
+    explicit_prediction = parse_nav_command("帮我预测一下理财涨跌", base)
+    explicit_nav_query = parse_nav_command("查询今天理财净值", base)
+
+    assert today_prediction.action == "estimate_holdings"
+    assert today_prediction.target_date == base
+    assert direction_prediction.action == "estimate_holdings"
+    assert direction_prediction.target_date is None
+    assert explicit_prediction.action == "estimate_holdings"
+    assert explicit_nav_query.action == "query_latest"
+
+
 def test_parse_nav_product_commands():
     add = parse_nav_command("添加净值产品 信银 AF233276B")
     delete = parse_nav_command("删除净值产品 AF233276B")

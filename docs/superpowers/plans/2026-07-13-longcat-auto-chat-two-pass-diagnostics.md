@@ -10,6 +10,39 @@
 
 ---
 
+### Task 0: Prioritize NAV Prediction Language
+
+**Files:**
+- Modify: `src/nav_monitor.py`
+- Test: `tests/test_nav_monitor_commands.py`
+
+- [ ] **Step 1: Write failing prediction-language tests**
+
+Assert that “今天我的理财能涨吗”, “我的理财会不会跌” and “帮我预测一下理财涨跌” produce `NavCommand(action="estimate_holdings")`, while “查询今天理财净值” remains a latest-value query.
+
+- [ ] **Step 2: Run the focused tests and confirm RED**
+
+Run: `python -m pytest tests/test_nav_monitor_commands.py -q`
+
+Expected: “今天我的理财能涨吗” is currently parsed as `query_latest`.
+
+- [ ] **Step 3: Implement prediction-first parsing**
+
+Add a focused prediction-language predicate for combinations such as `能涨`, `会涨`, `会跌`, `涨不涨`, `预测`, `预估` and `走势`, and return `estimate_holdings` before period or date query parsing. Preserve an explicit date when the parser already supports it.
+
+- [ ] **Step 4: Run focused tests and confirm GREEN**
+
+Run: `python -m pytest tests/test_nav_monitor_commands.py -q`
+
+Expected: prediction questions map to `estimate_holdings` and explicit net-value queries remain unchanged.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/nav_monitor.py tests/test_nav_monitor.py docs/superpowers/specs/2026-07-13-longcat-auto-chat-two-pass-diagnostics-design.md docs/superpowers/plans/2026-07-13-longcat-auto-chat-two-pass-diagnostics.md
+git commit -m "fix: prioritize NAV prediction questions"
+```
+
 ### Task 1: Route Ordinary Questions to Chat
 
 **Files:**
