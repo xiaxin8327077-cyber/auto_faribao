@@ -60,6 +60,16 @@ def test_agent_calls_tools_then_formats_evidence_based_report():
     assert "evidence from search_logs" in str(client.calls[1][0])
 
 
+def test_agent_requests_final_answer_after_three_evidence_calls():
+    client = StubClient([_tool(), _tool("read_source"), _tool(), _final()])
+
+    DiagnosticAgent(client, StubToolbox()).run("diagnose")
+
+    final_request = client.calls[3][0][-1]["content"]
+    assert "已完成3次工具调用" in final_request
+    assert "立即输出final" in final_request
+
+
 def test_agent_stops_before_ninth_tool_call():
     client = StubClient([_tool()] * 9)
 

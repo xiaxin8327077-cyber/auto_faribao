@@ -71,13 +71,19 @@ class DiagnosticAgent:
                     "tool": tool,
                     "content": f"工具调用被拒绝或失败：{type(exc).__name__}",
                 }
+            tool_result_message = "只读工具结果：" + json.dumps(
+                result, ensure_ascii=False
+            )
+            finalize_after = min(3, self._max_tool_calls)
+            if tool_calls >= finalize_after:
+                tool_result_message += (
+                    f"\n你已完成{tool_calls}次工具调用。请根据现有证据立即输出final，"
+                    "不得继续调用工具；证据不足时应降低置信度并明确说明。"
+                )
             messages.extend(
                 [
                     {"role": "assistant", "content": response},
-                    {
-                        "role": "user",
-                        "content": "只读工具结果：" + json.dumps(result, ensure_ascii=False),
-                    },
+                    {"role": "user", "content": tool_result_message},
                 ]
             )
 
