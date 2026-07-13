@@ -29,6 +29,7 @@ class DiagnosticAgent:
     def run(self, question: str) -> str:
         started_at = self._clock()
         tool_calls = 0
+        finalize_after = min(3, self._max_tool_calls)
         messages = [
             {
                 "role": "system",
@@ -46,7 +47,7 @@ class DiagnosticAgent:
                 messages,
                 max_tokens=1200,
                 temperature=0.0,
-                thinking=True,
+                thinking=tool_calls < finalize_after,
                 request_timeout_seconds=max(0.1, remaining),
             )
             data = _parse_json(response)
@@ -74,7 +75,6 @@ class DiagnosticAgent:
             tool_result_message = "只读工具结果：" + json.dumps(
                 result, ensure_ascii=False
             )
-            finalize_after = min(3, self._max_tool_calls)
             if tool_calls >= finalize_after:
                 tool_result_message += (
                     f"\n你已完成{tool_calls}次工具调用。请根据现有证据立即输出final，"

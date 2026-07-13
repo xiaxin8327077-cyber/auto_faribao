@@ -68,6 +68,8 @@ def test_agent_requests_final_answer_after_three_evidence_calls():
     final_request = client.calls[3][0][-1]["content"]
     assert "已完成3次工具调用" in final_request
     assert "立即输出final" in final_request
+    assert client.calls[2][1]["thinking"] is True
+    assert client.calls[3][1]["thinking"] is False
 
 
 def test_agent_stops_before_ninth_tool_call():
