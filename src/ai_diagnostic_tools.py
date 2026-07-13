@@ -52,12 +52,14 @@ class DiagnosticToolbox:
         cfg,
         *,
         command_runner: Optional[Callable] = None,
+        now_fn: Optional[Callable] = None,
         today_fn: Optional[Callable[[], date]] = None,
         workday_fn: Optional[Callable[[date], bool]] = None,
     ):
         self._root = Path(project_root).resolve()
         self._cfg = cfg
         self._command_runner = command_runner or self._run_command
+        self._now_fn = now_fn or self._beijing_now
         self._today_fn = today_fn or self._beijing_today
         self._workday_fn = workday_fn or self._is_workday
 
@@ -83,11 +85,13 @@ class DiagnosticToolbox:
         return {"ok": True, "tool": name, "content": content}
 
     def _get_schedule_snapshot(self, _arguments: dict) -> str:
+        current = self._now_fn()
         day = self._today_fn()
         scheduler = self._cfg.scheduler
         nav = self._cfg.nav_monitor
         return "\n".join(
             [
+                f"当前北京时间：{current:%Y-%m-%d %H:%M}",
                 f"日期：{day:%Y-%m-%d}",
                 f"工作日：{'是' if self._workday_fn(day) else '否'}",
                 f"Cookies检查：{scheduler.cookie_check_hour:02d}:{scheduler.cookie_check_minute:02d}",
@@ -228,6 +232,12 @@ class DiagnosticToolbox:
     @staticmethod
     def _run_command(args, timeout):
         return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+
+    @staticmethod
+    def _beijing_now():
+        from src.beijing_time import now
+
+        return now()
 
     @staticmethod
     def _beijing_today():

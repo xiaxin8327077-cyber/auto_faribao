@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -61,6 +61,21 @@ def test_schedule_snapshot_contains_only_operational_fields(tmp_path):
     assert "工作日：是" in result["content"]
     assert "净值日报：08:08" in result["content"]
     assert "监控产品数：3" in result["content"]
+
+
+def test_schedule_snapshot_includes_authoritative_beijing_time(tmp_path):
+    toolbox = DiagnosticToolbox(
+        _project(tmp_path),
+        _cfg(),
+        now_fn=lambda: datetime(2026, 7, 13, 17, 56),
+        today_fn=lambda: date(2026, 7, 13),
+        workday_fn=lambda _day: True,
+    )
+
+    result = toolbox.execute("get_schedule_snapshot", {})
+
+    assert "当前北京时间：2026-07-13 17:56" in result["content"]
+    assert "Cookies检查：09:45" in result["content"]
 
 
 def test_source_search_is_plain_text_bounded_and_excludes_sensitive_dirs(tmp_path):
