@@ -96,7 +96,7 @@ class DiagnosticToolbox:
                 f"工作日：{'是' if self._workday_fn(day) else '否'}",
                 f"Cookies检查：{scheduler.cookie_check_hour:02d}:{scheduler.cookie_check_minute:02d}",
                 f"日报提交：{scheduler.report_submit_hour:02d}:{scheduler.report_submit_minute:02d}",
-                f"日报统计：{scheduler.stats_push_hour:02d}:{scheduler.stats_push_minute:02d}",
+                f"日报统计推送（仅周日/月末）：{scheduler.stats_push_hour:02d}:{scheduler.stats_push_minute:02d}",
                 f"净值日报：{nav.push_hour:02d}:{nav.push_minute:02d}，{'开启' if nav.enabled else '关闭'}",
                 f"净值晚间补发：{nav.evening_push_hour:02d}:{nav.evening_push_minute:02d}，{'开启' if nav.evening_push_enabled else '关闭'}",
                 f"理财收益预估：{nav.estimate_hour:02d}:{nav.estimate_minute:02d}，{'开启' if nav.estimate_enabled else '关闭'}",

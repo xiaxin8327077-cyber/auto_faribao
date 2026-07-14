@@ -90,6 +90,27 @@ def test_agent_uses_one_plan_call_and_one_markdown_report_call():
     assert "**诊断依据**" in report
 
 
+def test_plain_daily_report_failure_is_pinned_to_auto_submit_target():
+    client = StubClient(
+        [
+            _plan(("get_schedule_snapshot", "{}"), ("search_logs", '{"query":"report auto-submit"}')),
+            _report("日报自动提交后的通知阶段中断"),
+        ]
+    )
+
+    DiagnosticAgent(client, StubToolbox()).run("为啥还没发日报今天")
+
+    planning_question = client.calls[0][0][1]["content"]
+    final_evidence = client.calls[1][0][1]["content"]
+    planning_system = client.calls[0][0][0]["content"]
+    report_system = client.calls[1][0][0]["content"]
+    assert "诊断目标：日报自动提交" in planning_question
+    assert "不是日报统计推送" in planning_question
+    assert "诊断目标：日报自动提交" in final_evidence
+    assert "不得改为其他任务" in planning_system
+    assert "不得改为其他任务" in report_system
+
+
 def test_plan_deduplicates_calls_and_executes_at_most_three_tools():
     client = StubClient(
         [

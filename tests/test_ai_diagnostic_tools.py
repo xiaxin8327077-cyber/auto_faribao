@@ -60,6 +60,7 @@ def test_schedule_snapshot_contains_only_operational_fields(tmp_path):
     assert "2026-07-13" in result["content"]
     assert "工作日：是" in result["content"]
     assert "净值日报：08:08" in result["content"]
+    assert "日报统计推送（仅周日/月末）：21:00" in result["content"]
     assert "监控产品数：3" in result["content"]
 
 
