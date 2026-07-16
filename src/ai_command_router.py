@@ -116,19 +116,19 @@ class AiCommandRouter:
         data = _parse_route_json(response)
         kind = data.get("kind")
         if kind not in {"command", "diagnose", "chat", "clarify"}:
-            raise AiRouteError("LongCat 响应格式异常")
+            raise AiRouteError("AI模型响应格式异常")
 
         try:
             confidence = float(data.get("confidence", 0))
         except (TypeError, ValueError) as exc:
-            raise AiRouteError("LongCat 响应格式异常") from exc
+            raise AiRouteError("AI模型响应格式异常") from exc
         reply = str(data.get("reply", "")).strip()[:800]
         command = " ".join(str(data.get("canonical_command", "")).split())
 
         if kind == "command":
             risk = classify_canonical_command(command)
             if risk is None:
-                raise AiRouteError("LongCat 返回的指令不在允许范围")
+                raise AiRouteError("AI模型返回的指令不在允许范围")
             if confidence < self._minimum_confidence:
                 return AiRoute(
                     kind="clarify",
@@ -158,13 +158,13 @@ def _parse_route_json(text: str) -> dict:
     start = raw.find("{")
     end = raw.rfind("}")
     if start < 0 or end < start:
-        raise AiRouteError("LongCat 响应格式异常")
+        raise AiRouteError("AI模型响应格式异常")
     try:
         data = json.loads(raw[start:end + 1])
     except (json.JSONDecodeError, TypeError) as exc:
-        raise AiRouteError("LongCat 响应格式异常") from exc
+        raise AiRouteError("AI模型响应格式异常") from exc
     if not isinstance(data, dict):
-        raise AiRouteError("LongCat 响应格式异常")
+        raise AiRouteError("AI模型响应格式异常")
     return data
 
 

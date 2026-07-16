@@ -1,5 +1,8 @@
 from datetime import date, datetime
+import json
 from types import SimpleNamespace
+
+import pytest
 
 from src.ai_assistant import AiAssistant, AiMessageBridge
 from src.longcat_client import LongCatSettings
@@ -16,6 +19,7 @@ class FakeAssistant:
         self.pending = {}
         self.active_users = set()
         self.authorized_users = {"owner"}
+        self.provider_switch_calls = []
 
     def route(self, text, current_date):
         self.route_calls.append((text, current_date))
@@ -50,6 +54,13 @@ class FakeAssistant:
         self.diagnosis_calls.append(question)
         return "diagnostic report"
 
+    def provider_status(self):
+        return "当前主模型：百炼 qwen3.7-plus\n备用模型：LongCat LongCat-2.0"
+
+    def switch_provider(self, provider):
+        self.provider_switch_calls.append(provider)
+        return "百炼 qwen3.7-plus"
+
 
 def test_diagnostic_wildcard_authorizes_every_wechat_user():
     assistant = AiAssistant(
@@ -67,6 +78,69 @@ def test_diagnostic_client_reserves_fifteen_seconds_for_large_evidence_context()
     )
 
     assert assistant._diagnostics._client._timeout_seconds == 15
+
+
+def test_assistant_switches_provider_only_after_probe_and_persists(monkeypatch, tmp_path):
+    created = []
+
+    class StubProviderClient:
+        def __init__(self, *args, **kwargs):
+            self.model = args[2]
+            self.complete_calls = []
+            created.append(self)
+
+        def complete(self, messages, **kwargs):
+            self.complete_calls.append((messages, kwargs))
+            return "OK"
+
+    monkeypatch.setattr("src.ai_assistant.LongCatClient", StubProviderClient)
+    assistant = AiAssistant.from_env(
+        object(),
+        tmp_path,
+        env={
+            "AI_ENABLED": "true",
+            "AI_PROVIDER": "qwen",
+            "QWEN_API_KEY": "qwen-secret",
+            "LONGCAT_API_KEY": "longcat-secret",
+        },
+    )
+
+    display_name = assistant.switch_provider("LongCat")
+
+    state = json.loads((tmp_path / "data" / "ai_provider_state.json").read_text(encoding="utf-8"))
+    assert display_name == "LongCat LongCat-2.0"
+    assert assistant.settings.provider == "longcat"
+    assert state == {"provider": "longcat"}
+    probe = next(client for client in created if client.complete_calls)
+    assert probe.model == "LongCat-2.0"
+    assert probe.complete_calls[0][1]["thinking"] is False
+
+
+def test_assistant_keeps_current_provider_when_target_probe_fails(monkeypatch, tmp_path):
+    class FailingProviderClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def complete(self, messages, **kwargs):
+            raise RuntimeError("offline")
+
+    monkeypatch.setattr("src.ai_assistant.LongCatClient", FailingProviderClient)
+    assistant = AiAssistant.from_env(
+        object(),
+        tmp_path,
+        env={
+            "AI_ENABLED": "true",
+            "AI_PROVIDER": "qwen",
+            "QWEN_API_KEY": "qwen-secret",
+            "LONGCAT_API_KEY": "longcat-secret",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="offline"):
+        assistant.switch_provider("LongCat")
+
+    assert assistant.settings.provider == "qwen"
+    assert not (tmp_path / "data" / "ai_provider_state.json").exists()
 
 
 def _harness(assistant, *, busy=False, known=False, run_async=None, now_fn=None):
@@ -104,6 +178,49 @@ def test_existing_command_never_calls_model():
     assert result.handled is False
     assert result.content == "立即查询净值"
     assert assistant.route_calls == []
+
+
+def test_ai_provider_status_is_answered_without_calling_model():
+    assistant = FakeAssistant()
+    bridge, sent, _, starts, ended, _ = _harness(assistant)
+
+    result = bridge.prepare("查看AI模型", "owner", date(2026, 7, 13))
+
+    assert result.handled is True
+    assert sent == [
+        ("🤖 AI模型配置\n\n当前主模型：百炼 qwen3.7-plus\n备用模型：LongCat LongCat-2.0", "owner")
+    ]
+    assert assistant.route_calls == []
+    assert starts == []
+    assert ended == []
+
+
+def test_ai_provider_switch_probes_then_applies_and_releases_lock():
+    assistant = FakeAssistant()
+    bridge, sent, _, starts, ended, _ = _harness(assistant)
+
+    result = bridge.prepare("切换AI模型 百炼", "owner", date(2026, 7, 13))
+
+    assert result.handled is True
+    assert assistant.provider_switch_calls == ["百炼"]
+    assert starts == ["AI模型切换"]
+    assert "正在检测百炼" in sent[0][0]
+    assert "已切换" in sent[-1][0]
+    assert "百炼 qwen3.7-plus" in sent[-1][0]
+    assert ended == [True]
+
+
+def test_ai_provider_switch_does_not_run_while_another_command_is_busy():
+    assistant = FakeAssistant()
+    bridge, sent, _, starts, ended, _ = _harness(assistant, busy=True)
+
+    result = bridge.prepare("换成LongCat", "owner", date(2026, 7, 13))
+
+    assert result.handled is True
+    assert assistant.provider_switch_calls == []
+    assert starts == ["AI模型切换"]
+    assert sent == [("BUSY", "owner")]
+    assert ended == []
 
 
 def test_busy_command_prevents_longcat_call():

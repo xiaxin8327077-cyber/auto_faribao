@@ -1,7 +1,9 @@
 import logging
+import re
 import threading
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Callable, Mapping, Optional
 
 from src.ai_chat import AiChatService, ChatSessionStore
@@ -24,54 +26,95 @@ class AiAssistant:
         diagnostics=None,
         sessions=None,
         pending=None,
+        cfg=None,
+        project_root=None,
     ):
         self.settings = settings
-        self.enabled = settings.available
+        self.enabled = settings.any_available
         self._router = router
         self._chat = chat
         self._diagnostics = diagnostics
         self._sessions = sessions or ChatSessionStore(max_turns=10)
         self._pending = pending or AiPendingCommandStore(ttl_seconds=120)
+        self._cfg = cfg
+        self._project_root = Path(project_root).resolve() if project_root else None
+        self._provider_lock = threading.Lock()
 
     @classmethod
     def from_env(cls, cfg, project_root, env: Optional[Mapping[str, str]] = None):
-        settings = LongCatSettings.from_env(env)
-        if not settings.available:
-            return cls(settings)
-
-        router_client = LongCatClient(
-            settings.api_key,
-            settings.base_url,
-            settings.model,
-            timeout_seconds=4,
-        )
-        chat_client = LongCatClient(
-            settings.api_key,
-            settings.base_url,
-            settings.model,
-            timeout_seconds=15,
-        )
-        diagnostic_client = LongCatClient(
-            settings.api_key,
-            settings.base_url,
-            settings.model,
-            timeout_seconds=15,
-        )
-        sessions = ChatSessionStore(max_turns=10)
-        toolbox = DiagnosticToolbox(project_root, cfg)
-        return cls(
+        state_path = Path(project_root) / "data" / "ai_provider_state.json"
+        settings = LongCatSettings.from_env(env, state_path=state_path)
+        assistant = cls(
             settings,
-            router=AiCommandRouter(router_client),
-            chat=AiChatService(chat_client, sessions),
-            diagnostics=DiagnosticAgent(
-                diagnostic_client,
+            pending=AiPendingCommandStore(ttl_seconds=120),
+            cfg=cfg,
+            project_root=project_root,
+        )
+        if settings.available:
+            assistant._apply_services(
+                assistant._build_services(settings.active_provider)
+            )
+        return assistant
+
+    @staticmethod
+    def _client(provider, timeout_seconds: float):
+        return LongCatClient(
+            provider.api_key,
+            provider.base_url,
+            provider.model,
+            provider_name=provider.label,
+            thinking_parameter=provider.thinking_parameter,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _build_services(self, provider):
+        sessions = ChatSessionStore(max_turns=10)
+        toolbox = DiagnosticToolbox(self._project_root, self._cfg)
+        return (
+            AiCommandRouter(self._client(provider, 4)),
+            AiChatService(self._client(provider, 15), sessions),
+            DiagnosticAgent(
+                self._client(provider, 15),
                 toolbox,
                 max_tool_calls=3,
                 timeout_seconds=30,
             ),
-            sessions=sessions,
-            pending=AiPendingCommandStore(ttl_seconds=120),
+            sessions,
         )
+
+    def _apply_services(self, services) -> None:
+        self._router, self._chat, self._diagnostics, self._sessions = services
+
+    def provider_status(self) -> str:
+        active = self.settings.active_provider
+        standby = [
+            provider.display_name
+            for key, provider in self.settings.providers.items()
+            if key != self.settings.provider and provider.available
+        ]
+        standby_text = "、".join(standby) if standby else "未配置"
+        return f"当前主模型：{active.display_name}\n备用模型：{standby_text}"
+
+    def switch_provider(self, value: str) -> str:
+        with self._provider_lock:
+            provider_key = self.settings.resolve_provider(value)
+            provider = self.settings.providers[provider_key]
+            if not provider.available:
+                raise ValueError(f"{provider.label} 尚未配置API密钥")
+            if provider_key == self.settings.provider:
+                return provider.display_name
+
+            probe = self._client(provider, 20)
+            probe.complete(
+                [{"role": "user", "content": "只回复OK"}],
+                max_tokens=8,
+                temperature=0.0,
+                thinking=False,
+            )
+            services = self._build_services(provider)
+            self.settings.activate(provider_key)
+            self._apply_services(services)
+            return provider.display_name
 
     def route(self, text: str, current_date: date):
         return self._router.route(text, current_date)
@@ -142,6 +185,20 @@ class AiMessageBridge:
             return AiPreparedMessage(content)
 
         stripped = (content or "").strip()
+        provider_command = _parse_provider_command(stripped)
+        if provider_command:
+            action, provider = provider_command
+            if action == "status":
+                self._send_text(
+                    f"🤖 AI模型配置\n\n{self._assistant.provider_status()}",
+                    user_id,
+                )
+                return AiPreparedMessage(content, handled=True)
+            if not self._try_start_cmd("AI模型切换"):
+                self._send_text(self._busy_reply(), user_id)
+                return AiPreparedMessage(content, handled=True)
+            return self._launch_provider_switch(content, user_id, provider)
+
         if stripped == "确认执行":
             command = self._assistant.confirm_pending(user_id)
             if command:
@@ -192,7 +249,7 @@ class AiMessageBridge:
         try:
             route = self._assistant.route(stripped, current_date)
         except Exception:
-            logger.error("LongCat command routing failed", exc_info=True)
+            logger.error("AI command routing failed", exc_info=True)
             self._end_cmd()
             self._send_text("❌ AI暂时无法理解这条消息。发送「帮助」可查看现有指令。", user_id)
             return AiPreparedMessage(content, handled=True)
@@ -232,7 +289,7 @@ class AiMessageBridge:
                 except DiagnosticAgentError as exc:
                     self._send_text(f"❌ 线上诊断未完成\n{exc}", user_id)
                 except Exception:
-                    logger.error("LongCat diagnosis failed", exc_info=True)
+                    logger.error("AI diagnosis failed", exc_info=True)
                     self._send_text("❌ 线上诊断暂时不可用，请稍后再试。", user_id)
                 finally:
                     self._end_cmd()
@@ -240,7 +297,7 @@ class AiMessageBridge:
             try:
                 self._run_async(run_diagnosis)
             except Exception:
-                logger.error("Failed to start LongCat diagnostic worker", exc_info=True)
+                logger.error("Failed to start AI diagnostic worker", exc_info=True)
                 self._end_cmd()
                 self._send_text("❌ 线上诊断启动失败，命令锁已释放，请稍后再试。", user_id)
             return AiPreparedMessage(content, handled=True)
@@ -252,14 +309,17 @@ class AiMessageBridge:
     def _launch_chat(
         self, content: str, user_id: str, question: str
     ) -> AiPreparedMessage:
-        self._send_text("⏳ LongCat 正在思考，请稍等...", user_id)
+        settings = getattr(self._assistant, "settings", None)
+        provider = getattr(settings, "active_provider", None)
+        label = getattr(provider, "label", "AI")
+        self._send_text(f"⏳ {label} 正在思考，请稍等...", user_id)
 
         def run_chat():
             try:
                 answer = self._assistant.ask_chat(user_id, question)
                 self._send_text(answer, user_id)
             except Exception:
-                logger.error("LongCat chat failed", exc_info=True)
+                logger.error("AI chat failed", exc_info=True)
                 self._send_text("❌ AI助手暂时无法回答，请稍后再试。", user_id)
             finally:
                 self._end_cmd()
@@ -267,9 +327,40 @@ class AiMessageBridge:
         try:
             self._run_async(run_chat)
         except Exception:
-            logger.error("Failed to start LongCat chat worker", exc_info=True)
+            logger.error("Failed to start AI chat worker", exc_info=True)
             self._end_cmd()
             self._send_text("❌ AI助手启动失败，命令锁已释放，请稍后再试。", user_id)
+        return AiPreparedMessage(content, handled=True)
+
+    def _launch_provider_switch(
+        self, content: str, user_id: str, provider: str
+    ) -> AiPreparedMessage:
+        self._send_text(f"⏳ 正在检测{provider}模型，请稍等...", user_id)
+
+        def run_switch():
+            try:
+                display_name = self._assistant.switch_provider(provider)
+                self._send_text(
+                    f"✅ AI主模型已切换\n\n当前主模型：{display_name}",
+                    user_id,
+                )
+            except ValueError as exc:
+                self._send_text(f"❌ 无法切换AI模型\n{exc}", user_id)
+            except Exception:
+                logger.error("AI provider switch failed", exc_info=True)
+                self._send_text(
+                    f"❌ {provider}模型检测失败，仍使用原主模型。",
+                    user_id,
+                )
+            finally:
+                self._end_cmd()
+
+        try:
+            self._run_async(run_switch)
+        except Exception:
+            logger.error("Failed to start AI provider switch worker", exc_info=True)
+            self._end_cmd()
+            self._send_text("❌ AI模型切换启动失败，请稍后再试。", user_id)
         return AiPreparedMessage(content, handled=True)
 
     def _chat_question(self, content: str, user_id: str):
@@ -337,4 +428,23 @@ class AiMessageBridge:
 
     @staticmethod
     def _start_thread(fn):
-        threading.Thread(target=fn, daemon=True, name="longcat-worker").start()
+        threading.Thread(target=fn, daemon=True, name="ai-worker").start()
+
+
+def _parse_provider_command(content: str):
+    normalized = re.sub(r"\s+", "", str(content or "")).lower()
+    if normalized in {
+        "查看ai模型", "查询ai模型", "当前ai模型", "ai模型", "查看大模型",
+    }:
+        return "status", ""
+    if not any(marker in normalized for marker in ("切换", "换成", "改用", "使用")):
+        return None
+    for alias in ("阿里百炼", "百炼", "通义千问", "千问", "qwen"):
+        if alias in normalized:
+            return "switch", "百炼"
+    for alias in ("longcat", "龙猫"):
+        if alias in normalized:
+            return "switch", "LongCat"
+    if "ai模型" in normalized or "大模型" in normalized:
+        return "status", ""
+    return None

@@ -131,19 +131,19 @@ def _parse_plan(
     data = _parse_json_object(text)
     tools = data.get("tools")
     if not isinstance(tools, list) or not tools:
-        raise DiagnosticAgentError("LongCat 诊断计划格式异常")
+        raise DiagnosticAgentError("AI模型诊断计划格式异常")
 
     validated = []
     seen = set()
     for item in tools:
         if not isinstance(item, dict):
-            raise DiagnosticAgentError("LongCat 诊断计划格式异常")
+            raise DiagnosticAgentError("AI模型诊断计划格式异常")
         tool = item.get("tool")
         arguments = item.get("arguments", {})
         if not isinstance(tool, str) or tool not in allowed_tools:
-            raise DiagnosticAgentError("LongCat 诊断计划包含未授权工具")
+            raise DiagnosticAgentError("AI模型诊断计划包含未授权工具")
         if not isinstance(arguments, dict):
-            raise DiagnosticAgentError("LongCat 诊断计划参数格式异常")
+            raise DiagnosticAgentError("AI模型诊断计划参数格式异常")
         key = (tool, json.dumps(arguments, ensure_ascii=False, sort_keys=True))
         if key in seen:
             continue
@@ -151,7 +151,7 @@ def _parse_plan(
         if len(validated) < max_tool_calls:
             validated.append({"tool": tool, "arguments": arguments})
     if not validated:
-        raise DiagnosticAgentError("LongCat 诊断计划为空")
+        raise DiagnosticAgentError("AI模型诊断计划为空")
     return validated
 
 
@@ -162,13 +162,13 @@ def _parse_json_object(text: str) -> dict:
     start = raw.find("{")
     end = raw.rfind("}")
     if start < 0 or end < start:
-        raise DiagnosticAgentError("LongCat 诊断计划格式异常")
+        raise DiagnosticAgentError("AI模型诊断计划格式异常")
     try:
         data = json.loads(raw[start:end + 1])
     except (json.JSONDecodeError, TypeError) as exc:
-        raise DiagnosticAgentError("LongCat 诊断计划格式异常") from exc
+        raise DiagnosticAgentError("AI模型诊断计划格式异常") from exc
     if not isinstance(data, dict):
-        raise DiagnosticAgentError("LongCat 诊断计划格式异常")
+        raise DiagnosticAgentError("AI模型诊断计划格式异常")
     return data
 
 

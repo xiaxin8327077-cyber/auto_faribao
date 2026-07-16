@@ -237,7 +237,7 @@ def _help_index_text() -> str:
 • **本月日报提交情况** <font color="comment">查看月度统计</font>
 • **帮我看一下最近1个月的理财净值** <font color="comment">查询近一月净值统计</font>
 • **把 AF233276B 份额改成 401133.95** <font color="comment">修改持仓份额</font>
-• **问助手 最近债券市场怎么样** <font color="comment">调用 LongCat 聊天</font>
+• **问助手 最近债券市场怎么样** <font color="comment">调用当前AI模型</font>
 
 **回复数字查看**
 • **1** 日报指令
@@ -411,6 +411,11 @@ def _ops_help_text() -> str:
 def _ai_help_text() -> str:
     return """## 🤖 AI助手
 
+> <font color="info">模型配置</font>
+• **查看AI模型** <font color="comment">查看当前主模型和备用模型</font>
+• **切换AI模型 百炼** <font color="comment">检测成功后立即切换</font>
+• **切换AI模型 LongCat** <font color="comment">一键切回备用模型</font>
+
 > <font color="info">聊天</font>
 • **问助手 最近债券市场怎么样** <font color="comment">单次聊天</font>
 • **进入助手模式** <font color="comment">开启连续对话，保留最近10轮</font>
@@ -517,7 +522,7 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             ai_assistant = AiAssistant.from_env(cfg, project_root)
         except Exception:
-            logger.error("Failed to initialize LongCat assistant; AI is disabled", exc_info=True)
+            logger.error("Failed to initialize AI assistant; AI is disabled", exc_info=True)
             ai_assistant = None
 
     from src.ai_assistant import AiMessageBridge

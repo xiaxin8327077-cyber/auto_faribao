@@ -182,7 +182,11 @@ def test_help_navigation_accepts_number_replies():
     assert nav_messages[2].startswith("## 💹 理财净值指令 · 产品设置")
     assert _build_help_messages("3")[0].startswith("## ⚙️ 系统配置指令")
     assert _build_help_messages("4")[0].startswith("## 🖥️ 运维指令")
-    assert _build_help_messages("5")[0].startswith("## 🤖 AI助手")
+    ai_help = _build_help_messages("5")[0]
+    assert ai_help.startswith("## 🤖 AI助手")
+    assert "查看AI模型" in ai_help
+    assert "切换AI模型 百炼" in ai_help
+    assert "切换AI模型 LongCat" in ai_help
     assert len(_build_help_messages("0")) == 7
 
 

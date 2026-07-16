@@ -54,6 +54,69 @@ def test_settings_are_unavailable_without_key():
     assert settings.available is False
 
 
+def test_settings_load_qwen_as_primary_and_keep_longcat_available(tmp_path):
+    state_path = tmp_path / "ai_provider_state.json"
+    settings = LongCatSettings.from_env(
+        {
+            "AI_ENABLED": "true",
+            "AI_PROVIDER": "qwen",
+            "AI_DIAGNOSTIC_USERS": "*",
+            "QWEN_API_KEY": "qwen-secret",
+            "QWEN_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1/",
+            "QWEN_MODEL": "qwen3.7-plus",
+            "LONGCAT_API_KEY": "longcat-secret",
+            "LONGCAT_BASE_URL": "https://api.longcat.chat/openai",
+            "LONGCAT_MODEL": "LongCat-2.0",
+        },
+        state_path=state_path,
+    )
+
+    assert settings.available is True
+    assert settings.provider == "qwen"
+    assert settings.display_name == "百炼 qwen3.7-plus"
+    assert settings.api_key == "qwen-secret"
+    assert settings.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert settings.model == "qwen3.7-plus"
+    assert settings.diagnostic_users == frozenset({"*"})
+    assert settings.available_providers == ("qwen", "longcat")
+
+
+def test_persisted_provider_selection_overrides_environment_default(tmp_path):
+    state_path = tmp_path / "ai_provider_state.json"
+    state_path.write_text('{"provider":"longcat"}', encoding="utf-8")
+
+    settings = LongCatSettings.from_env(
+        {
+            "AI_ENABLED": "true",
+            "AI_PROVIDER": "qwen",
+            "QWEN_API_KEY": "qwen-secret",
+            "LONGCAT_API_KEY": "longcat-secret",
+        },
+        state_path=state_path,
+    )
+
+    assert settings.provider == "longcat"
+    assert settings.api_key == "longcat-secret"
+
+
+def test_provider_selection_is_written_atomically(tmp_path):
+    state_path = tmp_path / "ai_provider_state.json"
+    settings = LongCatSettings.from_env(
+        {
+            "AI_ENABLED": "true",
+            "AI_PROVIDER": "qwen",
+            "QWEN_API_KEY": "qwen-secret",
+            "LONGCAT_API_KEY": "longcat-secret",
+        },
+        state_path=state_path,
+    )
+
+    settings.activate("longcat")
+
+    assert state_path.read_text(encoding="utf-8") == '{\n  "provider": "longcat"\n}'
+    assert not state_path.with_suffix(".json.tmp").exists()
+
+
 def test_complete_posts_bearer_request_with_thinking_disabled():
     session = FakeSession(
         FakeResponse(payload={"choices": [{"message": {"content": "ok"}}]})
@@ -86,6 +149,30 @@ def test_complete_posts_bearer_request_with_thinking_disabled():
         "stream": False,
         "thinking": {"type": "disabled"},
     }
+
+
+def test_qwen_request_uses_official_thinking_parameter_and_normalized_url():
+    session = FakeSession(
+        FakeResponse(payload={"choices": [{"message": {"content": "ok"}}]})
+    )
+    client = LongCatClient(
+        api_key="qwen-secret",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/",
+        model="qwen3.7-plus",
+        provider_name="百炼",
+        thinking_parameter="enable_thinking",
+        session=session,
+        timeout_seconds=10,
+    )
+
+    assert client.complete(
+        [{"role": "user", "content": "hello"}], thinking=False
+    ) == "ok"
+
+    url, kwargs = session.calls[0]
+    assert url == "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    assert kwargs["json"]["enable_thinking"] is False
+    assert "thinking" not in kwargs["json"]
 
 
 def test_complete_maps_rate_limit_to_safe_unavailable_error():
