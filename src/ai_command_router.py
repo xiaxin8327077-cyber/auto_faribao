@@ -62,6 +62,7 @@ _WRITE_NAV_ACTIONS = {
     "delete_product",
     "set_shares",
     "set_shares_batch",
+    "set_daily_profit",
     "confirm_add",
     "cancel_add",
     "add_product",
@@ -181,8 +182,8 @@ kind为command时，canonical_command必须严格使用下列指令或参数模�
 无参数指令：今日状态、最近记录、本周统计、本月统计、查看配置、查看定时配置、读取日报、获取前一天日报、检查Cookies、服务器状态、运行服务、查看日志、发送日报、重新发送今日日报、撤回今日日报、根据前一天内容发送、生成二维码、更新工作日历。
 日报参数指令：查询日报 YYYY-MM-DD；设置Cookies检查时间 HH:MM；设置统计推送时间 HH:MM；设置缓存清理时间 HH:MM；设置日报提交时间 HH:MM。
 净值查询指令：立即查询净值；查询净值 YYYYMMDD；查询周度净值；查询月度净值；查询季度净值；查询半年度净值；查询年度净值；查询近7天净值；查询近一月净值；查询近三月净值；查询近半年净值；查询近一年净值；查询近两年净值；查询近三年净值。
-净值配置指令：查看净值配置；开启净值监控；关闭净值监控；设置净值推送时间 HH:MM；设置收益预估时间 HH:MM；添加净值产品 机构 产品代码；删除净值产品 产品代码；设置净值份额 产品代码 数值；查看持仓画像；查看 产品代码 持仓画像；查看画像状态；更新持仓画像；预估理财涨跌。
-相对日期必须根据当前日期换算：日报使用YYYY-MM-DD，净值使用YYYYMMDD。中文时间要换算为24小时HH:MM。
+净值配置指令：查看净值配置；开启净值监控；关闭净值监控；设置净值推送时间 HH:MM；设置收益预估时间 HH:MM；添加净值产品 机构 产品代码；删除净值产品 产品代码；设置净值份额 产品代码 数值；设置收益 YYYY-MM-DD 金额；查看持仓画像；查看 产品代码 持仓画像；查看画像状态；更新持仓画像；预估理财涨跌。
+相对日期必须根据当前日期换算：日报使用YYYY-MM-DD，净值使用YYYYMMDD。中文时间要换算为24小时HH:MM。设置收益的日期使用YYYY-MM-DD格式，金额支持负数。
 
 示例：
 用户：OA今天交上去了吗
@@ -197,6 +198,10 @@ kind为command时，canonical_command必须严格使用下列指令或参数模�
 输出：{{"kind":"chat","canonical_command":"","confidence":0.98,"reply":""}}
 用户：帮我删除那个理财产品，但缺少产品代码
 输出：{{"kind":"clarify","canonical_command":"","confidence":0.55,"reply":"请提供要删除的产品代码。"}}
+用户：把最新收益改成150块
+输出：{{"kind":"command","canonical_command":"设置收益 {current_date:%Y-%m-%d} 150","confidence":0.97,"reply":""}}
+用户：收益改成-50
+输出：{{"kind":"command","canonical_command":"设置收益 {current_date:%Y-%m-%d} -50","confidence":0.97,"reply":""}}
 
 禁止把重启服务、清理缓存、启动或停止代理服务转换为command；遇到这些请求使用clarify并说明不支持。"""
 

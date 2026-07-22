@@ -188,6 +188,7 @@ class NavCommand:
     index: int = 0
     hour: int = 0
     minute: int = 0
+    amount: Optional[Decimal] = None
 
 
 def parse_nav_query_date(text: str, base_date: Optional[date] = None) -> Optional[date]:
@@ -208,6 +209,37 @@ def parse_nav_query_date(text: str, base_date: Optional[date] = None) -> Optiona
         return datetime.strptime(match.group(1), "%Y%m%d").date()
     except ValueError:
         return None
+
+
+def _parse_daily_profit_date(text: str, base_date: Optional[date] = None) -> Optional[date]:
+    """Parse date for '设置收益' command. Supports ISO, compact, and relative formats."""
+    base_date = base_date or date.today()
+    content = (text or "").strip()
+
+    if content in ("昨天", "昨日"):
+        return base_date - timedelta(days=1)
+    if content in ("今天", "今日"):
+        return base_date
+    if content == "前天":
+        return base_date - timedelta(days=2)
+
+    # ISO format: 2025-07-21
+    match = re.fullmatch(r"(20\d{2})-(\d{2})-(\d{2})", content)
+    if match:
+        try:
+            return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return None
+
+    # Compact format: 20250721
+    match = re.fullmatch(r"(20\d{6})", content)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y%m%d").date()
+        except ValueError:
+            return None
+
+    return None
 
 
 def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[NavCommand]:
@@ -288,6 +320,19 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
             shares=Decimal(match.group(2)),
         )
 
+    if content.startswith("设置收益"):
+        match = re.fullmatch(r"设置收益\s+(\S+)\s+(-?[0-9]+(?:\.[0-9]+)?)", content)
+        if match:
+            target = _parse_daily_profit_date(match.group(1), base_date=base_date)
+            if target:
+                return NavCommand(
+                    action="set_daily_profit",
+                    target_date=target,
+                    amount=Decimal(match.group(2)),
+                )
+            return NavCommand(action="set_daily_profit_invalid_date", query=match.group(1))
+        return NavCommand(action="set_daily_profit_usage")
+
     if content.startswith("添加净值产品"):
         return _parse_add_product_command(content)
 
@@ -352,6 +397,10 @@ def _parse_natural_nav_command(content: str, base_date: Optional[date] = None) -
     if "配置" in content and _contains_any(content, ("净值", "理财")):
         return NavCommand(action="view_config")
 
+    profit_cmd = _parse_natural_set_daily_profit(content, base_date=base_date)
+    if profit_cmd:
+        return profit_cmd
+
     period = _natural_period_from_text(content)
     if period:
         return NavCommand(action="query_period", period=period)
@@ -398,6 +447,32 @@ def _looks_like_natural_nav_text(content: str) -> bool:
 
 def _contains_any(content: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in content for keyword in keywords)
+
+
+_SET_PROFIT_VERBS = ("改成", "改为", "修改为", "修改成", "调成", "调为", "设为", "设置成")
+
+
+def _parse_natural_set_daily_profit(content: str, base_date: Optional[date] = None) -> Optional[NavCommand]:
+    """解析自然语言设置收益指令，如"把最新收益改成200"、"把昨天的收益改成150块"。"""
+    if "收益" not in content:
+        return None
+    if not _contains_any(content, _SET_PROFIT_VERBS):
+        return None
+    # 排除预估/预测类指令
+    if _contains_any(content, ("预估", "预测", "能涨", "能跌", "会涨", "会跌", "走势")):
+        return None
+
+    amount_match = re.search(r"(-?[0-9]+(?:\.[0-9]+)?)\s*(?:块|元)?$", content)
+    if not amount_match:
+        return None
+    amount = Decimal(amount_match.group(1))
+
+    # 尝试提取日期；没有明确日期则 target_date=None 表示"最新"
+    target_date = parse_nav_query_date(content, base_date=base_date)
+    if target_date and _contains_any(content, ("今天", "今日", "当前", "现在", "最新")):
+        target_date = None
+
+    return NavCommand(action="set_daily_profit", target_date=target_date, amount=amount)
 
 
 def _extract_product_code(content: str) -> str:

@@ -233,3 +233,100 @@ def test_daily_report_commands_are_not_nav_commands():
     assert parse_nav_command("今日状态") is None
     assert parse_nav_command("设置日报提交时间 20:00") is None
     assert parse_nav_command("发送日报") is None
+
+
+def test_parse_set_daily_profit_valid():
+    base = date(2026, 7, 22)
+
+    cmd = parse_nav_command("设置收益 2026-07-21 150.5", base)
+    assert cmd.action == "set_daily_profit"
+    assert cmd.target_date == date(2026, 7, 21)
+    assert cmd.amount == Decimal("150.5")
+
+    cmd = parse_nav_command("设置收益 昨天 -80", base)
+    assert cmd.action == "set_daily_profit"
+    assert cmd.target_date == date(2026, 7, 21)
+    assert cmd.amount == Decimal("-80")
+
+    cmd = parse_nav_command("设置收益 20260721 0", base)
+    assert cmd.action == "set_daily_profit"
+    assert cmd.target_date == date(2026, 7, 21)
+    assert cmd.amount == Decimal("0")
+
+
+def test_parse_set_daily_profit_invalid_date():
+    base = date(2026, 7, 22)
+
+    cmd = parse_nav_command("设置收益 2026-02-30 100", base)
+    assert cmd.action == "set_daily_profit_invalid_date"
+    assert cmd.query == "2026-02-30"
+
+    cmd = parse_nav_command("设置收益 abc 100", base)
+    assert cmd.action == "set_daily_profit_invalid_date"
+    assert cmd.query == "abc"
+
+
+def test_parse_set_daily_profit_invalid_amount_does_not_fallthrough():
+    base = date(2026, 7, 22)
+
+    cmd = parse_nav_command("设置收益 2026-07-21 abc", base)
+    assert cmd.action == "set_daily_profit_usage"
+
+    cmd = parse_nav_command("设置收益 2026-07-21 +100", base)
+    assert cmd.action == "set_daily_profit_usage"
+
+    cmd = parse_nav_command("设置收益 2026-07-21", base)
+    assert cmd.action == "set_daily_profit_usage"
+
+    cmd = parse_nav_command("设置收益", base)
+    assert cmd.action == "set_daily_profit_usage"
+
+
+def test_parse_natural_set_daily_profit():
+    base = date(2026, 7, 22)
+
+    # "最新"→ target_date=None 表示由服务端解析为看板最新日期
+    cmd = parse_nav_command("把最新收益改成200", base)
+    assert cmd.action == "set_daily_profit"
+    assert cmd.target_date is None
+    assert cmd.amount == Decimal("200")
+
+    # 带"昨天"日期
+    cmd = parse_nav_command("把昨天的收益改成150块", base)
+    assert cmd.action == "set_daily_profit"
+    assert cmd.target_date == date(2026, 7, 21)
+    assert cmd.amount == Decimal("150")
+
+    # 负数
+    cmd = parse_nav_command("把最新收益改成-50", base)
+    assert cmd.action == "set_daily_profit"
+    assert cmd.target_date is None
+    assert cmd.amount == Decimal("-50")
+
+    # 小数 + 元
+    cmd = parse_nav_command("把最新收益改为88.5元", base)
+    assert cmd.action == "set_daily_profit"
+    assert cmd.target_date is None
+    assert cmd.amount == Decimal("88.5")
+
+
+def test_natural_set_daily_profit_does_not_conflict_with_prediction():
+    base = date(2026, 7, 22)
+
+    # 预估类指令不受影响
+    cmd = parse_nav_command("收益预估改成200", base)
+    assert cmd.action == "estimate_holdings"
+
+    cmd = parse_nav_command("预估理财涨跌", base)
+    assert cmd.action == "estimate_holdings"
+
+
+def test_natural_set_daily_profit_requires_verb():
+    base = date(2026, 7, 22)
+
+    # 没有"改成/改为"等动词，不应匹配设置收益
+    cmd = parse_nav_command("最新收益200", base)
+    assert cmd.action == "query_latest"
+
+    cmd = parse_nav_command("看看收益", base)
+    assert cmd.action == "query_latest"

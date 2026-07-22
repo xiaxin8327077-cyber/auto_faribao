@@ -35,6 +35,7 @@ def _empty_state() -> dict:
         "events": [],
         "profit_entries": [],
         "manual_period_profits": [],
+        "manual_daily_profits": {},
         "snapshots": {},
         "last_attempt_at": "",
         "last_success_at": "",
@@ -178,6 +179,31 @@ class NavDashboardStore:
             self.state["manual_period_profits"] = [
                 existing[period] for period in sorted(existing)
             ]
+            self.save()
+            return self.state
+
+    def set_manual_daily_profit(self, target_date: date, amount, updated_at: datetime = None) -> dict:
+        """Manually override the displayed profit for a specific date (dashboard only)."""
+        updated_at = updated_at or beijing_now().replace(tzinfo=None)
+        date_str = target_date.isoformat() if isinstance(target_date, date) else str(target_date)
+        parsed_amount = _decimal(amount)
+        if parsed_amount is None:
+            raise ValueError(f"invalid daily profit amount: {amount}")
+        entries = self.state.get("profit_entries", [])
+        max_nav_date = max((str(e.get("nav_date") or "") for e in entries), default="")
+        if not max_nav_date:
+            raise ValueError("看板尚无收益数据，无法设置")
+        if date_str != max_nav_date:
+            raise ValueError(
+                f"仅可修改看板最新收益日期（{max_nav_date}），"
+                f"当前输入日期为 {date_str}"
+            )
+        with _STATE_LOCK:
+            manual_daily = self.state.setdefault("manual_daily_profits", {})
+            manual_daily[date_str] = {
+                "amount": _decimal_text(parsed_amount),
+                "updated_at": _dt_text(updated_at),
+            }
             self.save()
             return self.state
 
@@ -417,6 +443,22 @@ class NavDashboardStore:
                 year = nav_date[:4]
                 monthly_totals[month] = monthly_totals.get(month, Decimal("0")) + amount
                 yearly_totals[year] = yearly_totals.get(year, Decimal("0")) + amount
+
+            # Apply manual daily profit overrides (dashboard display only)
+            manual_daily = self.state.get("manual_daily_profits", {})
+            for nav_date, manual_item in manual_daily.items():
+                manual_amount = _decimal(manual_item.get("amount") if isinstance(manual_item, dict) else manual_item)
+                if manual_amount is None:
+                    continue
+                old_amount = daily_totals.get(nav_date, Decimal("0"))
+                diff = manual_amount - old_amount
+                daily_totals[nav_date] = manual_amount
+                month = nav_date[:7]
+                year = nav_date[:4]
+                monthly_totals[month] = monthly_totals.get(month, Decimal("0")) + diff
+                yearly_totals[year] = yearly_totals.get(year, Decimal("0")) + diff
+                total_profit += diff
+
             latest_profit_date = max(daily_totals, default="")
             latest_profit = daily_totals.get(latest_profit_date, Decimal("0"))
             today_text = now.date().isoformat()

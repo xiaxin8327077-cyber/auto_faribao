@@ -347,6 +347,10 @@ def _nav_settings_help_text() -> str:
 • **把 AF233276B 份额改成 401133.95** <font color="comment">自然语言设置份额</font>
 • **批量设置净值份额** <font color="comment">多行批量更新</font>
 
+> <font color="info">收益修正</font>
+• **设置收益 2026-07-21 150.5** <font color="comment">仅支持修改看板当前最新收益日期</font>
+• **把最新收益改成200** <font color="comment">自然语言修正最新收益</font>
+
 > <font color="info">监控开关</font>
 • **开启净值监控** <font color="comment">启用工作日定时推送</font>
 • **关闭净值监控** <font color="comment">停用工作日定时推送</font>"""
@@ -1904,6 +1908,49 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         if ok:
             _persist_runtime_config(cfg)
         _send_wechat_text(cfg.wechat, ("✅ " if ok else "❌ ") + message, from_user_id)
+        return
+
+    if action == "set_daily_profit":
+        from src.nav_dashboard import NavDashboardStore
+
+        try:
+            store = NavDashboardStore()
+            target_date = nav_command.target_date
+            if target_date is None:
+                entries = store.state.get("profit_entries", [])
+                max_nav_date = max((str(e.get("nav_date") or "") for e in entries), default="")
+                if not max_nav_date:
+                    _send_wechat_text(cfg.wechat, "❌ 看板尚无收益数据，无法设置", from_user_id)
+                    return
+                from datetime import date as _date
+
+                target_date = _date.fromisoformat(max_nav_date)
+            store.set_manual_daily_profit(target_date, nav_command.amount)
+            amount_text = format(nav_command.amount, "f")
+            _send_wechat_text(
+                cfg.wechat,
+                f"✅ 收益已设置\n\n📅 日期：{target_date:%Y-%m-%d}\n💰 收益：{amount_text} 元\n\n仅影响看板展示，不影响自动计算的净值流水。",
+                from_user_id,
+            )
+        except Exception as e:
+            logger.error(f"Set daily profit failed: {e}", exc_info=True)
+            _send_wechat_text(cfg.wechat, f"❌ 设置收益失败\n{e}", from_user_id)
+        return
+
+    if action == "set_daily_profit_invalid_date":
+        _send_wechat_text(
+            cfg.wechat,
+            f"❌ 日期格式无效：{nav_command.query}\n\n支持格式：\n• 设置收益 2026-07-21 150.5\n• 设置收益 昨天 100\n• 设置收益 20260721 -80",
+            from_user_id,
+        )
+        return
+
+    if action == "set_daily_profit_usage":
+        _send_wechat_text(
+            cfg.wechat,
+            "❌ 设置收益格式不正确\n\n格式：设置收益 日期 金额\n\n示例：\n• 设置收益 2026-07-21 150.5\n• 设置收益 昨天 -80\n• 设置收益 20260721 200",
+            from_user_id,
+        )
         return
 
     if action == "set_shares_batch":

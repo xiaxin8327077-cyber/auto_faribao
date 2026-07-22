@@ -149,3 +149,22 @@ def test_pending_commands_are_isolated_cancelled_and_expire():
     store.save("user-a", "发送日报")
     now[0] = 161.0
     assert store.confirm("user-a") is None
+
+
+def test_classifies_set_daily_profit_as_write():
+    assert classify_canonical_command("设置收益 2026-07-21 150.5") == "write"
+    assert classify_canonical_command("设置收益 2026-07-22 -80") == "write"
+
+
+def test_router_prompt_includes_set_daily_profit_template():
+    client = StubClient(
+        '{"kind":"clarify","canonical_command":"","confidence":0.4,'
+        '"reply":"请补充信息"}'
+    )
+
+    AiCommandRouter(client).route("说得不够清楚", date(2026, 7, 13))
+
+    prompt = client.calls[0][0][0]["content"]
+    assert "设置收益 YYYY-MM-DD 金额" in prompt
+    assert "把最新收益改成150块" in prompt
+    assert "收益改成-50" in prompt

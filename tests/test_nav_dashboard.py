@@ -1,6 +1,8 @@
 from datetime import date, datetime
 from decimal import Decimal
 
+import pytest
+
 from src.config import Config
 from src.nav_dashboard import (
     NavDashboardStore,
@@ -355,3 +357,72 @@ def test_manual_refresh_reuses_any_recent_success(monkeypatch, tmp_path):
 
     assert result["accepted"] is False
     assert result["status"] == "cooldown"
+
+
+def _store_with_entries(tmp_path, entries):
+    store = NavDashboardStore(tmp_path / "state.json")
+    store.state["profit_entries"] = entries
+    store.state["base_date"] = "2026-07-01"
+    store.save()
+    return store
+
+
+def test_set_manual_daily_profit_only_allows_max_nav_date(tmp_path):
+    entries = [
+        {"product_key": "p1", "nav_date": "2026-07-18", "amount": "100", "discovered_date": "2026-07-19"},
+        {"product_key": "p1", "nav_date": "2026-07-21", "amount": "80", "discovered_date": "2026-07-22"},
+    ]
+    store = _store_with_entries(tmp_path, entries)
+
+    # 最大收益日期可以修改
+    store.set_manual_daily_profit(date(2026, 7, 21), Decimal("200"))
+    assert store.state["manual_daily_profits"]["2026-07-21"]["amount"] == "200"
+
+
+def test_set_manual_daily_profit_rejects_earlier_date(tmp_path):
+    entries = [
+        {"product_key": "p1", "nav_date": "2026-07-18", "amount": "100", "discovered_date": "2026-07-19"},
+        {"product_key": "p1", "nav_date": "2026-07-21", "amount": "80", "discovered_date": "2026-07-22"},
+    ]
+    store = _store_with_entries(tmp_path, entries)
+
+    # 比最大日期早一天必须拒绝
+    with pytest.raises(ValueError, match="仅可修改看板最新收益日期"):
+        store.set_manual_daily_profit(date(2026, 7, 20), Decimal("150"))
+
+
+def test_set_manual_daily_profit_rejects_later_date(tmp_path):
+    entries = [
+        {"product_key": "p1", "nav_date": "2026-07-21", "amount": "80", "discovered_date": "2026-07-22"},
+    ]
+    store = _store_with_entries(tmp_path, entries)
+
+    # 比最大日期晚一天必须拒绝
+    with pytest.raises(ValueError, match="仅可修改看板最新收益日期"):
+        store.set_manual_daily_profit(date(2026, 7, 22), Decimal("300"))
+
+
+def test_set_manual_daily_profit_rejects_when_no_entries(tmp_path):
+    store = _store_with_entries(tmp_path, [])
+
+    # 看板没有收益数据时必须拒绝
+    with pytest.raises(ValueError, match="看板尚无收益数据"):
+        store.set_manual_daily_profit(date(2026, 7, 21), Decimal("100"))
+
+
+def test_set_manual_daily_profit_repeat_does_not_stack(tmp_path):
+    entries = [
+        {"product_key": "p1", "nav_date": "2026-07-21", "amount": "80", "discovered_date": "2026-07-22"},
+    ]
+    store = _store_with_entries(tmp_path, entries)
+
+    # 重复修改最大收益日期，累计/月度/年度收益不能重复叠加
+    store.set_manual_daily_profit(date(2026, 7, 21), Decimal("200"))
+    payload = store.payload(now=datetime(2026, 7, 22, 10, 0))
+    assert payload["cumulative_profit"] == "200"
+
+    store.set_manual_daily_profit(date(2026, 7, 21), Decimal("300"))
+    payload = store.payload(now=datetime(2026, 7, 22, 10, 0))
+    assert payload["cumulative_profit"] == "300"
+    assert payload["latest_profit"] == "300"
+    assert payload["current_month_profit"] == "300"
