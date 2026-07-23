@@ -322,6 +322,41 @@ class NavDashboardStore:
                 selected_at = changed_at
         return _decimal(selected.get("shares")) if selected else None
 
+    def _reconcile_profit_entries(self) -> int:
+        corrected = 0
+        for entry in self.state.get("profit_entries", []):
+            discovered_at = _parse_dt(str(entry.get("discovered_at") or ""))
+            if discovered_at is None:
+                logger.warning(
+                    "Skipping dashboard profit entry %s with invalid discovered_at",
+                    entry.get("id", ""),
+                )
+                continue
+            meta = self.state.get("products", {}).get(entry.get("product_key"))
+            if not meta:
+                continue
+            shares = self._shares_for_observation(meta, discovered_at)
+            delta = _decimal(entry.get("delta"))
+            if shares is None or delta is None:
+                continue
+            amount = delta * shares
+            if (
+                _decimal(entry.get("shares")) == shares
+                and _decimal(entry.get("amount")) == amount
+            ):
+                continue
+            entry["shares"] = _decimal_text(shares)
+            entry["amount"] = _decimal_text(amount)
+            corrected += 1
+        return corrected
+
+    def reconcile_profit_entries(self) -> int:
+        with _STATE_LOCK:
+            corrected = self._reconcile_profit_entries()
+            if corrected:
+                self.save()
+            return corrected
+
     def _entry_exists(self, product_key: str, nav_date: date) -> bool:
         entry_id = f"{product_key}:{nav_date.isoformat()}"
         return any(item.get("id") == entry_id for item in self.state["profit_entries"])
@@ -392,6 +427,7 @@ class NavDashboardStore:
             self._sync_portfolio(cfg, discovered_at, initial=False)
             for product_key, records in histories.items():
                 self._record_product_history(product_key, records, discovered_at)
+            self._reconcile_profit_entries()
             self.state["last_attempt_at"] = _dt_text(discovered_at)
             if histories:
                 self.state["last_success_at"] = _dt_text(discovered_at)
@@ -419,6 +455,7 @@ class NavDashboardStore:
                     errors.append(f"{result.product.code}: {result.error}")
                     previous_snapshot = self.state["snapshots"].setdefault(product_key, {})
                     previous_snapshot["error"] = result.error
+            self._reconcile_profit_entries()
             self.state["initialized"] = True
             self.state["last_attempt_at"] = _dt_text(discovered_at)
             if successes:

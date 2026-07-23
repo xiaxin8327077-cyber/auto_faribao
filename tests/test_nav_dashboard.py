@@ -158,6 +158,157 @@ def test_delayed_nav_disclosure_uses_shares_at_discovery_time(tmp_path):
     assert entry["amount"] == "20.0000"
 
 
+def _stale_profit_entry(discovered_at: str = "2026-07-22T23:30:00") -> dict:
+    return {
+        "id": "citic_wealth:P1:2026-07-22",
+        "product_key": "citic_wealth:P1",
+        "provider": "citic_wealth",
+        "code": "P1",
+        "name": "产品P1",
+        "nav_date": "2026-07-22",
+        "discovered_at": discovered_at,
+        "discovered_date": "2026-07-22",
+        "previous_nav": "1.0010",
+        "unit_nav": "1.0020",
+        "delta": "0.0010",
+        "shares": "10000",
+        "amount": "10.0000",
+    }
+
+
+def _store_with_stale_profit(tmp_path) -> NavDashboardStore:
+    store = NavDashboardStore(tmp_path / "state.json")
+    store.initialize_from_history(
+        _cfg(),
+        {"citic_wealth:P1": [_record("2026-07-21", "1.0010")]},
+        _dt("2026-07-21 10:00"),
+    )
+    store.sync_portfolio(_cfg("20000"), _dt("2026-07-22 14:00"))
+    store.state["profit_entries"] = [_stale_profit_entry()]
+    return store
+
+
+def test_reconcile_profit_entries_corrects_in_place_and_is_idempotent(tmp_path, monkeypatch):
+    store = _store_with_stale_profit(tmp_path)
+    save_calls = []
+    original_save = store.save
+
+    def tracked_save():
+        save_calls.append(True)
+        original_save()
+
+    monkeypatch.setattr(store, "save", tracked_save)
+
+    assert store.reconcile_profit_entries() == 1
+    assert len(store.state["profit_entries"]) == 1
+    assert store.state["profit_entries"][0]["shares"] == "20000"
+    assert store.state["profit_entries"][0]["amount"] == "20.0000"
+    assert len(save_calls) == 1
+
+    state_after_first_call = store.state.copy()
+    assert store.reconcile_profit_entries() == 0
+    assert store.state == state_after_first_call
+    assert len(save_calls) == 1
+
+
+def test_reconcile_does_not_apply_share_event_after_entry_discovery(tmp_path):
+    store = _store_with_stale_profit(tmp_path)
+    store.state["profit_entries"][0] = _stale_profit_entry("2026-07-22T10:00:00")
+
+    assert store.reconcile_profit_entries() == 0
+    assert store.state["profit_entries"][0]["shares"] == "10000"
+    assert store.state["profit_entries"][0]["amount"] == "10.0000"
+
+
+def test_record_results_reconciles_existing_duplicate_entry(tmp_path):
+    store = _store_with_stale_profit(tmp_path)
+    changed_cfg = _cfg("20000")
+
+    store.record_results(
+        changed_cfg,
+        [_result("2026-07-22", "1.0020", "2026-07-21", "1.0010", shares="20000")],
+        _dt("2026-07-23 09:00"),
+    )
+
+    assert len(store.state["profit_entries"]) == 1
+    assert store.state["profit_entries"][0]["shares"] == "20000"
+    assert store.state["profit_entries"][0]["amount"] == "20.0000"
+
+
+def test_record_history_reconciles_existing_entry(tmp_path):
+    store = _store_with_stale_profit(tmp_path)
+
+    store.record_history(_cfg("20000"), {}, _dt("2026-07-23 09:00"))
+
+    assert store.state["profit_entries"][0]["shares"] == "20000"
+    assert store.state["profit_entries"][0]["amount"] == "20.0000"
+
+
+def test_reconcile_skips_entry_with_invalid_discovered_at(tmp_path, caplog):
+    store = _store_with_stale_profit(tmp_path)
+    store.state["profit_entries"][0]["discovered_at"] = "not-a-time"
+
+    assert store.reconcile_profit_entries() == 0
+    assert store.state["profit_entries"][0]["amount"] == "10.0000"
+    assert "invalid discovered_at" in caplog.text
+
+
+def test_reconcile_2026_07_22_profit_matches_enterprise_result(tmp_path):
+    store = NavDashboardStore(tmp_path / "state.json")
+    changed_at = "2026-07-22T14:00:00"
+    discovered_at = "2026-07-22T23:30:31"
+    rows = [
+        ("AF233276B", "401133.95", "0.000200", "401133.95", "80.226790"),
+        ("AF212017B", "36667.07", "0.002200", "9821.43", "80.667554"),
+        ("AF247389H", "39815.49", "0.001100", "10649.63", "43.797039"),
+        ("A32069", "101423.76", "0.000183", "101423.76", "18.56054808"),
+        ("AF233398B", "87728.31", "0.000100", "13808.34", "8.772831"),
+    ]
+
+    for code, old_shares, delta, current_shares, old_amount in rows:
+        product_key = f"citic_wealth:{code}"
+        share_events = [
+            {
+                "changed_at": "2026-07-01T00:00:00",
+                "effective_date": "2026-07-01",
+                "shares": old_shares,
+                "include_start": True,
+            }
+        ]
+        if current_shares != old_shares:
+            share_events.append(
+                {
+                    "changed_at": changed_at,
+                    "effective_date": "2026-07-22",
+                    "shares": current_shares,
+                    "include_start": False,
+                }
+            )
+        store.state["products"][product_key] = {"share_events": share_events}
+        store.state["profit_entries"].append(
+            {
+                "id": f"{product_key}:2026-07-22",
+                "product_key": product_key,
+                "provider": "citic_wealth",
+                "code": code,
+                "name": code,
+                "nav_date": "2026-07-22",
+                "discovered_at": discovered_at,
+                "discovered_date": "2026-07-22",
+                "previous_nav": "1",
+                "unit_nav": str(Decimal("1") + Decimal(delta)),
+                "delta": delta,
+                "shares": old_shares,
+                "amount": old_amount,
+            }
+        )
+
+    assert store.reconcile_profit_entries() == 3
+    payload = store.payload(now=_dt("2026-07-23 08:00"))
+    assert payload["latest_profit_date"] == "2026-07-22"
+    assert payload["latest_profit"] == "133.48991108"
+
+
 def test_deleted_product_keeps_historical_profit(tmp_path):
     store = NavDashboardStore(tmp_path / "state.json")
     cfg = _cfg()
