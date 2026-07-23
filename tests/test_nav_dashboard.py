@@ -98,6 +98,66 @@ def test_share_change_only_affects_future_nav(tmp_path):
     assert Decimal(store.payload(changed_cfg)["cumulative_profit"]) == Decimal("30.0000")
 
 
+def test_same_day_share_change_before_discovery_uses_new_shares(tmp_path):
+    store = NavDashboardStore(tmp_path / "state.json")
+    store.initialize_from_history(
+        _cfg(),
+        {"citic_wealth:P1": [_record("2026-07-21", "1.0010")]},
+        _dt("2026-07-21 10:00"),
+    )
+    changed_cfg = _cfg("20000")
+    store.sync_portfolio(changed_cfg, _dt("2026-07-22 14:00"))
+    store.record_results(
+        changed_cfg,
+        [_result("2026-07-22", "1.0020", "2026-07-21", "1.0010", shares="20000")],
+        _dt("2026-07-22 23:30"),
+    )
+
+    entry = store.state["profit_entries"][0]
+    assert entry["shares"] == "20000"
+    assert entry["amount"] == "20.0000"
+
+
+def test_share_change_after_discovery_keeps_booked_profit(tmp_path):
+    store = NavDashboardStore(tmp_path / "state.json")
+    cfg = _cfg()
+    item = _result("2026-07-22", "1.0020", "2026-07-21", "1.0010")
+    store.initialize_from_history(
+        cfg,
+        {"citic_wealth:P1": [_record("2026-07-21", "1.0010")]},
+        _dt("2026-07-21 10:00"),
+    )
+    store.record_results(cfg, [item], _dt("2026-07-22 10:00"))
+
+    changed_cfg = _cfg("20000")
+    store.sync_portfolio(changed_cfg, _dt("2026-07-22 11:00"))
+    store.record_results(changed_cfg, [item], _dt("2026-07-22 12:00"))
+
+    assert len(store.state["profit_entries"]) == 1
+    assert store.state["profit_entries"][0]["shares"] == "10000"
+    assert store.state["profit_entries"][0]["amount"] == "10.0000"
+
+
+def test_delayed_nav_disclosure_uses_shares_at_discovery_time(tmp_path):
+    store = NavDashboardStore(tmp_path / "state.json")
+    store.initialize_from_history(
+        _cfg(),
+        {"citic_wealth:P1": [_record("2026-07-20", "1.0010")]},
+        _dt("2026-07-20 10:00"),
+    )
+    changed_cfg = _cfg("20000")
+    store.sync_portfolio(changed_cfg, _dt("2026-07-22 14:00"))
+    store.record_results(
+        changed_cfg,
+        [_result("2026-07-21", "1.0020", "2026-07-20", "1.0010", shares="20000")],
+        _dt("2026-07-23 09:00"),
+    )
+
+    entry = store.state["profit_entries"][0]
+    assert entry["shares"] == "20000"
+    assert entry["amount"] == "20.0000"
+
+
 def test_deleted_product_keeps_historical_profit(tmp_path):
     store = NavDashboardStore(tmp_path / "state.json")
     cfg = _cfg()

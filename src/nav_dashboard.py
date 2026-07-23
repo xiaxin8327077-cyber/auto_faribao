@@ -296,18 +296,30 @@ class NavDashboardStore:
             self.save()
             return self.state
 
-    def _shares_for_date(self, meta: dict, nav_date: date):
-        selected = None
+    def _nav_date_is_eligible(self, meta: dict, nav_date: date) -> bool:
         for event in meta.get("share_events", []):
             try:
                 effective = date.fromisoformat(event["effective_date"])
             except (KeyError, ValueError):
                 continue
-            eligible = nav_date > effective or (
+            return nav_date > effective or (
                 nav_date == effective and bool(event.get("include_start"))
             )
-            if eligible:
+        return False
+
+    def _shares_for_observation(self, meta: dict, observed_at: datetime):
+        selected = None
+        selected_at = None
+        for event in meta.get("share_events", []):
+            changed_at = _parse_dt(str(event.get("changed_at") or ""))
+            if changed_at is None:
+                logger.warning("Ignoring dashboard share event with invalid changed_at")
+                continue
+            if changed_at <= observed_at and (
+                selected_at is None or changed_at >= selected_at
+            ):
                 selected = event
+                selected_at = changed_at
         return _decimal(selected.get("shares")) if selected else None
 
     def _entry_exists(self, product_key: str, nav_date: date) -> bool:
@@ -318,9 +330,11 @@ class NavDashboardStore:
         meta = self.state["products"].get(product_key)
         if not meta or not previous or not latest or latest.nav_date <= previous.nav_date:
             return
+        if not self._nav_date_is_eligible(meta, latest.nav_date):
+            return
         if self._entry_exists(product_key, latest.nav_date):
             return
-        shares = self._shares_for_date(meta, latest.nav_date)
+        shares = self._shares_for_observation(meta, discovered_at)
         if shares is None:
             return
         delta = latest.unit_nav - previous.unit_nav
