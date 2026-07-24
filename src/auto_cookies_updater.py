@@ -118,7 +118,7 @@ def _revert_config(config_path: str, old_cookies: dict):
 
 def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tuple[bool, list, str]:
     new_cookies = parse_cookies_from_text(text_content)
-    logger.info(f"Parsed cookies from wechat: {new_cookies}")
+    logger.info(f"Parsed {len(new_cookies)} cookie fields from wechat: {list(new_cookies.keys())}")
 
     if not new_cookies:
         return False, [], "未解析到有效的 Cookie 字段，请检查格式"
@@ -133,7 +133,7 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
 
     logger.info("Verifying new cookies...")
     from src.config import load_config
-    from src.cookies_checker import check_cookies, CookiesError
+    from src.cookies_checker import check_cookies, CookiesError, CookiesNetworkError
     from src.wechat_notifier import notify_cookies_valid, notify_cookies_invalid
 
     new_cfg = load_config(config_path)
@@ -142,6 +142,9 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
         logger.info("New cookies are valid!")
         notify_cookies_valid(new_cfg, updated_fields)
         return True, updated_fields, ""
+    except CookiesNetworkError as e:
+        logger.warning(f"New cookies verification encountered network error: {e}")
+        return True, updated_fields, f"配置已更新，但验证时网络超时（不影响使用）。错误：{e}"
     except CookiesError as e:
         logger.error(f"New cookies verification failed: {e}")
         _revert_config(config_path, old_cookies)

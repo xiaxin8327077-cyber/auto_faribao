@@ -334,7 +334,7 @@ def notify_cookies_valid(cfg, updated_fields: list):
 > **验证日期**：{report_date} {weekday_cn}
 > **更新字段**：{fields_str}
 
-新 Cookies 已通过验证并生效，系统将继续正常运行。
+新 Cookies 已通过验证并写入配置，正在同步服务运行时配置。
 """
     send_markdown(cfg.wechat, md_content)
 

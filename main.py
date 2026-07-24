@@ -162,21 +162,26 @@ def _test_extract(cfg) -> int:
 
 
 def _check_cookies(cfg) -> int:
-    from src.cookies_checker import check_cookies, CookiesError
+    from src.cookies_checker import check_cookies, CookiesError, CookiesNetworkError
     from src.wechat_notifier import notify_cookies_expired as wechat_notify_cookies_expired
+    from src.wechat_notifier import notify_cookies_network_error as wechat_notify_cookies_network_error
 
     logger.info("=== Checking smart sheet cookies ===")
     try:
         check_cookies(cfg)
         logger.info("Cookies are valid")
         return 0
+    except CookiesNetworkError as e:
+        logger.error(f"Smart sheet network check failed after retry: {e}")
+        wechat_notify_cookies_network_error(cfg, str(e))
+        return 1
     except CookiesError as e:
         logger.error(f"Cookies check failed: {e}")
         wechat_notify_cookies_expired(cfg, str(e))
         return 1
     except Exception as e:
         logger.error(f"Cookies check error: {e}", exc_info=True)
-        wechat_notify_cookies_expired(cfg, str(e))
+        wechat_notify_cookies_network_error(cfg, str(e))
         return 1
 
 

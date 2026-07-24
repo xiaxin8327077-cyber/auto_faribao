@@ -724,7 +724,19 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
                                         from_user_id,
                                     )
                             elif success and not updated_fields:
-                                _send_wechat_text(cfg.wechat, "ℹ️ Cookies 无需更新\n所有字段值与配置相同，无需更新", from_user_id)
+                                try:
+                                    _refresh_runtime_source(cfg, config_path)
+                                    _send_wechat_text(
+                                        cfg.wechat,
+                                        "✅ Cookies 运行时配置已同步，无需重启服务。",
+                                        from_user_id,
+                                    )
+                                except Exception as exc:
+                                    _send_wechat_text(
+                                        cfg.wechat,
+                                        f"⚠️ Cookies 运行时同步失败，需要重启服务。\n{exc}",
+                                        from_user_id,
+                                    )
                         except Exception as e:
                             logger.error(f"Process cookies error: {e}")
                             _send_wechat_text(cfg.wechat, f"❌ 处理异常\n{e}", from_user_id)
@@ -890,14 +902,16 @@ AF233262B 20000
 
                     def process_check_cookies():
                         try:
-                            from src.cookies_checker import check_cookies, CookiesError
+                            from src.cookies_checker import check_cookies, CookiesError, CookiesNetworkError
                             try:
                                 check_cookies(cfg)
                                 reply = "✅ Cookies 状态正常\n智能表格读取功能可用"
+                            except CookiesNetworkError as e:
+                                reply = f"⚠️ 智能文档访问异常\n{e}\n\n未判定 Cookies 失效，未生成二维码。\n请稍后重试。"
                             except CookiesError as e:
                                 reply = f"❌ Cookies 已过期\n{e}\n\n请发送「生成二维码」重新扫码登录"
                             except Exception as e:
-                                reply = f"❌ 检查失败\n{e}"
+                                reply = f"⚠️ 智能文档访问异常\n{e}\n\n未判定 Cookies 失效，未生成二维码。\n请稍后重试。"
                             _send_wechat_text(cfg.wechat, reply, from_user_id)
                         except Exception as e:
                             logger.error(f"Check cookies command failed: {e}", exc_info=True)
@@ -2482,7 +2496,14 @@ def _handle_pending_no(cfg, from_user_id: str):
     _send_wechat_text(cfg.wechat, "⏳ 已确认，正在生成扫码登录二维码...", from_user_id)
 
     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
-    started = start_renew_cookies_by_qr(config_path, from_user_id, "定时日报提交时发现Cookies过期，用户选择不沿用前一天日报")
+    started = start_renew_cookies_by_qr(
+        config_path,
+        from_user_id,
+        "定时日报提交时发现Cookies过期，用户选择不沿用前一天日报",
+        on_complete=lambda success, message: _finish_manual_qr_with_refresh(
+            cfg, config_path, from_user_id, success, message,
+        ),
+    )
     if not started:
         _send_wechat_text(cfg.wechat, "ℹ️ 已有二维码登录任务在进行中，请先完成当前扫码", from_user_id)
     logger.info("Pending confirmation: user chose NO, started QR renew")
