@@ -108,7 +108,10 @@ def _check_cookies_once(cfg: Config) -> bool:
                         f"Smart sheet access failed: {exc}"
                     ) from exc
                 finally:
-                    browser.close()
+                    try:
+                        browser.close()
+                    except Exception:
+                        logger.debug("Browser close failed; ignoring", exc_info=True)
     except CookiesError:
         raise
     except CookiesNetworkError:

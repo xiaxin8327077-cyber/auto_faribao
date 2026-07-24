@@ -125,7 +125,21 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
 
     updated_fields = _get_updated_fields(config_path, new_cookies)
     if not updated_fields:
-        return True, [], "没有需要更新的 Cookie 字段（值与配置相同）"
+        # 磁盘已有相同Cookie，仍需验证才允许同步运行时
+        logger.info("No cookie fields changed; verifying existing cookies...")
+        from src.config import load_config
+        from src.cookies_checker import check_cookies, CookiesError, CookiesNetworkError
+
+        existing_cfg = load_config(config_path)
+        try:
+            check_cookies(existing_cfg)
+            return True, [], ""
+        except CookiesNetworkError as e:
+            return False, [], f"Cookie 值未变化，但验证时网络超时，未同步运行时。\n错误：{e}"
+        except CookiesError as e:
+            return False, [], f"Cookie 值未变化，但验证发现已失效。\n错误：{e}"
+        except Exception as e:
+            return False, [], f"Cookie 值未变化，但验证时出错。\n错误：{e}"
 
     old_cookies = _get_current_cookie_values(config_path, updated_fields)
     if not update_config_cookies(config_path, new_cookies):

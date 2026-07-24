@@ -737,6 +737,12 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
                                         f"⚠️ Cookies 运行时同步失败，需要重启服务。\n{exc}",
                                         from_user_id,
                                     )
+                            elif not success:
+                                _send_wechat_text(
+                                    cfg.wechat,
+                                    f"❌ Cookies 更新失败\n{error_msg}",
+                                    from_user_id,
+                                )
                         except Exception as e:
                             logger.error(f"Process cookies error: {e}")
                             _send_wechat_text(cfg.wechat, f"❌ 处理异常\n{e}", from_user_id)

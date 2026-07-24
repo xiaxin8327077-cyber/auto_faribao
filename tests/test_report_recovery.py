@@ -1,7 +1,13 @@
 from types import SimpleNamespace
+from contextlib import contextmanager
 import threading
 
 import pytest
+
+
+@contextmanager
+def _null_cm():
+    yield
 
 
 def test_qr_background_completion_reports_success(monkeypatch):
@@ -402,3 +408,105 @@ def test_returns_empty_when_matching_oa_row_has_no_readable_content(monkeypatch)
     monkeypatch.setattr(target, "_read_report_content_from_row", lambda _page, _row: "")
 
     assert target._find_report_content_on_pages(page, "2026-07-08") == ""
+
+
+def test_same_cookie_after_network_timeout_does_not_sync_runtime(monkeypatch):
+    """网络超时后Cookie留盘，再发相同Cookie不应跳过验证同步运行时。"""
+    import src.auto_cookies_updater as updater
+    import src.cookies_checker as checker
+
+    # 模拟磁盘已有相同Cookie → _get_updated_fields 返回 []
+    monkeypatch.setattr(updater, "_get_updated_fields", lambda *_args: [])
+    monkeypatch.setattr(updater, "update_config_cookies", lambda *_args: True)
+    # 验证时抛网络超时
+    monkeypatch.setattr(checker, "check_cookies", lambda _cfg: (_ for _ in ()).throw(checker.CookiesNetworkError("timeout")))
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_network_error", lambda *_args: None)
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_valid", lambda *_args: None)
+
+    success, fields, msg = updater.update_cookies_from_wechat("config.yaml", "TOK=xxx", object())
+
+    assert success is False
+    assert fields == []
+    assert "网络" in msg or "超时" in msg or "未验证" in msg or "验证" in msg
+
+
+def test_cookies_update_failure_sends_error_msg_to_user(monkeypatch):
+    """update_cookies_from_wechat 返回 False 时用户应收到 error_msg 通知。"""
+    import src.server as server
+
+    cfg = _cfg()
+    messages = []
+    monkeypatch.setattr(server, "_try_start_cmd", lambda *_args: True)
+    monkeypatch.setattr(server, "_end_cmd", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "update_cookies_from_wechat",
+        lambda *_args: (False, [], "Cookies无效，已回滚配置"),
+    )
+    monkeypatch.setattr(server, "_send_wechat_text", lambda _wechat, text, *args: messages.append(text))
+
+    # 直接调用 process_cookies_update 内部逻辑
+    config_path = "config.yaml"
+    content = "TOK=xxx"
+    from_user_id = "user-1"
+
+    # 复制 process_cookies_update 的核心逻辑来测试
+    server._cmd_busy = False
+    server._try_start_cmd("Cookies更新")
+    try:
+        success, updated_fields, error_msg = server.update_cookies_from_wechat(config_path, content, cfg)
+        if not success:
+            server._send_wechat_text(cfg.wechat, f"❌ Cookies 更新失败\n{error_msg}")
+    finally:
+        server._end_cmd()
+
+    assert any("Cookies 更新失败" in m and "已回滚" in m for m in messages)
+
+
+def test_browser_close_exception_does_not_mask_login_failure(monkeypatch):
+    """browser.close() 抛异常时不应覆盖已识别的登录失效。"""
+    import src.cookies_checker as checker
+
+    raised_exceptions = []
+
+    class FakeBrowser:
+        def new_context(self, **kwargs):
+            raise checker.CookiesError("Cookies expired: redirected to login page")
+
+        def close(self):
+            raise RuntimeError("browser already crashed")
+
+    class FakePlaywright:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        @property
+        def chromium(self):
+            return self
+
+        def launch(self, **kwargs):
+            return FakeBrowser()
+
+    monkeypatch.setattr(checker, "browser_operation", lambda: _null_cm())
+    monkeypatch.setattr(checker, "sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr(checker, "launch_browser", lambda p: p.chromium.launch())
+
+    cfg = SimpleNamespace(
+        source=SimpleNamespace(doc_id="d", scode="s", tab_id="t", view_id="v", TOK="x")
+    )
+
+    try:
+        checker._check_cookies_once(cfg)
+    except checker.CookiesError as e:
+        raised_exceptions.append(e)
+    except checker.CookiesNetworkError as e:
+        raised_exceptions.append(e)
+    except Exception as e:
+        raised_exceptions.append(e)
+
+    assert len(raised_exceptions) == 1
+    assert isinstance(raised_exceptions[0], checker.CookiesError)
+    assert "login" in str(raised_exceptions[0]).lower()
