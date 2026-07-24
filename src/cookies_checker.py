@@ -38,20 +38,19 @@ def _check_cookies_once(cfg: Config) -> bool:
 
     logger.info("Checking smart sheet cookies...")
 
-    browser = None
     try:
         with browser_operation():
             with sync_playwright() as p:
                 browser = launch_browser(p)
-                context = browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
-                    locale="zh-CN",
-                )
-                context.add_cookies(js_cookies)
-                page = context.new_page()
-                page.set_default_timeout(30000)
-
                 try:
+                    context = browser.new_context(
+                        viewport={"width": 1920, "height": 1080},
+                        locale="zh-CN",
+                    )
+                    context.add_cookies(js_cookies)
+                    page = context.new_page()
+                    page.set_default_timeout(30000)
+
                     page.goto(doc_url, timeout=30000, wait_until="commit")
                     try:
                         page.wait_for_load_state("domcontentloaded", timeout=15000)
@@ -93,7 +92,10 @@ def _check_cookies_once(cfg: Config) -> bool:
                         logger.info("Cookies are valid")
                         return True
 
-                    raise CookiesError(f"Cookies may be expired: {result.get('reason', 'unknown')}")
+                    reason = result.get('reason', 'unknown')
+                    raise CookiesNetworkError(
+                        f"Smart sheet SDK check failed: {reason}"
+                    )
 
                 except PlaywrightTimeout as exc:
                     raise CookiesNetworkError(
@@ -105,16 +107,14 @@ def _check_cookies_once(cfg: Config) -> bool:
                     raise CookiesNetworkError(
                         f"Smart sheet access failed: {exc}"
                     ) from exc
+                finally:
+                    browser.close()
     except CookiesError:
+        raise
+    except CookiesNetworkError:
         raise
     except Exception as exc:
         raise CookiesNetworkError(f"Smart sheet browser or network error: {exc}") from exc
-    finally:
-        if browser is not None:
-            try:
-                browser.close()
-            except Exception:
-                pass
 
 
 def _build_cookies(source) -> list[dict]:

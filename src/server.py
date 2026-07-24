@@ -2496,13 +2496,27 @@ def _handle_pending_no(cfg, from_user_id: str):
     _send_wechat_text(cfg.wechat, "⏳ 已确认，正在生成扫码登录二维码...", from_user_id)
 
     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
+
+    def _on_pending_no_complete(success: bool, message: str) -> None:
+        if not success:
+            _send_wechat_text(cfg.wechat, f"❌ Cookies 续期未完成\n{message}\n今日日报尚未提交。")
+            return
+        try:
+            _refresh_runtime_source(cfg, config_path)
+            _send_wechat_text(cfg.wechat, "✅ Cookies 运行时配置已同步，无需重启服务。", from_user_id)
+        except Exception as exc:
+            logger.error(f"Pending-no runtime refresh failed: {exc}", exc_info=True)
+            _send_wechat_text(
+                cfg.wechat,
+                f"⚠️ Cookies 已写入配置，但运行时同步失败，需要重启服务。\n{exc}",
+                from_user_id,
+            )
+
     started = start_renew_cookies_by_qr(
         config_path,
         from_user_id,
         "定时日报提交时发现Cookies过期，用户选择不沿用前一天日报",
-        on_complete=lambda success, message: _finish_manual_qr_with_refresh(
-            cfg, config_path, from_user_id, success, message,
-        ),
+        on_complete=_on_pending_no_complete,
     )
     if not started:
         _send_wechat_text(cfg.wechat, "ℹ️ 已有二维码登录任务在进行中，请先完成当前扫码", from_user_id)
