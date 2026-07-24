@@ -506,6 +506,32 @@ def test_network_timeout_reverts_disk_cookies(monkeypatch, tmp_path):
     assert disk["source"]["TOK"] == "old_val"
 
 
+def test_revert_failure_does_not_claim_rolled_back(monkeypatch, tmp_path):
+    """_revert_config 回滚失败时，不应宣称已回滚。"""
+    import yaml
+    import src.auto_cookies_updater as updater
+    import src.cookies_checker as checker
+
+    config_path = tmp_path / "config.yaml"
+    old_data = {
+        "source": {"TOK": "old_val", "doc_id": "d", "scode": "s", "tab_id": "t", "view_id": "v"},
+    }
+    config_path.write_text(yaml.dump(old_data), encoding="utf-8")
+
+    # check_cookies 抛网络超时触发回滚
+    monkeypatch.setattr(checker, "check_cookies", lambda _cfg: (_ for _ in ()).throw(checker.CookiesNetworkError("timeout")))
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_valid", lambda *_args: None)
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_invalid", lambda *_args: None)
+    # 注入回滚失败（模拟真实_revert_config内部异常被捕获后返回False）
+    monkeypatch.setattr(updater, "_revert_config", lambda *_args: False)
+
+    success, fields, msg = updater.update_cookies_from_wechat(str(config_path), "TOK=new_val", object())
+
+    assert success is False
+    assert "已回滚" not in msg
+    assert "回滚失败" in msg or "回滚" in msg
+
+
 def test_browser_close_exception_does_not_mask_login_failure(monkeypatch):
     """browser.close() 抛异常时不应覆盖已识别的登录失效。"""
     import src.cookies_checker as checker

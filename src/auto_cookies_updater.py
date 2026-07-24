@@ -101,7 +101,7 @@ def _get_current_cookie_values(config_path: str, fields: list) -> dict:
         return {}
 
 
-def _revert_config(config_path: str, old_cookies: dict):
+def _revert_config(config_path: str, old_cookies: dict) -> bool:
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
@@ -112,8 +112,10 @@ def _revert_config(config_path: str, old_cookies: dict):
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
         logger.info("Config reverted after verification failure")
+        return True
     except Exception as e:
         logger.error(f"Failed to revert config: {e}")
+        return False
 
 
 def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tuple[bool, list, str]:
@@ -158,13 +160,17 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
         return True, updated_fields, ""
     except CookiesNetworkError as e:
         logger.warning(f"New cookies verification encountered network error: {e}")
-        _revert_config(config_path, old_cookies)
-        return False, [], f"配置已写入但验证时网络超时，已回滚磁盘配置。请稍后重试。\n错误：{e}"
+        reverted = _revert_config(config_path, old_cookies)
+        if reverted:
+            return False, [], f"配置已写入但验证时网络超时，已回滚磁盘配置。请稍后重试。\n错误：{e}"
+        return False, [], f"配置已写入但验证时网络超时，且回滚失败！磁盘仍为新Cookie，需手动检查或重启服务。\n错误：{e}"
     except CookiesError as e:
         logger.error(f"New cookies verification failed: {e}")
-        _revert_config(config_path, old_cookies)
-        notify_cookies_invalid(new_cfg, str(e))
-        return False, [], f"Cookies无效，已回滚配置。\n错误：{e}"
+        reverted = _revert_config(config_path, old_cookies)
+        if reverted:
+            notify_cookies_invalid(new_cfg, str(e))
+            return False, [], f"Cookies无效，已回滚配置。\n错误：{e}"
+        return False, [], f"Cookies无效，且回滚失败！磁盘仍为新Cookie，需手动检查或重启服务。\n错误：{e}"
     except Exception as e:
         logger.error(f"Verification error: {e}", exc_info=True)
         err_msg = str(e)[:100] + "..." if len(str(e)) > 100 else str(e)
