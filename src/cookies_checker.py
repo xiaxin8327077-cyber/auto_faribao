@@ -12,10 +12,26 @@ class CookiesError(Exception):
     pass
 
 
+class CookiesNetworkError(CookiesError):
+    pass
+
+
 def check_cookies(cfg: Config) -> bool:
     """Check if smart sheet cookies are still valid.
     Returns True if valid, raises CookiesError if expired.
+    Retries once on network timeout before raising CookiesNetworkError.
     """
+    for attempt in range(2):
+        try:
+            return _check_cookies_once(cfg)
+        except CookiesNetworkError:
+            if attempt == 1:
+                raise
+            logger.warning("Smart sheet network check timed out; retrying once")
+    return False
+
+
+def _check_cookies_once(cfg: Config) -> bool:
     source = cfg.source
     doc_url = f"{DOC_BASE}/smartsheet/{source.doc_id}?scode={source.scode}&tab={source.tab_id}&viewId={source.view_id}"
     js_cookies = _build_cookies(source)
@@ -40,8 +56,13 @@ def check_cookies(cfg: Config) -> bool:
                 except PlaywrightTimeout:
                     logger.info("Document DOMContentLoaded did not finish; continuing with SDK wait")
                 page.wait_for_timeout(3000)
-                if "login" in page.url.lower():
+
+                page_text = page.inner_text("body")[:500]
+                if "login" in page.url.lower() or "登录" in page_text:
                     raise CookiesError("Cookies expired: redirected to login page")
+                if "无权限" in page_text or "没有权限" in page_text:
+                    raise CookiesError("Cookies expired: no permission to access document")
+
                 page.wait_for_function(
                     """() => {
                         return !!(
@@ -70,20 +91,18 @@ def check_cookies(cfg: Config) -> bool:
                     logger.info("Cookies are valid")
                     return True
 
-                page_text = page.inner_text("body")[:500]
-                if "登录" in page_text or "login" in page_text.lower():
-                    raise CookiesError("Cookies expired: redirected to login page")
-                if "无权限" in page_text or "没有权限" in page_text:
-                    raise CookiesError("Cookies expired: no permission to access document")
-
                 raise CookiesError(f"Cookies may be expired: {result.get('reason', 'unknown')}")
 
-            except PlaywrightTimeout:
-                raise CookiesError("Page load timeout - network issue or cookies expired")
+            except PlaywrightTimeout as exc:
+                raise CookiesNetworkError(
+                    "Smart sheet page or SDK load timed out"
+                ) from exc
             except CookiesError:
                 raise
-            except Exception as e:
-                raise CookiesError(f"Cookies check failed: {e}")
+            except Exception as exc:
+                raise CookiesNetworkError(
+                    f"Smart sheet access failed: {exc}"
+                ) from exc
             finally:
                 browser.close()
 

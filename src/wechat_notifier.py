@@ -257,6 +257,28 @@ def notify_report_failure(cfg, error: str, report_date: str = None, report_sourc
                 logger.warning(f"Failed to send screenshot to wechat: {e}")
 
 
+def notify_cookies_network_error(cfg, error: str):
+    if not _is_configured(cfg):
+        return
+    now = beijing_now()
+    send_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    md_content = f"""## ⚠️ 智能文档访问异常
+
+> **检测状态**：网络或页面加载异常
+> **检测时间**：{send_time}
+> **Cookie 判断**：未判定失效
+> **自动续期**：未启动
+
+### 错误详情
+```text
+{error}
+```
+
+系统已自动重试一次。请稍后再次检查；只有明确登录失效时才会生成扫码二维码。
+"""
+    send_markdown(cfg.wechat, md_content)
+
+
 def notify_cookies_expired(cfg, error: str):
     if not _is_configured(cfg):
         return

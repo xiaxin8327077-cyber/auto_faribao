@@ -239,21 +239,24 @@ def _half_year_start(day: date) -> date:
 
 
 def _run_cookies_check(cfg):
-    from src.cookies_checker import check_cookies, CookiesError
-    from src.notifier import notify_cookies_expired
+    from src.cookies_checker import check_cookies, CookiesError, CookiesNetworkError
+    from src.notifier import notify_cookies_expired, notify_cookies_network_error
 
     try:
         check_cookies(cfg)
         logger.info("Cookies check passed")
-    except CookiesError as e:
-        logger.error(f"Cookies check failed: {e}")
-        notify_cookies_expired(cfg, f"Cookies 过期或无效: {e}")
-        _start_qr_renew(cfg, f"自动检测到 Cookies 过期或无效: {e}")
+    except CookiesNetworkError as exc:
+        logger.error("Smart sheet network check failed after retry: %s", exc)
+        notify_cookies_network_error(cfg, str(exc))
         return
-    except Exception as e:
-        logger.error(f"Cookies check error: {e}", exc_info=True)
-        notify_cookies_expired(cfg, f"Cookies 检查异常: {e}")
-        _start_qr_renew(cfg, f"自动检测到 Cookies 检查异常: {e}")
+    except CookiesError as exc:
+        logger.error(f"Cookies check failed: {exc}")
+        notify_cookies_expired(cfg, f"Cookies 过期或无效: {exc}")
+        _start_qr_renew(cfg, f"自动检测到 Cookies 过期或无效: {exc}")
+        return
+    except Exception as exc:
+        logger.error(f"Cookies check error: {exc}", exc_info=True)
+        notify_cookies_network_error(cfg, f"Cookies 检查异常: {exc}")
         return
 
 
@@ -262,7 +265,36 @@ def _start_qr_renew(cfg, reason: str):
         from src.qr_login_renewer import start_renew_cookies_by_qr
         import os
         config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")
-        start_renew_cookies_by_qr(config_path, getattr(cfg.wechat, "to_user", None), reason)
+
+        def on_complete(success: bool, message: str) -> None:
+            if not success:
+                return
+            try:
+                from src.config import refresh_source_config
+                from src.wechat_notifier import send_text
+
+                refresh_source_config(cfg, config_path)
+                update_runtime_config(cfg)
+                send_text(
+                    cfg.wechat,
+                    "✅ Cookies 运行时配置已同步，无需重启服务。",
+                    getattr(cfg.wechat, "to_user", None),
+                )
+            except Exception as exc:
+                logger.error("Refresh runtime source after QR renewal failed: %s", exc, exc_info=True)
+                from src.wechat_notifier import send_text
+                send_text(
+                    cfg.wechat,
+                    f"⚠️ Cookies 已写入配置，但运行时同步失败，需要重启服务。\n{exc}",
+                    getattr(cfg.wechat, "to_user", None),
+                )
+
+        start_renew_cookies_by_qr(
+            config_path,
+            getattr(cfg.wechat, "to_user", None),
+            reason,
+            on_complete=on_complete,
+        )
     except Exception as e:
         logger.error(f"Start QR renew failed: {e}", exc_info=True)
 

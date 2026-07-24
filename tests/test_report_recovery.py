@@ -56,6 +56,108 @@ def _cfg():
     return SimpleNamespace(wechat=SimpleNamespace(to_user="user-1"))
 
 
+def test_refresh_source_config_replaces_only_source(monkeypatch):
+    import src.config as config_module
+
+    current = config_module.Config({
+        "source": {"TOK": "old"},
+        "scheduler": {"report_submit_hour": 17},
+        "nav_monitor": {"enabled": True},
+        "wechat": {"corpid": "corp"},
+    })
+    fresh = config_module.Config({
+        "source": {"TOK": "new"},
+        "scheduler": {"report_submit_hour": 20},
+        "nav_monitor": {"enabled": False},
+        "wechat": {"corpid": "other"},
+    })
+    scheduler_obj = current.scheduler
+    nav_obj = current.nav_monitor
+    wechat_obj = current.wechat
+    monkeypatch.setattr(config_module, "load_config", lambda _path: fresh)
+
+    result = config_module.refresh_source_config(current, "config.yaml")
+
+    assert result is current
+    assert current.source.TOK == "new"
+    assert current.scheduler is scheduler_obj
+    assert current.nav_monitor is nav_obj
+    assert current.wechat is wechat_obj
+    assert current.scheduler.report_submit_hour == 17
+
+
+def test_server_refresh_runtime_source_updates_shared_config_and_scheduler(monkeypatch):
+    import src.server as server
+
+    cfg = SimpleNamespace(source=SimpleNamespace(TOK="old"))
+    fresh_source = SimpleNamespace(TOK="new")
+    updates = []
+
+    monkeypatch.setattr(
+        "src.config.refresh_source_config",
+        lambda current, _path: setattr(current, "source", fresh_source) or current,
+    )
+    monkeypatch.setattr("src.scheduler.update_runtime_config", updates.append)
+
+    result = server._refresh_runtime_source(cfg, "config.yaml")
+
+    assert result is cfg
+    assert cfg.source is fresh_source
+    assert updates == [cfg]
+
+
+def test_manual_qr_success_refreshes_runtime_before_releasing_command(monkeypatch):
+    import src.server as server
+
+    cfg = _cfg()
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "_refresh_runtime_source",
+        lambda value, path: calls.append(("refresh", value, path)) or value,
+    )
+    monkeypatch.setattr(
+        server,
+        "_send_wechat_text",
+        lambda _wechat, text, user=None: calls.append(("send", text, user)),
+    )
+    monkeypatch.setattr(server, "_finish_manual_qr_command", lambda ok, msg: calls.append(("finish", ok, msg)))
+
+    server._finish_manual_qr_with_refresh(
+        cfg, "config.yaml", "user-1", True, "扫码续期任务完成"
+    )
+
+    assert calls[0] == ("refresh", cfg, "config.yaml")
+    assert "运行时配置已同步" in calls[1][1]
+    assert calls[2] == ("finish", True, "扫码续期任务完成")
+
+
+def test_manual_qr_refresh_failure_warns_and_releases_command(monkeypatch):
+    import src.server as server
+
+    cfg = _cfg()
+    messages = []
+    finished = []
+    monkeypatch.setattr(
+        server,
+        "_refresh_runtime_source",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("reload failed")),
+    )
+    monkeypatch.setattr(
+        server,
+        "_send_wechat_text",
+        lambda _wechat, text, user=None: messages.append(text),
+    )
+    monkeypatch.setattr(server, "_finish_manual_qr_command", lambda ok, msg: finished.append((ok, msg)))
+
+    server._finish_manual_qr_with_refresh(
+        cfg, "config.yaml", "user-1", True, "扫码续期任务完成"
+    )
+
+    assert any("需要重启服务" in text for text in messages)
+    assert finished == [(False, "运行时配置同步失败: reload failed")]
+
+
 def test_auto_submit_checks_cookies_then_submits(monkeypatch):
     import src.cookies_checker as cookies_checker
     import src.report_builder as report_builder
@@ -87,10 +189,13 @@ def test_expired_cookie_resumes_once_with_reloaded_config(monkeypatch):
     import src.server as server
 
     old_cfg = _cfg()
+    old_cfg.source = SimpleNamespace(TOK="old")
     fresh_cfg = _cfg()
+    fresh_cfg.source = SimpleNamespace(TOK="new")
     callback = {}
     builds = []
     submits = []
+    runtime_updates = []
 
     def expired(_cfg):
         raise cookies_checker.CookiesError("expired")
@@ -101,11 +206,16 @@ def test_expired_cookie_resumes_once_with_reloaded_config(monkeypatch):
 
     monkeypatch.setattr(cookies_checker, "check_cookies", expired)
     monkeypatch.setattr(server, "start_renew_cookies_by_qr", start_renew)
-    monkeypatch.setattr(config_module, "load_config", lambda path: fresh_cfg)
+    monkeypatch.setattr(config_module, "load_config", lambda _path: fresh_cfg)
+    monkeypatch.setattr("src.scheduler.update_runtime_config", runtime_updates.append)
     monkeypatch.setattr(
         report_builder,
         "build_report_with_meta",
-        lambda value: builds.append(value) or ("正文", "smart_sheet", {"smart_doc_status": "normal"}),
+        lambda value: builds.append(value) or (
+            "正文",
+            "smart_sheet",
+            {"smart_doc_status": "normal"},
+        ),
     )
     monkeypatch.setattr(
         server,
@@ -116,15 +226,50 @@ def test_expired_cookie_resumes_once_with_reloaded_config(monkeypatch):
     assert server.auto_submit_if_needed(old_cfg) is False
     assert builds == []
 
-    workers = [threading.Thread(target=callback["fn"], args=(True, "ok")) for _ in range(2)]
+    workers = [
+        threading.Thread(target=callback["fn"], args=(True, "ok"))
+        for _ in range(2)
+    ]
     for worker in workers:
         worker.start()
     for worker in workers:
         worker.join()
     callback["fn"](True, "duplicate")
 
-    assert builds == [fresh_cfg]
-    assert submits == [("正文", fresh_cfg)]
+    assert builds == [old_cfg]
+    assert submits == [("正文", old_cfg)]
+    assert old_cfg.source.TOK == "new"
+    assert runtime_updates == [old_cfg]
+
+
+def test_auto_submit_network_error_does_not_start_qr_or_submit(monkeypatch):
+    import src.cookies_checker as cookies_checker
+    import src.report_builder as report_builder
+    import src.server as server
+
+    cfg = _cfg()
+    failures = []
+    monkeypatch.setattr(
+        cookies_checker,
+        "check_cookies",
+        lambda _cfg: (_ for _ in ()).throw(cookies_checker.CookiesNetworkError("timeout")),
+    )
+    monkeypatch.setattr(
+        server,
+        "start_renew_cookies_by_qr",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应生成二维码")),
+    )
+    monkeypatch.setattr(
+        report_builder,
+        "build_report_with_meta",
+        lambda _cfg: (_ for _ in ()).throw(AssertionError("不应读取文档")),
+    )
+    monkeypatch.setattr(server, "notify_report_failure", lambda *args, **kwargs: failures.append((args, kwargs)))
+
+    assert server.auto_submit_if_needed(cfg) is False
+    assert len(failures) == 1
+    assert "网络异常" in failures[0][0][1]
+    assert "未判定 Cookies 失效" in failures[0][0][1]
 
 
 def test_expired_cookie_failure_does_not_build_or_submit(monkeypatch):

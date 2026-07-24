@@ -186,6 +186,13 @@ def load_config(path: str) -> Config:
     return Config(data)
 
 
+def refresh_source_config(current_cfg: Config, path: str) -> Config:
+    """从磁盘重新加载 source 到共享 Config 实例，不替换其他运行时配置。"""
+    fresh_cfg = load_config(path)
+    current_cfg.source = fresh_cfg.source
+    return current_cfg
+
+
 def save_config(path: str, cfg: Config, original_data: dict = None) -> dict:
     """Save config back to file. If original_data provided, updates only relevant keys."""
     data = original_data or {}

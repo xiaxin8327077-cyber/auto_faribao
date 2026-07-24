@@ -4,6 +4,7 @@ from src.wechat_notifier import (
     notify_report_success as wechat_notify_report_success,
     notify_report_failure as wechat_notify_report_failure,
     notify_cookies_expired as wechat_notify_cookies_expired,
+    notify_cookies_network_error as wechat_notify_cookies_network_error,
     notify_cookies_valid as wechat_notify_cookies_valid,
     notify_cookies_invalid as wechat_notify_cookies_invalid,
 )
@@ -35,6 +36,11 @@ def notify_report_failure(cfg, error: str, report_date: str = None, report_sourc
 def notify_cookies_expired(cfg, error: str):
     if _has_wechat_config(cfg):
         wechat_notify_cookies_expired(cfg, error)
+
+
+def notify_cookies_network_error(cfg, error: str):
+    if _has_wechat_config(cfg):
+        wechat_notify_cookies_network_error(cfg, error)
 
 
 def notify_cookies_valid(cfg, updated_fields: list):

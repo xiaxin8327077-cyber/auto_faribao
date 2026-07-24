@@ -193,7 +193,7 @@ def _renew_cookies_by_qr_locked(config_path: str, cfg, to_user: str, reason: str
 > **验证状态**：有效
 > **更新字段**：{fields_str}
 
-新 Cookies 已通过智能文档验证并生效。""",
+新 Cookies 已通过智能文档验证并写入配置，正在同步服务运行时配置。""",
                 to_user,
             )
             return True, "扫码续期成功"

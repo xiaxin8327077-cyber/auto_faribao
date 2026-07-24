@@ -59,6 +59,45 @@ def _finish_manual_qr_command(success: bool, message: str) -> None:
         _end_cmd()
 
 
+def _refresh_runtime_source(cfg: Config, config_path: str) -> Config:
+    from src.config import refresh_source_config
+    from src.scheduler import update_runtime_config
+
+    refresh_source_config(cfg, config_path)
+    update_runtime_config(cfg)
+    return cfg
+
+
+def _finish_manual_qr_with_refresh(
+    cfg: Config,
+    config_path: str,
+    to_user: str,
+    success: bool,
+    message: str,
+) -> None:
+    final_success = success
+    final_message = message
+    try:
+        if success:
+            _refresh_runtime_source(cfg, config_path)
+            _send_wechat_text(
+                cfg.wechat,
+                "✅ Cookies 运行时配置已同步，无需重启服务。",
+                to_user,
+            )
+    except Exception as exc:
+        final_success = False
+        final_message = f"运行时配置同步失败: {exc}"
+        logger.error(final_message, exc_info=True)
+        _send_wechat_text(
+            cfg.wechat,
+            f"⚠️ Cookies 已验证并写入配置，但运行时同步失败，需要重启服务。\n{exc}",
+            to_user,
+        )
+    finally:
+        _finish_manual_qr_command(final_success, final_message)
+
+
 def _current_cmd() -> str:
     with _cmd_lock:
         return _cmd_name
@@ -670,7 +709,21 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
                     def process_cookies_update():
                         try:
                             success, updated_fields, error_msg = update_cookies_from_wechat(config_path, content, cfg)
-                            if success and not updated_fields:
+                            if success and updated_fields:
+                                try:
+                                    _refresh_runtime_source(cfg, config_path)
+                                    _send_wechat_text(
+                                        cfg.wechat,
+                                        "✅ Cookies 运行时配置已同步，无需重启服务。",
+                                        from_user_id,
+                                    )
+                                except Exception as exc:
+                                    _send_wechat_text(
+                                        cfg.wechat,
+                                        f"⚠️ Cookies 已写入配置，但运行时同步失败，需要重启服务。\n{exc}",
+                                        from_user_id,
+                                    )
+                            elif success and not updated_fields:
                                 _send_wechat_text(cfg.wechat, "ℹ️ Cookies 无需更新\n所有字段值与配置相同，无需更新", from_user_id)
                         except Exception as e:
                             logger.error(f"Process cookies error: {e}")
@@ -790,7 +843,13 @@ AF233262B 20000
                         config_path,
                         from_user_id,
                         "收到手动扫码登录指令",
-                        on_complete=_finish_manual_qr_command,
+                        on_complete=lambda success, message: _finish_manual_qr_with_refresh(
+                            cfg,
+                            config_path,
+                            from_user_id,
+                            success,
+                            message,
+                        ),
                     )
                     if not started:
                         _send_wechat_text(cfg.wechat, "ℹ️ 已有二维码登录续期任务正在进行中，请先完成当前扫码。", from_user_id)
@@ -2247,21 +2306,18 @@ def _start_report_cookie_renewal(cfg: Config, cookies_error: Exception) -> None:
             )
             return
 
-        notify_cfg = cfg
         try:
-            from src.config import load_config
-
-            notify_cfg = load_config(config_path)
-            auto_submit_if_needed(notify_cfg, precheck_cookies=False)
+            _refresh_runtime_source(cfg, config_path)
+            auto_submit_if_needed(cfg, precheck_cookies=False)
         except Exception as exc:
             logger.error(
-                "Cookie renewal succeeded but automatic report resume failed: %s",
+                "Cookie renewal succeeded but runtime refresh failed: %s",
                 exc,
                 exc_info=True,
             )
-            notify_report_failure(
-                notify_cfg,
-                f"续期成功但自动继续提交失败: {exc}",
+            _send_wechat_text(
+                cfg.wechat,
+                f"⚠️ Cookies 已写入配置，但运行时同步失败，需要重启服务。\n今日日报尚未提交。\n{exc}",
             )
 
     started = start_renew_cookies_by_qr(
@@ -2282,10 +2338,20 @@ def _start_report_cookie_renewal(cfg: Config, cookies_error: Exception) -> None:
 def auto_submit_if_needed(cfg: Config, *, precheck_cookies: bool = True) -> bool:
     """Called by scheduler at 17:45. Auto-submits if no manual report was provided."""
     if precheck_cookies:
-        from src.cookies_checker import CookiesError, check_cookies
+        from src.cookies_checker import CookiesError, CookiesNetworkError, check_cookies
 
         try:
             check_cookies(cfg)
+        except CookiesNetworkError as exc:
+            logger.warning("Report submission smart sheet network check failed: %s", exc)
+            notify_report_failure(
+                cfg,
+                f"智能文档网络异常，系统已重试一次；未判定 Cookies 失效，未生成二维码。错误：{exc}",
+                report_source="generation_failed",
+                smart_doc_status="error",
+                smart_doc_error=str(exc),
+            )
+            return False
         except CookiesError as exc:
             logger.warning("Report submission Cookie preflight failed: %s", exc)
             _start_report_cookie_renewal(cfg, exc)
