@@ -1,93 +1,93 @@
-# Engineering Quality Guardrails
+# 工程质量护栏
 
-## Scope and task classification
+## 适用范围与任务分级
 
-Classify work before editing:
+修改前必须先判断任务类型：
 
-- **Lightweight task:** wording, comments, formatting, or mechanical changes that cannot alter runtime behavior.
-- **Behavioral task:** any feature, bug fix, refactor, configuration change, state transition, error handling, concurrency, persistence, or external interaction.
+- **轻量任务：** 仅修改文字、注释、格式，或者进行不会改变运行时行为的机械调整。
+- **行为任务：** 包括功能开发、问题修复、重构、配置行为变化、状态变化、异常处理、并发、持久化或外部交互。
 
-Use the lightweight workflow only for genuinely non-behavioral changes. Behavioral tasks must follow every section below.
+只有确实不会改变运行时行为的任务才能使用轻量流程。行为任务必须执行下列全部要求。
 
-## Before implementation
+## 实施前分析
 
-For behavioral tasks, write a concise impact map before editing:
+行为任务在修改前必须先写出简明的影响范围：
 
-- User-visible goal and explicit non-goals.
-- Every caller, command, route, job, callback, CLI, and background entry point.
-- Success, failure, timeout, retry, same-value retry, duplicate callback, concurrency, and process-restart states.
-- Relationships between disk, database, cache, remote state, and in-memory state.
-- User notifications for success, failure, and indeterminate outcomes.
+- 用户可见的目标行为和明确不做的内容。
+- 所有调用方、命令、路由、定时任务、回调、命令行入口和后台入口。
+- 成功、失败、超时、重试、同值重试、重复回调、并发和进程重启状态。
+- 磁盘、数据库、缓存、远端状态和进程内状态之间的关系。
+- 成功、失败和状态不确定时分别发送什么用户通知。
 
-Search all references to affected functions, exceptions, state fields, and messages. Do not inspect only the function named in the request.
+必须搜索相关函数、异常、状态字段和提示语的全部引用，不能只检查用户提到的函数。
 
-## Test-first requirements
+## 测试先行要求
 
-For bug fixes, establish a failing regression test that reproduces the original symptom before implementing the fix. For new behavior, define executable acceptance tests first.
+修复问题时，必须先建立能够复现原问题的失败测试，再实施修复。开发新行为时，必须先确定可执行的验收测试。
 
-A valid regression test must:
+有效的回归测试必须：
 
-- Invoke the real production entry point or a production helper shared by that entry point.
-- Fail before the fix and pass after it.
-- Assert the final state or user-visible result, not merely that a mock was called.
-- Isolate credentials, configuration, time, network, database, and working-directory dependencies.
-- Cover the main path and the important counterexample.
+- 调用真实生产入口，或调用生产入口实际复用的生产辅助函数。
+- 在修复前失败，在修复后通过。
+- 验证最终状态或用户可见结果，不能只验证某个模拟函数被调用。
+- 隔离凭据、配置、时间、网络、数据库和当前工作目录。
+- 同时覆盖主要路径和重要反例。
 
-Never:
+明确禁止：
 
-- Copy production branches into a test and test the copy.
-- Mock the core behavior being verified and then use the mock result as proof.
-- Depend on a developer machine's real config, cookies, database, credentials, or current working directory.
-- Treat test count or a green suite as proof of coverage quality.
+- 在测试中复制一遍生产分支，再测试复制出来的逻辑。
+- 模拟掉需要验证的核心行为，再用模拟返回值证明功能正确。
+- 依赖开发机真实配置、登录信息、数据库或固定工作目录。
+- 把测试数量多或测试全绿当成覆盖质量的证明。
 
-## Implementation rules
+## 实现约束
 
-- Fix the root cause and make all relevant entry points reuse the same behavior.
-- When adding an exception subtype, inspect every parent-class catch and catch order.
-- Give locks, transactions, resources, callbacks, and cleanup steps explicit ownership.
-- Never report an unknown or unverified state as confirmed success or confirmed failure.
-- If rollback, refresh, notification, or cleanup can fail, handle and test that failure explicitly.
-- Never log passwords, cookies, tokens, keys, secrets, or complete credentials.
-- Do not use process restart to hide a runtime synchronization defect.
+- 优先修复根因，并让所有相关入口复用同一套行为。
+- 新增异常子类后，必须检查所有父类异常捕获位置和捕获顺序。
+- 锁、事务、资源、回调和清理步骤必须有明确所有者。
+- 不得把未知或未经验证的状态报告为确定成功或确定失败。
+- 回滚、刷新、通知或清理可能失败时，必须明确处理并测试其失败路径。
+- 不得记录密码、登录凭据、令牌、密钥、秘密信息或完整凭据。
+- 不得用重启进程掩盖本应正确处理的运行时同步问题。
 
-## Required verification
+## 完成前验证
 
-Before claiming completion, run and inspect:
+宣称完成前，必须实际运行并检查：
 
-- The regression or acceptance tests for the requested behavior.
-- The affected module or subsystem tests.
-- The complete project test suite.
-- Compilation, type checking, linting, or the project's equivalent static checks.
-- Diff and status checks for secrets, production data, generated files, and unrelated changes.
-- Critical tests from a clean temporary directory or otherwise isolated environment.
+- 针对本次需求的回归测试或验收测试。
+- 受影响模块或子系统的完整测试。
+- 项目完整测试集。
+- 编译、类型检查、静态检查，或项目中的等价检查。
+- 差异和工作区状态，确认没有凭据、生产数据、生成文件和无关修改。
+- 在干净临时目录或其他隔离环境中运行关键测试。
 
-For stateful or high-risk changes, also verify:
+对于有状态或高风险修改，还必须验证：
 
-- Repeating the same input after the first failure.
-- Success followed by refresh, notification, rollback, or cleanup failure.
-- Concurrent commands and duplicate callbacks.
-- A process restart between persistence and in-memory synchronization.
-- Resource cleanup itself throwing an exception.
+- 第一次失败后再次提交相同内容。
+- 成功后刷新、通知、回滚或清理又发生失败。
+- 并发命令和重复回调。
+- 持久化完成后、内存同步前发生进程重启。
+- 资源清理本身抛出异常。
 
-## Completion gate
+## 完成门槛
 
-Do not claim completion solely because tests are green.
+不得仅因测试全绿就宣称任务完成。
 
-The final report must state:
+最终报告必须写明：
 
-- Which entry points and states were covered.
-- Exact verification commands and their results.
-- Whether isolated-environment verification was run.
-- Remaining assumptions, untested paths, and residual risks.
-- Whether files were changed, committed, pushed, or deployed.
+- 覆盖了哪些入口和状态。
+- 实际运行了哪些验证命令及其结果。
+- 是否执行了隔离环境验证。
+- 仍然存在的假设、未测试路径和残余风险。
+- 是否修改、提交、推送或部署。
 
-If any Critical or Important issue remains, report the work as incomplete.
+只要仍存在严重问题或重要问题，就必须明确报告任务尚未完成。
 
-## Token-efficiency rules
+## 用量控制规则
 
-- Build the caller and state matrix once before editing to avoid repeated patch rounds.
-- Inspect independent entry points in parallel when safe.
-- Batch related tests while preserving failure attribution.
-- Reuse trustworthy tests, but inspect what they actually prove.
-- Use the full workflow only for behavioral tasks.
-- Prefer read-only discovery over asking the user for information available in the workspace.
+- 修改前一次性建立调用方和状态矩阵，避免多轮补丁返工。
+- 安全的情况下并行检查互不依赖的入口。
+- 批量运行相关测试，同时保留问题定位能力。
+- 可以复用可靠测试，但必须检查这些测试实际证明了什么。
+- 只有行为任务才使用完整流程。
+- 工作区内可以通过只读检查获得的信息，应先自行检查，不要直接询问用户。
