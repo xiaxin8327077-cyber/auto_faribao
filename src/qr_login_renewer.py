@@ -11,7 +11,7 @@ import yaml
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from src.browser_lock import browser_operation, launch_browser
 
-from src.auto_cookies_updater import COOKIE_FIELDS, _get_updated_fields, _get_current_cookie_values, _revert_config, update_config_cookies
+from src.auto_cookies_updater import COOKIE_FIELDS, _get_updated_fields, _get_current_cookie_values, _snapshot_covers_fields, _revert_config, update_config_cookies
 from src.config import load_config
 from src.wechat_notifier import send_image, send_markdown, send_text
 
@@ -169,19 +169,31 @@ def _renew_cookies_by_qr_locked(config_path: str, cfg, to_user: str, reason: str
                 return False, message
 
             updated_fields = _get_updated_fields(config_path, cookies)
+            if updated_fields is None:
+                message = "无法读取当前Cookie配置，已中止更新，磁盘配置未修改。"
+                send_text(cfg.wechat, f"❌ {message}", to_user)
+                return False, message
+
             if not updated_fields:
                 send_text(cfg.wechat, "ℹ️ 扫码成功，但 Cookies 与当前配置一致，无需更新。", to_user)
                 return True, "Cookies 无需更新"
 
             old_cookies = _get_current_cookie_values(config_path, updated_fields)
+            if not _snapshot_covers_fields(old_cookies, updated_fields):
+                message = "无法取得完整的当前Cookie快照，已中止更新，磁盘配置未修改。"
+                send_text(cfg.wechat, f"❌ {message}", to_user)
+                return False, message
+
             if not update_config_cookies(config_path, cookies):
                 message = "写入配置文件失败。"
                 send_text(cfg.wechat, f"❌ {message}", to_user)
                 return False, message
 
             if not _verify_current_page(page):
-                _revert_config(config_path, old_cookies)
-                message = "扫码获取的 Cookies 未能通过当前智能文档页面验证，已回滚配置。"
+                if _revert_config(config_path, old_cookies):
+                    message = "扫码获取的 Cookies 未能通过当前智能文档页面验证，已回滚配置。"
+                else:
+                    message = "扫码获取的 Cookies 未能通过验证，且回滚失败！磁盘配置状态未知，请勿重启，请人工检查并恢复配置文件后再操作。"
                 send_text(cfg.wechat, f"❌ {message}", to_user)
                 return False, message
 

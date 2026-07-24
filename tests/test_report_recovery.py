@@ -532,6 +532,18 @@ def test_revert_failure_does_not_claim_rolled_back(monkeypatch, tmp_path):
     assert "回滚失败" in msg or "回滚" in msg
 
 
+def test_empty_snapshot_revert_returns_false_without_touching_disk(tmp_path):
+    """空快照不能被当成成功回滚，也不能改动磁盘。"""
+    import src.auto_cookies_updater as updater
+
+    config_path = tmp_path / "config.yaml"
+    original = "source:\n  TOK: current\n"
+    config_path.write_text(original, encoding="utf-8")
+
+    assert updater._revert_config(str(config_path), {}) is False
+    assert config_path.read_text(encoding="utf-8") == original
+
+
 def test_snapshot_failure_prevents_write_and_does_not_claim_rollback(monkeypatch, tmp_path):
     """旧Cookie快照读取失败时不应写入新Cookie，也不应谎报已回滚。"""
     import yaml
@@ -557,6 +569,109 @@ def test_snapshot_failure_prevents_write_and_does_not_claim_rollback(monkeypatch
     assert "快照" in msg or "读取" in msg or "无法" in msg
 
 
+def test_cookie_diff_read_failure_aborts_without_write_or_validation(monkeypatch):
+    """读取现有配置失败时，不得当成Cookie未变化并继续报成功。"""
+    import src.auto_cookies_updater as updater
+    import src.cookies_checker as checker
+
+    write_calls = []
+    validation_calls = []
+    monkeypatch.setattr(updater, "_get_updated_fields", lambda *_args: None)
+    monkeypatch.setattr(updater, "update_config_cookies", lambda *_args: write_calls.append(1) or True)
+    monkeypatch.setattr(checker, "check_cookies", lambda *_args: validation_calls.append(1) or True)
+
+    success, fields, msg = updater.update_cookies_from_wechat(
+        "unreadable-config.yaml",
+        "TOK=new_val",
+        object(),
+    )
+
+    assert success is False
+    assert fields == []
+    assert write_calls == []
+    assert validation_calls == []
+    assert "读取" in msg and "未修改" in msg
+
+
+def test_incomplete_cookie_snapshot_prevents_write(monkeypatch, tmp_path):
+    """旧值快照未覆盖全部待更新字段时不得写盘。"""
+    import src.auto_cookies_updater as updater
+
+    write_calls = []
+    monkeypatch.setattr(updater, "_get_updated_fields", lambda *_args: ["TOK", "traceid"])
+    monkeypatch.setattr(updater, "_get_current_cookie_values", lambda *_args: {"TOK": "old"})
+    monkeypatch.setattr(updater, "update_config_cookies", lambda *_args: write_calls.append(1) or True)
+
+    success, fields, msg = updater.update_cookies_from_wechat(
+        str(tmp_path / "config.yaml"),
+        "TOK=new; traceid=new-trace",
+        object(),
+    )
+
+    assert success is False
+    assert fields == []
+    assert write_calls == []
+    assert "快照" in msg and "未修改" in msg
+
+
+def test_unexpected_verification_error_rolls_back_and_reports_failure(monkeypatch, tmp_path):
+    """无法确认Cookie有效的未知异常不得被当成更新成功。"""
+    import yaml
+    import src.auto_cookies_updater as updater
+    import src.cookies_checker as checker
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "source": {"TOK": "old_val", "doc_id": "d", "scode": "s", "tab_id": "t", "view_id": "v"},
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(checker, "check_cookies", lambda _cfg: (_ for _ in ()).throw(RuntimeError("browser crashed")))
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_valid", lambda *_args: None)
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_invalid", lambda *_args: None)
+
+    success, fields, msg = updater.update_cookies_from_wechat(
+        str(config_path),
+        "TOK=new_val",
+        object(),
+    )
+
+    disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert success is False
+    assert fields == []
+    assert disk["source"]["TOK"] == "old_val"
+    assert "已回滚" in msg
+
+
+def test_post_write_config_load_failure_rolls_back(monkeypatch, tmp_path):
+    """写盘后重新加载配置失败时也必须回滚，不能留下未验证Cookie。"""
+    import yaml
+    import src.auto_cookies_updater as updater
+    import src.config as config_module
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "source": {"TOK": "old_val", "doc_id": "d", "scode": "s", "tab_id": "t", "view_id": "v"},
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(
+        config_module,
+        "load_config",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("cannot reload config")),
+    )
+
+    success, fields, msg = updater.update_cookies_from_wechat(
+        str(config_path),
+        "TOK=new_val",
+        object(),
+    )
+
+    disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert success is False
+    assert fields == []
+    assert disk["source"]["TOK"] == "old_val"
+    assert "已回滚" in msg
+
+
 def test_revert_failure_message_does_not_suggest_restart(monkeypatch, tmp_path):
     """回滚失败文案不应建议重启，重启会加载未验证Cookie。"""
     import yaml
@@ -578,6 +693,232 @@ def test_revert_failure_message_does_not_suggest_restart(monkeypatch, tmp_path):
     assert success is False
     assert "或重启" not in msg and "重启服务" not in msg, f"回滚失败不应建议重启: {msg}"
     assert "请勿重启" in msg, f"应明确告知不要重启: {msg}"
+    assert "磁盘仍为新Cookie" not in msg
+    assert "磁盘配置状态未知" in msg
+
+
+def test_invalid_cookie_revert_failure_reports_unknown_disk_state(monkeypatch, tmp_path):
+    """真实Cookie失效后的回滚失败也必须报告磁盘状态未知。"""
+    import yaml
+    import src.auto_cookies_updater as updater
+    import src.cookies_checker as checker
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "source": {"TOK": "old_val", "doc_id": "d", "scode": "s", "tab_id": "t", "view_id": "v"},
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(
+        checker,
+        "check_cookies",
+        lambda _cfg: (_ for _ in ()).throw(checker.CookiesError("expired")),
+    )
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_valid", lambda *_args: None)
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_invalid", lambda *_args: None)
+    monkeypatch.setattr(updater, "_revert_config", lambda *_args: False)
+
+    success, fields, msg = updater.update_cookies_from_wechat(
+        str(config_path),
+        "TOK=new_val",
+        object(),
+    )
+
+    assert success is False
+    assert fields == []
+    assert "回滚失败" in msg
+    assert "磁盘配置状态未知" in msg
+    assert "磁盘仍为新Cookie" not in msg
+    assert "请勿重启" in msg
+
+
+def test_qr_cookie_diff_read_failure_does_not_claim_no_change(monkeypatch, tmp_path):
+    """扫码入口读取配置失败时，不得宣称Cookie一致或续期成功。"""
+    import src.qr_login_renewer as qr
+
+    class FakePage:
+        def goto(self, *_args, **_kwargs):
+            return None
+
+        def wait_for_timeout(self, *_args):
+            return None
+
+        def set_default_timeout(self, *_args):
+            return None
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+        def cookies(self):
+            return [{"name": "TOK", "value": "new_val"}]
+
+    class FakeBrowser:
+        def new_context(self, **_kwargs):
+            return FakeContext()
+
+        def close(self):
+            return None
+
+    class FakePlaywright:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    cfg = SimpleNamespace(
+        source=SimpleNamespace(doc_id="d", scode="s", tab_id="t", view_id="v"),
+        wechat=object(),
+    )
+    messages = []
+    monkeypatch.setattr(qr, "sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr(qr, "launch_browser", lambda _p: FakeBrowser())
+    monkeypatch.setattr(qr, "browser_operation", _null_cm)
+    monkeypatch.setattr(qr, "_capture_enterprise_qr", lambda *_args: True)
+    monkeypatch.setattr(qr, "_wait_login_success", lambda *_args: True)
+    monkeypatch.setattr(qr, "_get_updated_fields", lambda *_args: None)
+    monkeypatch.setattr(qr, "send_image", lambda *_args: True)
+    monkeypatch.setattr(qr, "send_text", lambda _wechat, text, *_args: messages.append(text))
+
+    success, msg = qr._renew_cookies_by_qr_locked(
+        str(tmp_path / "config.yaml"),
+        cfg,
+        "user-1",
+        "Cookies 已过期",
+    )
+
+    assert success is False
+    assert "读取" in msg
+    assert not any("无需更新" in text for text in messages)
+
+
+def test_qr_snapshot_failure_prevents_write(monkeypatch, tmp_path):
+    """扫码入口无法取得完整旧值快照时不得写盘。"""
+    import src.qr_login_renewer as qr
+
+    class FakePage:
+        def goto(self, *_args, **_kwargs):
+            return None
+
+        def wait_for_timeout(self, *_args):
+            return None
+
+        def set_default_timeout(self, *_args):
+            return None
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+        def cookies(self):
+            return [{"name": "TOK", "value": "new_val"}]
+
+    class FakeBrowser:
+        def new_context(self, **_kwargs):
+            return FakeContext()
+
+        def close(self):
+            return None
+
+    class FakePlaywright:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    cfg = SimpleNamespace(
+        source=SimpleNamespace(doc_id="d", scode="s", tab_id="t", view_id="v"),
+        wechat=object(),
+    )
+    write_calls = []
+    monkeypatch.setattr(qr, "sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr(qr, "launch_browser", lambda _p: FakeBrowser())
+    monkeypatch.setattr(qr, "browser_operation", _null_cm)
+    monkeypatch.setattr(qr, "_capture_enterprise_qr", lambda *_args: True)
+    monkeypatch.setattr(qr, "_wait_login_success", lambda *_args: True)
+    monkeypatch.setattr(qr, "_get_updated_fields", lambda *_args: ["TOK"])
+    monkeypatch.setattr(qr, "_get_current_cookie_values", lambda *_args: None)
+    monkeypatch.setattr(qr, "update_config_cookies", lambda *_args: write_calls.append(1) or True)
+    monkeypatch.setattr(qr, "send_image", lambda *_args: True)
+    monkeypatch.setattr(qr, "send_text", lambda *_args: None)
+
+    success, msg = qr._renew_cookies_by_qr_locked(
+        str(tmp_path / "config.yaml"),
+        cfg,
+        "user-1",
+        "Cookies 已过期",
+    )
+
+    assert success is False
+    assert write_calls == []
+    assert "快照" in msg
+
+
+def test_qr_revert_failure_reports_unknown_disk_state(monkeypatch, tmp_path):
+    """扫码验证失败且回滚失败时不得谎称已经回滚。"""
+    import src.qr_login_renewer as qr
+
+    class FakePage:
+        def goto(self, *_args, **_kwargs):
+            return None
+
+        def wait_for_timeout(self, *_args):
+            return None
+
+        def set_default_timeout(self, *_args):
+            return None
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+        def cookies(self):
+            return [{"name": "TOK", "value": "new_val"}]
+
+    class FakeBrowser:
+        def new_context(self, **_kwargs):
+            return FakeContext()
+
+        def close(self):
+            return None
+
+    class FakePlaywright:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    cfg = SimpleNamespace(
+        source=SimpleNamespace(doc_id="d", scode="s", tab_id="t", view_id="v"),
+        wechat=object(),
+    )
+    messages = []
+    monkeypatch.setattr(qr, "sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr(qr, "launch_browser", lambda _p: FakeBrowser())
+    monkeypatch.setattr(qr, "browser_operation", _null_cm)
+    monkeypatch.setattr(qr, "_capture_enterprise_qr", lambda *_args: True)
+    monkeypatch.setattr(qr, "_wait_login_success", lambda *_args: True)
+    monkeypatch.setattr(qr, "_get_updated_fields", lambda *_args: ["TOK"])
+    monkeypatch.setattr(qr, "_get_current_cookie_values", lambda *_args: {"TOK": "old_val"})
+    monkeypatch.setattr(qr, "update_config_cookies", lambda *_args: True)
+    monkeypatch.setattr(qr, "_verify_current_page", lambda *_args: False)
+    monkeypatch.setattr(qr, "_revert_config", lambda *_args: False)
+    monkeypatch.setattr(qr, "send_image", lambda *_args: True)
+    monkeypatch.setattr(qr, "send_text", lambda _wechat, text, *_args: messages.append(text))
+
+    success, msg = qr._renew_cookies_by_qr_locked(
+        str(tmp_path / "config.yaml"),
+        cfg,
+        "user-1",
+        "Cookies 已过期",
+    )
+
+    assert success is False
+    assert "回滚失败" in msg
+    assert "磁盘配置状态未知" in msg
+    assert "已回滚配置" not in msg
 
 
 def test_browser_close_exception_does_not_mask_login_failure(monkeypatch):

@@ -76,7 +76,7 @@ def update_config_cookies(config_path: str, new_cookies: dict) -> bool:
         return False
 
 
-def _get_updated_fields(config_path: str, new_cookies: dict) -> list:
+def _get_updated_fields(config_path: str, new_cookies: dict) -> list | None:
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
@@ -87,8 +87,9 @@ def _get_updated_fields(config_path: str, new_cookies: dict) -> list:
                 if source.get(field, "") != new_cookies[field]:
                     updated.append(field)
         return updated
-    except Exception:
-        return []
+    except Exception as e:
+        logger.error(f"Failed to read current cookie fields: {e}")
+        return None
 
 
 def _get_current_cookie_values(config_path: str, fields: list):
@@ -99,6 +100,10 @@ def _get_current_cookie_values(config_path: str, fields: list):
         return {field: source.get(field, "") for field in fields}
     except Exception:
         return None
+
+
+def _snapshot_covers_fields(old_cookies: dict | None, fields: list) -> bool:
+    return isinstance(old_cookies, dict) and set(fields).issubset(old_cookies)
 
 
 def _revert_config(config_path: str, old_cookies: dict) -> bool:
@@ -129,14 +134,17 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
         return False, [], "未解析到有效的 Cookie 字段，请检查格式"
 
     updated_fields = _get_updated_fields(config_path, new_cookies)
+    if updated_fields is None:
+        return False, [], "无法读取当前Cookie配置，已中止更新，磁盘配置未修改。"
+
     if not updated_fields:
         # 磁盘已有相同Cookie，仍需验证才允许同步运行时
         logger.info("No cookie fields changed; verifying existing cookies...")
         from src.config import load_config
         from src.cookies_checker import check_cookies, CookiesError, CookiesNetworkError
 
-        existing_cfg = load_config(config_path)
         try:
+            existing_cfg = load_config(config_path)
             check_cookies(existing_cfg)
             return True, [], ""
         except CookiesNetworkError as e:
@@ -147,8 +155,8 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
             return False, [], f"Cookie 值未变化，但验证时出错。\n错误：{e}"
 
     old_cookies = _get_current_cookie_values(config_path, updated_fields)
-    if old_cookies is None:
-        return False, [], "无法读取当前Cookie快照，已中止更新，磁盘配置未修改。"
+    if not _snapshot_covers_fields(old_cookies, updated_fields):
+        return False, [], "无法取得完整的当前Cookie快照，已中止更新，磁盘配置未修改。"
     if not update_config_cookies(config_path, new_cookies):
         return False, [], "更新配置文件失败"
 
@@ -157,8 +165,8 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
     from src.cookies_checker import check_cookies, CookiesError, CookiesNetworkError
     from src.wechat_notifier import notify_cookies_valid, notify_cookies_invalid
 
-    new_cfg = load_config(config_path)
     try:
+        new_cfg = load_config(config_path)
         check_cookies(new_cfg)
         logger.info("New cookies are valid!")
         notify_cookies_valid(new_cfg, updated_fields)
@@ -168,15 +176,18 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
         reverted = _revert_config(config_path, old_cookies)
         if reverted:
             return False, [], f"配置已写入但验证时网络超时，已回滚磁盘配置。请稍后重试。\n错误：{e}"
-        return False, [], f"配置已写入但验证时网络超时，且回滚失败！磁盘仍为新Cookie，请勿重启，需手动从配置文件删除新Cookie或重新发送正确的Cookie。\n错误：{e}"
+        return False, [], f"配置已写入但验证时网络超时，且回滚失败！磁盘配置状态未知，请勿重启，请人工检查并恢复配置文件后再操作。\n错误：{e}"
     except CookiesError as e:
         logger.error(f"New cookies verification failed: {e}")
         reverted = _revert_config(config_path, old_cookies)
         if reverted:
             notify_cookies_invalid(new_cfg, str(e))
             return False, [], f"Cookies无效，已回滚配置。\n错误：{e}"
-        return False, [], f"Cookies无效，且回滚失败！磁盘仍为新Cookie，请勿重启，需手动从配置文件删除新Cookie或重新发送正确的Cookie。\n错误：{e}"
+        return False, [], f"Cookies无效，且回滚失败！磁盘配置状态未知，请勿重启，请人工检查并恢复配置文件后再操作。\n错误：{e}"
     except Exception as e:
         logger.error(f"Verification error: {e}", exc_info=True)
         err_msg = str(e)[:100] + "..." if len(str(e)) > 100 else str(e)
-        return True, updated_fields, f"配置已更新，但验证时出错（不影响使用）：{err_msg}"
+        reverted = _revert_config(config_path, old_cookies)
+        if reverted:
+            return False, [], f"配置已写入但验证时出错，已回滚磁盘配置。\n错误：{err_msg}"
+        return False, [], f"配置已写入但验证时出错，且回滚失败！磁盘配置状态未知，请勿重启，请人工检查并恢复配置文件后再操作。\n错误：{err_msg}"
