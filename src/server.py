@@ -98,6 +98,51 @@ def _finish_manual_qr_with_refresh(
         _finish_manual_qr_command(final_success, final_message)
 
 
+def _process_cookies_update(cfg, config_path: str, content: str, from_user_id: str) -> None:
+    """处理企微发送的Cookie文本更新，验证后同步运行时。"""
+    try:
+        success, updated_fields, error_msg = update_cookies_from_wechat(config_path, content, cfg)
+        if success and updated_fields:
+            try:
+                _refresh_runtime_source(cfg, config_path)
+                _send_wechat_text(
+                    cfg.wechat,
+                    "✅ Cookies 运行时配置已同步，无需重启服务。",
+                    from_user_id,
+                )
+            except Exception as exc:
+                _send_wechat_text(
+                    cfg.wechat,
+                    f"⚠️ Cookies 已写入配置，但运行时同步失败，需要重启服务。\n{exc}",
+                    from_user_id,
+                )
+        elif success and not updated_fields:
+            try:
+                _refresh_runtime_source(cfg, config_path)
+                _send_wechat_text(
+                    cfg.wechat,
+                    "✅ Cookies 运行时配置已同步，无需重启服务。",
+                    from_user_id,
+                )
+            except Exception as exc:
+                _send_wechat_text(
+                    cfg.wechat,
+                    f"⚠️ Cookies 运行时同步失败，需要重启服务。\n{exc}",
+                    from_user_id,
+                )
+        elif not success:
+            _send_wechat_text(
+                cfg.wechat,
+                f"❌ Cookies 更新失败\n{error_msg}",
+                from_user_id,
+            )
+    except Exception as e:
+        logger.error(f"Process cookies error: {e}")
+        _send_wechat_text(cfg.wechat, f"❌ 处理异常\n{e}", from_user_id)
+    finally:
+        _end_cmd()
+
+
 def _current_cmd() -> str:
     with _cmd_lock:
         return _cmd_name
@@ -707,47 +752,7 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
                         return "", 200
 
                     def process_cookies_update():
-                        try:
-                            success, updated_fields, error_msg = update_cookies_from_wechat(config_path, content, cfg)
-                            if success and updated_fields:
-                                try:
-                                    _refresh_runtime_source(cfg, config_path)
-                                    _send_wechat_text(
-                                        cfg.wechat,
-                                        "✅ Cookies 运行时配置已同步，无需重启服务。",
-                                        from_user_id,
-                                    )
-                                except Exception as exc:
-                                    _send_wechat_text(
-                                        cfg.wechat,
-                                        f"⚠️ Cookies 已写入配置，但运行时同步失败，需要重启服务。\n{exc}",
-                                        from_user_id,
-                                    )
-                            elif success and not updated_fields:
-                                try:
-                                    _refresh_runtime_source(cfg, config_path)
-                                    _send_wechat_text(
-                                        cfg.wechat,
-                                        "✅ Cookies 运行时配置已同步，无需重启服务。",
-                                        from_user_id,
-                                    )
-                                except Exception as exc:
-                                    _send_wechat_text(
-                                        cfg.wechat,
-                                        f"⚠️ Cookies 运行时同步失败，需要重启服务。\n{exc}",
-                                        from_user_id,
-                                    )
-                            elif not success:
-                                _send_wechat_text(
-                                    cfg.wechat,
-                                    f"❌ Cookies 更新失败\n{error_msg}",
-                                    from_user_id,
-                                )
-                        except Exception as e:
-                            logger.error(f"Process cookies error: {e}")
-                            _send_wechat_text(cfg.wechat, f"❌ 处理异常\n{e}", from_user_id)
-                        finally:
-                            _end_cmd()
+                        _process_cookies_update(cfg, config_path, content, from_user_id)
 
                     _send_wechat_text(cfg.wechat, "⏳ 正在检查 Cookies 是否可用，请稍等...", from_user_id)
 

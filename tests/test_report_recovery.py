@@ -410,57 +410,100 @@ def test_returns_empty_when_matching_oa_row_has_no_readable_content(monkeypatch)
     assert target._find_report_content_on_pages(page, "2026-07-08") == ""
 
 
-def test_same_cookie_after_network_timeout_does_not_sync_runtime(monkeypatch):
+def test_same_cookie_after_network_timeout_does_not_sync_runtime(monkeypatch, tmp_path):
     """网络超时后Cookie留盘，再发相同Cookie不应跳过验证同步运行时。"""
+    import yaml
     import src.auto_cookies_updater as updater
     import src.cookies_checker as checker
 
-    # 模拟磁盘已有相同Cookie → _get_updated_fields 返回 []
-    monkeypatch.setattr(updater, "_get_updated_fields", lambda *_args: [])
-    monkeypatch.setattr(updater, "update_config_cookies", lambda *_args: True)
+    config_path = tmp_path / "config.yaml"
+    config_data = {
+        "source": {"TOK": "xxx", "doc_id": "d", "scode": "s", "tab_id": "t", "view_id": "v"},
+    }
+    config_path.write_text(yaml.dump(config_data), encoding="utf-8")
+
+    # 磁盘已有相同Cookie → _get_updated_fields 返回 []
     # 验证时抛网络超时
     monkeypatch.setattr(checker, "check_cookies", lambda _cfg: (_ for _ in ()).throw(checker.CookiesNetworkError("timeout")))
-    monkeypatch.setattr("src.wechat_notifier.notify_cookies_network_error", lambda *_args: None)
     monkeypatch.setattr("src.wechat_notifier.notify_cookies_valid", lambda *_args: None)
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_invalid", lambda *_args: None)
 
-    success, fields, msg = updater.update_cookies_from_wechat("config.yaml", "TOK=xxx", object())
+    success, fields, msg = updater.update_cookies_from_wechat(str(config_path), "TOK=xxx", object())
 
     assert success is False
     assert fields == []
-    assert "网络" in msg or "超时" in msg or "未验证" in msg or "验证" in msg
+    assert "网络" in msg or "超时" in msg
 
 
-def test_cookies_update_failure_sends_error_msg_to_user(monkeypatch):
-    """update_cookies_from_wechat 返回 False 时用户应收到 error_msg 通知。"""
+def test_same_cookie_verified_refreshes_runtime(monkeypatch, tmp_path):
+    """同值Cookie验证成功后应刷新运行时配置。"""
+    import yaml
+    import src.server as server
+
+    config_path = tmp_path / "config.yaml"
+    config_data = {
+        "source": {"TOK": "xxx", "doc_id": "d", "scode": "s", "tab_id": "t", "view_id": "v"},
+    }
+    config_path.write_text(yaml.dump(config_data), encoding="utf-8")
+
+    cfg = _cfg()
+    messages = []
+    refreshed = []
+    monkeypatch.setattr(server, "update_cookies_from_wechat", lambda *_args: (True, [], ""))
+    monkeypatch.setattr(server, "_refresh_runtime_source", lambda c, p: refreshed.append((c, p)) or c)
+    monkeypatch.setattr(server, "_send_wechat_text", lambda _w, text, *args: messages.append(text))
+    monkeypatch.setattr(server, "_end_cmd", lambda: None)
+
+    server._process_cookies_update(cfg, str(config_path), "TOK=xxx", "user-1")
+
+    assert len(refreshed) == 1
+    assert refreshed[0][0] is cfg
+    assert any("运行时配置已同步" in m for m in messages)
+
+
+def test_cookies_update_failure_sends_error_msg_to_user(monkeypatch, tmp_path):
+    """update_cookies_from_wechat 返回 False 时用户应通过真实入口收到 error_msg。"""
     import src.server as server
 
     cfg = _cfg()
     messages = []
-    monkeypatch.setattr(server, "_try_start_cmd", lambda *_args: True)
-    monkeypatch.setattr(server, "_end_cmd", lambda: None)
     monkeypatch.setattr(
         server,
         "update_cookies_from_wechat",
         lambda *_args: (False, [], "Cookies无效，已回滚配置"),
     )
-    monkeypatch.setattr(server, "_send_wechat_text", lambda _wechat, text, *args: messages.append(text))
+    monkeypatch.setattr(server, "_send_wechat_text", lambda _w, text, *args: messages.append(text))
+    monkeypatch.setattr(server, "_end_cmd", lambda: None)
 
-    # 直接调用 process_cookies_update 内部逻辑
-    config_path = "config.yaml"
-    content = "TOK=xxx"
-    from_user_id = "user-1"
-
-    # 复制 process_cookies_update 的核心逻辑来测试
-    server._cmd_busy = False
-    server._try_start_cmd("Cookies更新")
-    try:
-        success, updated_fields, error_msg = server.update_cookies_from_wechat(config_path, content, cfg)
-        if not success:
-            server._send_wechat_text(cfg.wechat, f"❌ Cookies 更新失败\n{error_msg}")
-    finally:
-        server._end_cmd()
+    server._process_cookies_update(cfg, str(tmp_path / "config.yaml"), "TOK=xxx", "user-1")
 
     assert any("Cookies 更新失败" in m and "已回滚" in m for m in messages)
+
+
+def test_network_timeout_reverts_disk_cookies(monkeypatch, tmp_path):
+    """网络超时后磁盘Cookie应回滚，重启不会加载未验证值。"""
+    import yaml
+    import src.auto_cookies_updater as updater
+    import src.cookies_checker as checker
+
+    config_path = tmp_path / "config.yaml"
+    old_data = {
+        "source": {"TOK": "old_val", "doc_id": "d", "scode": "s", "tab_id": "t", "view_id": "v"},
+    }
+    config_path.write_text(yaml.dump(old_data), encoding="utf-8")
+
+    monkeypatch.setattr(checker, "check_cookies", lambda _cfg: (_ for _ in ()).throw(checker.CookiesNetworkError("timeout")))
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_valid", lambda *_args: None)
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_invalid", lambda *_args: None)
+
+    success, fields, msg = updater.update_cookies_from_wechat(str(config_path), "TOK=new_val", object())
+
+    assert success is False
+    assert "已回滚" in msg
+
+    # 磁盘应恢复旧值
+    disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert disk["source"]["TOK"] == "old_val"
 
 
 def test_browser_close_exception_does_not_mask_login_failure(monkeypatch):

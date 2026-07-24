@@ -158,7 +158,8 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
         return True, updated_fields, ""
     except CookiesNetworkError as e:
         logger.warning(f"New cookies verification encountered network error: {e}")
-        return False, [], f"配置已写入但验证时网络超时，未同步运行时。请稍后检查或重试。\n错误：{e}"
+        _revert_config(config_path, old_cookies)
+        return False, [], f"配置已写入但验证时网络超时，已回滚磁盘配置。请稍后重试。\n错误：{e}"
     except CookiesError as e:
         logger.error(f"New cookies verification failed: {e}")
         _revert_config(config_path, old_cookies)
