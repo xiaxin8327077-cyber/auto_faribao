@@ -91,17 +91,20 @@ def _get_updated_fields(config_path: str, new_cookies: dict) -> list:
         return []
 
 
-def _get_current_cookie_values(config_path: str, fields: list) -> dict:
+def _get_current_cookie_values(config_path: str, fields: list):
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         source = data.get("source", {})
         return {field: source.get(field, "") for field in fields}
     except Exception:
-        return {}
+        return None
 
 
 def _revert_config(config_path: str, old_cookies: dict) -> bool:
+    if not old_cookies:
+        logger.error("Cannot revert: old cookie snapshot is empty or missing")
+        return False
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
@@ -144,6 +147,8 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
             return False, [], f"Cookie 值未变化，但验证时出错。\n错误：{e}"
 
     old_cookies = _get_current_cookie_values(config_path, updated_fields)
+    if old_cookies is None:
+        return False, [], "无法读取当前Cookie快照，已中止更新，磁盘配置未修改。"
     if not update_config_cookies(config_path, new_cookies):
         return False, [], "更新配置文件失败"
 
@@ -163,14 +168,14 @@ def update_cookies_from_wechat(config_path: str, text_content: str, cfg) -> tupl
         reverted = _revert_config(config_path, old_cookies)
         if reverted:
             return False, [], f"配置已写入但验证时网络超时，已回滚磁盘配置。请稍后重试。\n错误：{e}"
-        return False, [], f"配置已写入但验证时网络超时，且回滚失败！磁盘仍为新Cookie，需手动检查或重启服务。\n错误：{e}"
+        return False, [], f"配置已写入但验证时网络超时，且回滚失败！磁盘仍为新Cookie，请勿重启，需手动从配置文件删除新Cookie或重新发送正确的Cookie。\n错误：{e}"
     except CookiesError as e:
         logger.error(f"New cookies verification failed: {e}")
         reverted = _revert_config(config_path, old_cookies)
         if reverted:
             notify_cookies_invalid(new_cfg, str(e))
             return False, [], f"Cookies无效，已回滚配置。\n错误：{e}"
-        return False, [], f"Cookies无效，且回滚失败！磁盘仍为新Cookie，需手动检查或重启服务。\n错误：{e}"
+        return False, [], f"Cookies无效，且回滚失败！磁盘仍为新Cookie，请勿重启，需手动从配置文件删除新Cookie或重新发送正确的Cookie。\n错误：{e}"
     except Exception as e:
         logger.error(f"Verification error: {e}", exc_info=True)
         err_msg = str(e)[:100] + "..." if len(str(e)) > 100 else str(e)

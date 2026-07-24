@@ -532,6 +532,54 @@ def test_revert_failure_does_not_claim_rolled_back(monkeypatch, tmp_path):
     assert "回滚失败" in msg or "回滚" in msg
 
 
+def test_snapshot_failure_prevents_write_and_does_not_claim_rollback(monkeypatch, tmp_path):
+    """旧Cookie快照读取失败时不应写入新Cookie，也不应谎报已回滚。"""
+    import yaml
+    import src.auto_cookies_updater as updater
+    import src.cookies_checker as checker
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "source": {"TOK": "old_val", "doc_id": "d", "scode": "s", "tab_id": "t", "view_id": "v"},
+    }), encoding="utf-8")
+
+    # 快照读取失败 → 返回 None
+    monkeypatch.setattr(updater, "_get_current_cookie_values", lambda *_args: None)
+    write_calls = []
+    monkeypatch.setattr(updater, "update_config_cookies", lambda *_args: write_calls.append(1) or True)
+    monkeypatch.setattr(checker, "check_cookies", lambda _cfg: True)
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_valid", lambda *_args: None)
+
+    success, fields, msg = updater.update_cookies_from_wechat(str(config_path), "TOK=new_val", object())
+
+    assert success is False
+    assert write_calls == [], "快照失败时不应写入新Cookie"
+    assert "快照" in msg or "读取" in msg or "无法" in msg
+
+
+def test_revert_failure_message_does_not_suggest_restart(monkeypatch, tmp_path):
+    """回滚失败文案不应建议重启，重启会加载未验证Cookie。"""
+    import yaml
+    import src.auto_cookies_updater as updater
+    import src.cookies_checker as checker
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "source": {"TOK": "old_val", "doc_id": "d", "scode": "s", "tab_id": "t", "view_id": "v"},
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(checker, "check_cookies", lambda _cfg: (_ for _ in ()).throw(checker.CookiesNetworkError("timeout")))
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_valid", lambda *_args: None)
+    monkeypatch.setattr("src.wechat_notifier.notify_cookies_invalid", lambda *_args: None)
+    monkeypatch.setattr(updater, "_revert_config", lambda *_args: False)
+
+    success, fields, msg = updater.update_cookies_from_wechat(str(config_path), "TOK=new_val", object())
+
+    assert success is False
+    assert "或重启" not in msg and "重启服务" not in msg, f"回滚失败不应建议重启: {msg}"
+    assert "请勿重启" in msg, f"应明确告知不要重启: {msg}"
+
+
 def test_browser_close_exception_does_not_mask_login_failure(monkeypatch):
     """browser.close() 抛异常时不应覆盖已识别的登录失效。"""
     import src.cookies_checker as checker
