@@ -69,6 +69,11 @@ class EditConfirmationStore:
             return None
         return item
 
+    def has_any(self, user_id: str) -> bool:
+        """是否存在待确认项（含过期）。用于区分"从未创建"与"已过期"。"""
+        with self._lock:
+            return self._items.get(user_id) is not None
+
 
 # ---- 按用户的修改进行中标记（仅崩溃感知，不自动恢复）----
 _marker_lock = threading.Lock()

@@ -1239,20 +1239,38 @@ def test_stale_notify_false_keeps_marker(monkeypatch, tmp_path):
 
 
 def test_expired_confirm_execution_shows_timeout_not_ai(monkeypatch, tmp_path):
-    """过期确认执行不应回落到 AI，而应由 handler 内部超时提示。"""
+    """过期确认执行：has_any=True、peek=None → 走 OA handler 内部超时提示，不回落 AI。"""
     import src.server as s
     import src.daily_report_edit_confirmation as ec
     s._msgid_inflight.clear()
     s._msgid_seen.clear()
     clk = [1000.0]
     s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
+    # 创建已过期待确认项（过期）
+    item = ec.EditConfirmation(user_id="expired_user", action="overwrite_today",
+        report_date="2026-07-29", original_content_hash="h", original_preview="p",
+        final_content="c", created_at=clk[0], expires_at=clk[0] + 1)
+    s._edit_confirmations.save(item)
+    clk[0] += 10  # 过期
     sent = []
     monkeypatch.setattr(s, "_send_wechat_text", lambda *a, **k: sent.append(a) or True)
     from types import SimpleNamespace
-    # 没有待确认项（peek 返回 None）→ _handle_edit_confirmation 内部发"超时"
     result = s._handle_edit_confirmation("expired_user", SimpleNamespace(wechat=SimpleNamespace()))
     assert result is True
     assert any("已超时" in str(a) for a in sent)
+
+
+def test_never_existed_confirm_falls_through_to_ai(monkeypatch, tmp_path):
+    """从未存在 OA 确认（has_any=False, peek=None）→ 不拦截，回落 AI 流程。"""
+    import src.server as s
+    import src.daily_report_edit_confirmation as ec
+    s._msgid_inflight.clear()
+    s._msgid_seen.clear()
+    clk = [1000.0]
+    s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
+    # 不 save 任何项 → has_any=False, peek=None
+    assert s._edit_confirmations.has_any("no_such_user") is False
+    assert s._edit_confirmations.peek("no_such_user") is None
 
 
 def test_background_thread_marks_done_only_on_success(monkeypatch, tmp_path):

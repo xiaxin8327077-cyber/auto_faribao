@@ -1150,17 +1150,21 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
                                        msg_id=msg_id, cfg_obj=cfg, from_user=from_user)
                     return "", 200
 
-                # 2) 确认/取消：只要是确认/取消指令就走 OA 路径（含过期），由 handler 内部检测超时并提示。
-                #    不再回落 AI 流程，避免"没有待确认的智能指令"误答。
+                # 2) 确认/取消：三态分流——
+                #    peek 有效 → OA 执行；has_any 过期 → OA 提示超时；均无 → 回落 AI 流程。
                 stripped = raw_content.strip()
                 if stripped in ("确认执行", "取消执行"):
-                    if stripped == "确认执行":
-                        _run_confirm_in_background(_handle_edit_confirmation, from_user, cfg,
-                                                  msg_id=msg_id, cfg_obj=cfg)
-                    else:
-                        _run_in_background(_handle_edit_cancel, from_user, cfg,
-                                           msg_id=msg_id, cfg_obj=cfg, from_user=from_user)
-                    return "", 200
+                    if _edit_confirmations.peek(from_user) is not None \
+                            or _edit_confirmations.has_any(from_user):
+                        # 有效或过期的 OA 确认，均由 handler 内部处理
+                        if stripped == "确认执行":
+                            _run_confirm_in_background(_handle_edit_confirmation, from_user, cfg,
+                                                      msg_id=msg_id, cfg_obj=cfg)
+                        else:
+                            _run_in_background(_handle_edit_cancel, from_user, cfg,
+                                               msg_id=msg_id, cfg_obj=cfg, from_user=from_user)
+                        return "", 200
+                    # 从未存在 OA 确认 → 回落 AI 流程（不拦截）
 
                 # 3) 原有流程：标准化、_ai_command_in_progress、ai_bridge.prepare 等保持不变
                 content = _normalize_daily_report_command_text(raw_content)
