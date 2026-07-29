@@ -45,6 +45,48 @@ def _end_cmd():
         _cmd_name = ""
 
 
+# ---- MsgId 有界时效去重（含在途超时清理）----
+
+_MSGID_TTL = 300.0
+_msgid_lock = threading.Lock()
+_msgid_seen: dict[str, float] = {}
+_msgid_inflight: dict[str, float] = {}
+
+
+def _msgid_should_process(msg_id: str, *, clock=None) -> bool:
+    """首次置 in-flight；重复/已见返回 False。空 msg_id 始终放行。"""
+    if not msg_id:
+        return True
+    if clock is None:
+        import time as _time
+        clock = _time.monotonic
+    now = clock()
+    with _msgid_lock:
+        for k in list(_msgid_seen):
+            if _msgid_seen[k] < now - _MSGID_TTL:
+                _msgid_seen.pop(k, None)
+        for k in list(_msgid_inflight):
+            if _msgid_inflight[k] < now - _MSGID_TTL:
+                _msgid_inflight.pop(k, None)  # 孤儿，允许重试
+        if msg_id in _msgid_seen or msg_id in _msgid_inflight:
+            return False
+        _msgid_inflight[msg_id] = now
+        return True
+
+
+def _msgid_mark_done(msg_id: str, *, processed: bool, clock=None) -> None:
+    """processed=True 才记 seen；False 仅清 in-flight 允许重试。"""
+    if not msg_id:
+        return
+    if clock is None:
+        import time as _time
+        clock = _time.monotonic
+    with _msgid_lock:
+        _msgid_inflight.pop(msg_id, None)
+        if processed:
+            _msgid_seen[msg_id] = clock()
+
+
 def _rename_cmd(name: str) -> None:
     """Rename the currently running command without changing lock ownership."""
     global _cmd_name

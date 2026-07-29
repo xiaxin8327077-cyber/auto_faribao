@@ -254,3 +254,35 @@ def test_extract_body_uses_earliest_sep():
     assert s._extract_body_from_raw("帮我设置日报\n一、完成联调") == "一、完成联调"
     assert s._extract_body_from_raw("修改今日日报：一、修复\n二、测试") == "一、修复\n二、测试"
     assert s._extract_body_from_raw("无分隔符") == ""
+
+
+# ---- Task 5: MsgId 有界时效去重 ----
+
+def test_msgid_first_then_seen():
+    s = _srv()
+    clk = [1000.0]
+    assert s._msgid_should_process("M1", clock=lambda: clk[0]) is True
+    s._msgid_mark_done("M1", processed=True, clock=lambda: clk[0])
+    assert s._msgid_should_process("M1", clock=lambda: clk[0]) is False
+
+
+def test_msgid_inflight_blocks_concurrent():
+    s = _srv()
+    clk = [1000.0]
+    assert s._msgid_should_process("M2", clock=lambda: clk[0]) is True
+    assert s._msgid_should_process("M2", clock=lambda: clk[0]) is False
+    s._msgid_mark_done("M2", processed=False, clock=lambda: clk[0])
+    assert s._msgid_should_process("M2", clock=lambda: clk[0]) is True
+
+
+def test_msgid_inflight_orphan_cleared_after_ttl():
+    s = _srv()
+    clk = [1000.0]
+    assert s._msgid_should_process("M3", clock=lambda: clk[0]) is True
+    clk[0] += 10_000
+    assert s._msgid_should_process("M3", clock=lambda: clk[0]) is True
+
+
+def test_msgid_empty_always_processes():
+    s = _srv()
+    assert s._msgid_should_process("", clock=lambda: 1.0) is True
