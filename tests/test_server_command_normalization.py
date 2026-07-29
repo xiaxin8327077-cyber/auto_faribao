@@ -208,3 +208,49 @@ def test_ai_command_state_is_detected_for_global_callback_gate(monkeypatch):
 
     monkeypatch.setattr("src.server._cmd_name", "净值查询")
     assert _ai_command_in_progress() is False
+
+
+# ---- Task 3: 日报编辑指令解析测试 ----
+
+def _srv():
+    import src.server as s
+    return s
+
+
+def test_parse_mixed_colon_then_newline():
+    s = _srv()
+    parsed = s.parse_daily_report_edit_command("修改今日日报：一、修复问题\n二、完成测试")
+    assert parsed.action == "overwrite_today"
+    assert parsed.body == "一、修复问题\n二、完成测试"
+
+
+def test_parse_newline_first():
+    s = _srv()
+    parsed = s.parse_daily_report_edit_command("设置日报\n一、完成联调\n二、测试")
+    assert parsed.action == "set_today" and parsed.body == "一、完成联调\n二、测试"
+
+
+def test_parse_colon_only():
+    s = _srv()
+    parsed = s.parse_daily_report_edit_command("追加日报：完成生产验证")
+    assert parsed.action == "append" and parsed.body == "完成生产验证"
+
+
+def test_body_leading_space_preserved():
+    s = _srv()
+    parsed = s.parse_daily_report_edit_command("追加日报： 完成验证")  # 冒号后一个空格
+    assert parsed.body == " 完成验证"  # 原样保留，不 strip
+
+
+def test_set_report_time_not_captured():
+    s = _srv()
+    assert s.parse_daily_report_edit_command("设置日报提交时间 09:00") is None
+    assert s.parse_daily_report_edit_command("设置日报提交时间：09:00") is None
+
+
+def test_extract_body_uses_earliest_sep():
+    s = _srv()
+    assert s._extract_body_from_raw("往日报后面加一条：完成生产验证") == "完成生产验证"
+    assert s._extract_body_from_raw("帮我设置日报\n一、完成联调") == "一、完成联调"
+    assert s._extract_body_from_raw("修改今日日报：一、修复\n二、测试") == "一、修复\n二、测试"
+    assert s._extract_body_from_raw("无分隔符") == ""

@@ -3,6 +3,7 @@ import re
 import subprocess
 import threading
 import logging
+from dataclasses import dataclass
 from datetime import date, timedelta
 from flask import Flask, request, jsonify, send_from_directory
 from src.config import Config
@@ -165,6 +166,65 @@ def _busy_reply() -> str:
 def _normalize_message_text(text: str) -> str:
     content = (text or "").replace("\u3000", " ").replace("\xa0", " ").strip()
     return re.sub(r"\s+", " ", content)
+
+
+# ---- \u65e5\u62a5\u7f16\u8f91\u6307\u4ee4\u89e3\u6790\uff08\u6700\u65e9\u5206\u9694\u7b26\u3001\u6b63\u6587\u4e0d strip\uff09----
+
+@dataclass
+class ParsedReportCommand:
+    action: str  # set_today | append | append_today | overwrite_today | view_draft | clear_draft
+    body: str
+
+
+_REPORT_EDIT_ACTIONS = {
+    "\u8bbe\u7f6e\u65e5\u62a5": "set_today",
+    "\u8ffd\u52a0\u65e5\u62a5": "append",
+    "\u8ffd\u52a0\u4eca\u65e5\u65e5\u62a5": "append_today",
+    "\u4fee\u6539\u4eca\u65e5\u65e5\u62a5": "overwrite_today",
+    "\u67e5\u770b\u8349\u7a3f": "view_draft",
+    "\u6e05\u9664\u8349\u7a3f": "clear_draft",
+}
+
+
+def _first_sep_index(raw: str) -> int:
+    """\u8fd4\u56de\u6362\u884c/\u4e2d\u6587\u5192\u53f7/\u82f1\u6587\u5192\u53f7\u4e2d\u6700\u65e9\u51fa\u73b0\u7684\u4f4d\u7f6e\uff0c\u6ca1\u6709\u8fd4\u56de -1\u3002"""
+    candidates = [i for i in (raw.find("\n"), raw.find("\uff1a"), raw.find(":")) if i != -1]
+    return min(candidates) if candidates else -1
+
+
+def _split_action_and_body(raw: str) -> tuple:
+    idx = _first_sep_index(raw)
+    if idx == -1:
+        return raw.strip(), ""
+    return raw[:idx].strip(), raw[idx + 1:]  # \u6b63\u6587\u539f\u6837\u4fdd\u7559\uff0c\u4e0d strip
+
+
+def _extract_body_from_raw(raw: str) -> str:
+    """\u4ece\u539f\u59cb\u6d88\u606f\u6309\u6700\u65e9\u5206\u9694\u7b26\u63d0\u53d6\u6b63\u6587\uff0c\u5ffd\u7565\u52a8\u4f5c\u524d\u7f00\uff0c\u539f\u6837\u4fdd\u7559\u3002"""
+    if not raw:
+        return ""
+    raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+    idx = _first_sep_index(raw)
+    if idx == -1:
+        return ""
+    return raw[idx + 1:]
+
+
+def parse_daily_report_edit_command(raw_content):
+    if not raw_content:
+        return None
+    raw = raw_content.replace("\r\n", "\n").replace("\r", "\n")
+    if _normalize_message_text(raw).startswith("\u8bbe\u7f6e\u65e5\u62a5\u63d0\u4ea4\u65f6\u95f4"):
+        return None
+    action_text, body = _split_action_and_body(raw)
+    if not action_text:
+        return None
+    action = _REPORT_EDIT_ACTIONS.get(action_text)
+    if action is None:
+        return None
+    if action in ("view_draft", "clear_draft"):
+        return ParsedReportCommand(action, "")
+    return ParsedReportCommand(action, body)
 
 
 def _contains_any(content: str, keywords: tuple[str, ...]) -> bool:
