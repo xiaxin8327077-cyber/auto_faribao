@@ -44,6 +44,10 @@ _WRITE_COMMANDS = {
     "更新工作日历",
 }
 
+_DAILY_REPORT_ACTIONS = {
+    "设置日报", "追加日报", "追加今日日报", "修改今日日报", "查看草稿", "清除草稿",
+}
+
 _READ_NAV_ACTIONS = {
     "view_config",
     "view_holdings",
@@ -72,6 +76,8 @@ _WRITE_NAV_ACTIONS = {
 
 def classify_canonical_command(command: str) -> Optional[str]:
     text = " ".join((command or "").strip().split())
+    if text in _DAILY_REPORT_ACTIONS:
+        return "none"
     if text in _READ_COMMANDS:
         return "read"
     if text in _WRITE_COMMANDS:
@@ -180,6 +186,8 @@ kind只能是 command、diagnose、chat、clarify。
 
 kind为command时，canonical_command必须严格使用下列指令或参数模板，不得自行概括或改名：
 无参数指令：今日状态、最近记录、本周统计、本月统计、查看配置、查看定时配置、读取日报、获取前一天日报、检查Cookies、服务器状态、运行服务、查看日志、发送日报、重新发送今日日报、撤回今日日报、根据前一天内容发送、生成二维码、更新工作日历。
+日报草稿与修改指令（AI 只返回动作名，不得在 canonical_command 中复述日报正文；正文由系统从用户原始消息提取）：设置日报；追加日报；追加今日日报；修改今日日报；查看草稿；清除草稿。
+判定规则：用户意图是设置/追加/修改今天日报或查看/清除草稿时，canonical_command 取对应动作名；不判断今天是否已提交。
 日报参数指令：查询日报 YYYY-MM-DD；设置Cookies检查时间 HH:MM；设置统计推送时间 HH:MM；设置缓存清理时间 HH:MM；设置日报提交时间 HH:MM。
 净值查询指令：立即查询净值；查询净值 YYYYMMDD；查询周度净值；查询月度净值；查询季度净值；查询半年度净值；查询年度净值；查询近7天净值；查询近一月净值；查询近三月净值；查询近半年净值；查询近一年净值；查询近两年净值；查询近三年净值。
 净值配置指令：查看净值配置；开启净值监控；关闭净值监控；设置净值推送时间 HH:MM；设置收益预估时间 HH:MM；添加净值产品 机构 产品代码；删除净值产品 产品代码；设置净值份额 产品代码 数值；设置收益 YYYY-MM-DD 金额；查看持仓画像；查看 产品代码 持仓画像；查看画像状态；更新持仓画像；预估理财涨跌。

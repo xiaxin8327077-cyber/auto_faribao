@@ -288,6 +288,14 @@ def test_msgid_empty_always_processes():
     assert s._msgid_should_process("", clock=lambda: 1.0) is True
 
 
+# ---- Task 8: AI 路由新增 6 个日报动作 ----
+
+def test_classify_daily_report_actions_none_risk():
+    import src.ai_command_router as r
+    for cmd in ("设置日报", "追加日报", "追加今日日报", "修改今日日报", "查看草稿", "清除草稿"):
+        assert r.classify_canonical_command(cmd) == "none"
+
+
 def test_send_long_text_segments(monkeypatch):
     s = _srv()
     from types import SimpleNamespace
