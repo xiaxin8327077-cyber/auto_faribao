@@ -141,6 +141,7 @@ def _is_configured(cfg) -> bool:
 def _report_source_label(source: str = None) -> str:
     labels = {
         "smart_sheet": "来自智能文档",
+        "smart_sheet_append": "智能文档加手工追加",
         "previous_report": "来自上一次日报",
         "manual": "手动填写",
         "generation_failed": "未生成（智能文档和上一次日报均失败）",
@@ -201,10 +202,12 @@ def notify_report_success(cfg, content: str, report_info: dict = None, report_da
         source,
     )
 
+    action_label = {"submit": "提交", "overwrite": "覆盖"}.get(info.get("action"), info.get("action", ""))
     md_content = f"""## ✅ 日报提交成功
 
 > **发送时间**：{send_time}
 > **日报日期**：{report_date} {weekday_cn}
+> **实际动作**：{action_label}
 > **日报类型**：{source_label}
 > **智能文档状态**：{smart_status_text}
 > **项目名称**：{project}
@@ -218,6 +221,9 @@ def notify_report_success(cfg, content: str, report_info: dict = None, report_da
 {content}
 ```
 """
+    draft_note = info.get("draft_note", "")
+    if draft_note:
+        md_content += f"\n> {draft_note}\n"
     send_markdown(cfg.wechat, md_content)
 
 

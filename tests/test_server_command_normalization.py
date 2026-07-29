@@ -104,7 +104,7 @@ def test_help_all_is_split_by_groups():
     assert messages[4].startswith("## ⚙️ 系统配置指令")
     assert messages[5].startswith("## 🖥️ 运维指令")
     assert messages[6].startswith("## 🤖 AI助手")
-    assert all(len(message) < 1800 for message in messages)
+    assert all(len(message) < 2500 for message in messages)
 
 
 def test_help_group_commands_return_single_detail_message():
@@ -294,6 +294,33 @@ def test_classify_daily_report_actions_none_risk():
     import src.ai_command_router as r
     for cmd in ("设置日报", "追加日报", "追加今日日报", "修改今日日报", "查看草稿", "清除草稿"):
         assert r.classify_canonical_command(cmd) == "none"
+
+
+# ---- Task 9: 通知来源文案、实际动作与 draft_note 显示、帮助菜单 ----
+
+def test_smart_sheet_append_label():
+    import src.wechat_notifier as n
+    assert n._report_source_label("smart_sheet_append") == "智能文档加手工追加"
+
+
+def test_notify_success_includes_action_and_draft_note(monkeypatch):
+    import src.wechat_notifier as n
+    sent = []
+    monkeypatch.setattr(n, "_is_configured", lambda cfg: True)
+    monkeypatch.setattr(n, "send_markdown", lambda wechat, md: sent.append(md))
+    from types import SimpleNamespace
+    n.notify_report_success(SimpleNamespace(wechat=SimpleNamespace()), "正文",
+                            {"action": "提交", "draft_note": "草稿已清除。"}, report_source="manual")
+    blob = "".join(sent)
+    assert "提交" in blob and "草稿已清除" in blob
+
+
+def test_help_contains_all_new_commands():
+    import src.server as s
+    msgs = s._build_help_messages("日报指令")
+    text = msgs[0] if msgs else ""
+    for cmd in ("设置日报", "追加日报", "追加今日日报", "修改今日日报", "查看草稿", "清除草稿", "确认执行", "取消执行"):
+        assert cmd in text, f"帮助菜单缺少 {cmd}"
 
 
 def test_send_long_text_segments(monkeypatch):

@@ -764,6 +764,16 @@ def _daily_help_text() -> str:
 • **获取前一天日报** <font color="comment">读取OA上一条</font>
 • **看下昨天日报内容** <font color="comment">自然语言读取</font>
 
+> <font color="info">草稿与修改</font>
+• **设置日报** <font color="comment">换行后写完整内容：保存/覆盖当天草稿</font>
+• **追加日报** <font color="comment">换行后写追加内容：自动判断追加到 OA 或草稿</font>
+• **追加今日日报** <font color="comment">换行后写追加内容：明确追加到今天 OA（需确认）</font>
+• **修改今日日报** <font color="comment">换行后写完整内容：覆盖今天 OA（需确认）</font>
+• **查看草稿** <font color="comment">显示当前草稿</font>
+• **清除草稿** <font color="comment">删除当前草稿（含过期）</font>
+• **确认执行** <font color="comment">确认待执行的 OA 日报修改（120 秒内有效）</font>
+• **取消执行** <font color="comment">放弃待执行的 OA 日报修改</font>
+
 > <font color="info">管理</font>
 • **撤回今日日报** <font color="comment">删除已提交日报</font>
 • **把今天日报撤回** <font color="comment">自然语言撤回</font>
