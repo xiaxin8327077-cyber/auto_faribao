@@ -299,13 +299,10 @@ def _handle_daily_report_edit_command(raw_content, from_user, cfg, *, action=Non
     return False
 
 
-_confirm_dedup_lock = threading.Lock()
-
-
 def _consume_confirm_or_skip(msg_id: str, from_user: str):
-    """原子地完成 MsgId 在途标记与待确认项消费（同一临界区）。
+    """原子地完成 MsgId 在途标记与待确认项消费（同一临界区，使用 _msgid_lock）。
     返回 (item, duplicate)：item 为已消费的 EditConfirmation；duplicate=True 表示 MsgId 重复回调。"""
-    with _confirm_dedup_lock:
+    with _msgid_lock:
         if msg_id and (msg_id in _msgid_seen or msg_id in _msgid_inflight):
             return None, True  # 重复回调，不消费
         if msg_id:
@@ -1056,6 +1053,9 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
 
     threading.Thread(target=_check_restart_flag, daemon=True).start()
 
+    # 启动期检查残留修改标记（上次崩溃感知）
+    threading.Thread(target=_check_stale_modify_on_startup, args=(cfg,), daemon=True).start()
+
     @app.route("/", methods=["GET"])
     def index():
         return _render_web_ui()
@@ -1150,9 +1150,10 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
                                        msg_id=msg_id, cfg_obj=cfg, from_user=from_user)
                     return "", 200
 
-                # 2) 确认/取消：peek 过滤过期；命中 OA 待确认才走 OA 路径，否则回落 AI 流程
+                # 2) 确认/取消：只要是确认/取消指令就走 OA 路径（含过期），由 handler 内部检测超时并提示。
+                #    不再回落 AI 流程，避免"没有待确认的智能指令"误答。
                 stripped = raw_content.strip()
-                if _route_confirm_or_cancel(stripped, from_user):
+                if stripped in ("确认执行", "取消执行"):
                     if stripped == "确认执行":
                         _run_confirm_in_background(_handle_edit_confirmation, from_user, cfg,
                                                   msg_id=msg_id, cfg_obj=cfg)

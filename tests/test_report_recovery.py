@@ -1238,6 +1238,23 @@ def test_stale_notify_false_keeps_marker(monkeypatch, tmp_path):
     assert ec.peek_stale_modify_markers() == []
 
 
+def test_expired_confirm_execution_shows_timeout_not_ai(monkeypatch, tmp_path):
+    """过期确认执行不应回落到 AI，而应由 handler 内部超时提示。"""
+    import src.server as s
+    import src.daily_report_edit_confirmation as ec
+    s._msgid_inflight.clear()
+    s._msgid_seen.clear()
+    clk = [1000.0]
+    s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
+    sent = []
+    monkeypatch.setattr(s, "_send_wechat_text", lambda *a, **k: sent.append(a) or True)
+    from types import SimpleNamespace
+    # 没有待确认项（peek 返回 None）→ _handle_edit_confirmation 内部发"超时"
+    result = s._handle_edit_confirmation("expired_user", SimpleNamespace(wechat=SimpleNamespace()))
+    assert result is True
+    assert any("已超时" in str(a) for a in sent)
+
+
 def test_background_thread_marks_done_only_on_success(monkeypatch, tmp_path):
     import src.server as s
     from types import SimpleNamespace
