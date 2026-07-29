@@ -176,6 +176,7 @@
     .rank { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; background: var(--blue-soft); color: var(--blue); font-size: 13px; font-weight: 850; }
     .name { overflow: hidden; font-size: 12px; line-height: 1.35; font-weight: 800; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     .code { margin-top: 4px; color: var(--muted); font-size: 10px; }
+    .holding { margin-top: 4px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
     .nav, .income { text-align: right; font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .date, .change { margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 600; }
     .income.positive, .income.positive .change { color: var(--positive); }
@@ -529,7 +530,7 @@
       $('productTitle').textContent = `产品持仓（${products.length}）`;
       $('productList').innerHTML = products.length ? products.map((item, index) => {
         const profit = item.latest_profit;
-        return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div></div><div class="nav"><div>${item.latest_nav ? number(item.latest_nav).toFixed(6) : '--'}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div></article>`;
+        return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div><div class="holding">--</div></div><div class="nav"><div>${item.latest_nav ? number(item.latest_nav).toFixed(6) : '--'}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div></article>`;
       }).join('') : '<div class="empty">暂无已配置的净值产品</div>';
       $('positiveRanking').innerHTML = rankingRows(monthlyPositives, '本月无正贡献');
       $('negativeRanking').innerHTML = rankingRows(monthlyNegatives, '本月无拖累');
