@@ -267,51 +267,162 @@ def submit_daily_report(content: str, cfg: Config, dry_run: bool = False,
             browser.close()
 
 
-def modify_daily_report(content: str, cfg: Config) -> tuple[bool, str, dict]:
-    """Modify today's submitted daily report with new content."""
-    target = cfg.target
-
-    logger.info("Logging in via API for modification...")
-    try:
-        token = login_with_captcha(
-            target.url, target.username, target.password, cfg.captcha,
-        )
-    except AuthError as e:
-        logger.error(f"Login failed for modify: {e}")
-        return False, str(e), {}
-
-    domain = _domain_from_url(target.url)
-
-    with browser_operation(), sync_playwright() as p:
-        browser = launch_browser(p)
-        context = browser.new_context(viewport={"width": 1920, "height": 1080}, locale="zh-CN")
-        context.add_cookies([
-            {"name": "DQMS-Token", "value": token, "domain": domain, "path": "/"},
-            {"name": "LoginModeKey", "value": "1", "domain": domain, "path": "/"},
-        ])
-        page = context.new_page()
-        page.set_default_timeout(target.element_timeout)
-
+def _find_report_row_on_pages(page, report_date: str, max_pages: int = 12):
+    """返回 (status, row)。status: 'found' | 'absent' | 'error'。
+    等待的是表格容器 table/.el-table；表格加载但无行（空表）算 absent。
+    只有容器都没加载（wait_for_selector 超时）才 error。"""
+    for _ in range(max_pages):
         try:
-            _navigate_and_click_edit(page, target)
-            _fill_report_form(page, content, target)
-            _submit_dialog(page)
-            return True, f"日报修改成功\n> {content[:200]}", {
-                "project": target.default_project,
-                "hours": WORK_HOURS,
-                "travel": "否",
-                "log_type": "实施日志",
-                "content": content,
-            }
-        except TargetError as e:
-            return False, str(e), {}
-        except PlaywrightTimeout as e:
-            return False, f"页面操作超时: {e}", {}
-        except Exception as e:
-            logger.error(f"Modify failed: {e}", exc_info=True)
-            return False, f"未知错误: {e}", {}
-        finally:
+            page.wait_for_selector("table, .el-table", timeout=30000)
+            page.wait_for_timeout(3000)
+        except PlaywrightTimeout:
+            return "error", None
+        rows = page.query_selector_all("table tbody tr, .el-table__body tr")
+        for row in rows:
+            text = row.inner_text()
+            if report_date in text or report_date.replace("-", "/") in text:
+                return "found", row
+        next_btn = page.query_selector("button:has-text('下一页'), .el-pagination .btn-next")
+        if next_btn is None or next_btn.is_disabled():
+            return "absent", None
+        next_btn.click()
+        page.wait_for_timeout(1500)
+    return "absent", None
+
+
+def _check_pre_modify(page, actual_date, expected_hash):
+    """返回 (ok, msg, current, row)。expected_hash 为 None 时只读不校验。"""
+    from src.daily_report_edit_confirmation import content_hash
+    status, row = _find_report_row_on_pages(page, actual_date)
+    if status == "error":
+        return False, "OA 表格加载失败，无法确认今天的日报", None, None
+    if status == "absent":
+        return False, "今天尚未提交日报", None, None
+    current = _read_report_content_from_row(page, row)
+    if expected_hash is not None and content_hash(current) != expected_hash:
+        return False, "内容在确认期间发生变化，已停止修改", current, row
+    return True, "", current, row
+
+
+def _verify_after_modify(page, actual_date, target_content, target) -> bool:
+    """重新导航并重新定位当天行后回读比对。"""
+    from src.daily_report_edit_confirmation import normalize_content_for_compare
+    page.goto(target.url.rstrip("/") + REPORT_PAGE, timeout=target.page_timeout)
+    try:
+        page.wait_for_selector("table, .el-table", timeout=30000)
+    except PlaywrightTimeout:
+        pass
+    page.wait_for_timeout(3000)
+    status, row = _find_report_row_on_pages(page, actual_date)
+    if status != "found":
+        return False
+    after = _read_report_content_from_row(page, row)
+    return normalize_content_for_compare(after) == normalize_content_for_compare(target_content)
+
+
+def _modify_failure_result(submitted: bool, exc: Exception, actual_date: str):
+    if submitted:
+        return False, f"修改结果未知，请手动核对：{exc}", {"report_date": actual_date, "action": "unknown"}
+    return False, f"修改失败: {exc}", {"report_date": actual_date, "action": "failed"}
+
+
+def query_today_report(cfg, report_date) -> tuple:
+    """返回 (status, content)。status: exists | absent | error。复用 _login_and_navigate 模式。"""
+    actual_date = _normalize_report_date(report_date)
+    try:
+        pw, browser, context, page = _login_and_navigate(cfg)
+    except Exception:
+        return "error", ""
+    try:
+        page.goto(cfg.target.url.rstrip("/") + REPORT_PAGE, timeout=cfg.target.page_timeout)
+        try:
+            page.wait_for_selector("table, .el-table", timeout=30000)
+        except PlaywrightTimeout:
+            pass
+        page.wait_for_timeout(3000)
+        status, row = _find_report_row_on_pages(page, actual_date)
+        if status == "error":
+            return "error", ""
+        if status == "absent":
+            return "absent", ""
+        content = _read_report_content_from_row(page, row)
+        if content and content.strip():
+            return "exists", content
+        return "error", ""  # 有行但读不到正文
+    except Exception:
+        return "error", ""
+    finally:
+        try:
             browser.close()
+        except Exception:
+            pass
+        try:
+            pw.stop()
+        except Exception:
+            pass
+        _BROWSER_LOCK.release()
+
+
+def modify_daily_report(content, cfg, report_date=None, expected_content_hash=None, user_id=None) -> tuple:
+    """Modify today's submitted daily report with new content.
+    真三态查询 + 按日期定位 + 重新导航回读 + 异常分流 + 锁内标记。"""
+    from src.beijing_time import today_str
+    from src.daily_report_edit_confirmation import begin_modify_marker, clear_modify_marker
+
+    target = cfg.target
+    actual_date = _normalize_report_date(report_date) if report_date else _normalize_report_date(today_str())
+    if actual_date != _normalize_report_date(today_str()):
+        return False, "本期只允许修改北京时间当天的日报", {"report_date": actual_date, "action": "failed"}
+
+    submitted = False
+    try:
+        pw, browser, context, page = _login_and_navigate(cfg)
+    except Exception as exc:
+        return _modify_failure_result(False, exc, actual_date)
+    try:
+        if user_id:
+            begin_modify_marker(user_id, actual_date, expected_content_hash or "")
+        page.goto(target.url.rstrip("/") + REPORT_PAGE, timeout=target.page_timeout)
+        try:
+            page.wait_for_selector("table, .el-table", timeout=30000)
+        except PlaywrightTimeout:
+            pass
+        page.wait_for_timeout(3000)
+
+        ok, msg, current, row = _check_pre_modify(page, actual_date, expected_content_hash)
+        if not ok:
+            return False, msg, {"report_date": actual_date, "action": "failed"}
+        edit_btn = row.query_selector("button:has-text('修改')")
+        if edit_btn is None:
+            return False, "未找到修改入口", {"report_date": actual_date, "action": "failed"}
+        edit_btn.click()
+        page.wait_for_timeout(2000)
+        _fill_report_form(page, content, target)
+        submitted = True  # 即将提交；此后任何异常都视为 unknown
+        _submit_dialog(page)
+        if not _verify_after_modify(page, actual_date, content, target):
+            return False, "修改结果未知，请手动核对", {"report_date": actual_date, "action": "unknown"}
+        return True, f"日报修改成功\n> {content[:200]}", {
+            "project": target.default_project, "hours": WORK_HOURS, "travel": "否",
+            "log_type": "实施日志", "content": content,
+            "report_date": actual_date, "action": "overwrite"}
+    except Exception as exc:
+        return _modify_failure_result(submitted, exc, actual_date)
+    finally:
+        try:
+            browser.close()
+        except Exception:
+            pass
+        try:
+            pw.stop()
+        except Exception:
+            pass
+        if user_id:
+            try:
+                clear_modify_marker(user_id)
+            except Exception as e:
+                logger.error(f"clear modify marker failed: {e}", exc_info=True)
+        _BROWSER_LOCK.release()  # 标记清除在释放锁之前
 
 
 def get_previous_report_content(cfg: Config, before_date: str = None) -> str:
