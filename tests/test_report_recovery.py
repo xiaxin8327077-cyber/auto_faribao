@@ -1080,3 +1080,180 @@ def test_notify_exception_does_not_flip_to_failure(monkeypatch, tmp_path):
     ret = s.auto_submit_if_needed(SimpleNamespace(wechat=SimpleNamespace()), precheck_cookies=True)
     # 通知失败不翻结果；草稿已在 OA 写入成功后清除（按计划：通知失败不改变 OA 写入结论）
     assert ret is True and d.load_draft() is None
+
+
+# ---- Task 7: 后台线程化、追加日报分流、确认/取消、启动期检查 ----
+
+def _setup_basic(monkeypatch, tmp_path, oa_status=("absent", "")):
+    import src.server as s
+    import src.daily_report_draft as d
+    import src.target as t
+    monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
+    monkeypatch.setattr(t, "query_today_report", lambda cfg, dt: oa_status)
+    sent = []
+    monkeypatch.setattr(s, "_send_wechat_text", lambda cfg, msg, u=None: sent.append((msg, u)))
+    monkeypatch.setattr(s, "_send_long_text", lambda cfg, msg, u=None: sent.append((msg, u)))
+    from types import SimpleNamespace
+    return s, SimpleNamespace(wechat=SimpleNamespace()), sent
+
+
+def test_append_to_oa_creates_pending_when_submitted(monkeypatch, tmp_path):
+    s, cfg, sent = _setup_basic(monkeypatch, tmp_path, oa_status=("exists", "现有正文"))
+    s._handle_daily_report_edit_command("追加日报\n新增条目", "u1", cfg)
+    item = s._edit_confirmations.peek("u1")
+    assert item is not None and item.action == "append_today"
+    assert item.final_content == "现有正文\n新增条目"
+    assert any("目标日期" in m[0] and "原正文摘要" in m[0] for m in sent)
+
+
+def test_append_no_oa_no_draft_uses_smart_sheet_with_cookie_check(monkeypatch, tmp_path):
+    s, cfg, sent = _setup_basic(monkeypatch, tmp_path, oa_status=("absent", ""))
+    import src.cookies_checker as cc
+    import src.report_builder as rb
+    cookie = {"checked": False}
+    monkeypatch.setattr(cc, "check_cookies", lambda c: cookie.__setitem__("checked", True) or True)
+    monkeypatch.setattr(rb, "build_report_with_meta",
+                        lambda c: ("智能文档正文", "smart_sheet", {"smart_doc_status": "normal"}))
+    s._handle_daily_report_edit_command("追加日报\n完成联调", "u1", cfg)
+    assert cookie["checked"] is True
+    import src.daily_report_draft as d
+    loaded = d.load_draft()
+    assert loaded.origin == "smart_sheet_append" and loaded.content == "智能文档正文\n完成联调"
+
+
+def test_append_oa_error_does_not_create_draft(monkeypatch, tmp_path):
+    s, cfg, sent = _setup_basic(monkeypatch, tmp_path, oa_status=("error", ""))
+    import src.report_builder as rb
+    monkeypatch.setattr(rb, "build_report_with_meta", lambda c: ("x", "smart_sheet", {}))
+    s._handle_daily_report_edit_command("追加日报\nx", "u1", cfg)
+    import src.daily_report_draft as d
+    assert d.load_draft() is None
+    assert any("失败" in m[0] for m in sent)
+
+
+def test_set_today_rejected_when_oa_submitted(monkeypatch, tmp_path):
+    s, cfg, sent = _setup_basic(monkeypatch, tmp_path, oa_status=("exists", "已存在"))
+    s._handle_daily_report_edit_command("设置日报\n今日内容", "u1", cfg)
+    assert any("修改今日日报" in m[0] for m in sent)
+
+
+def test_ai_route_natural_language_executes_append(monkeypatch, tmp_path):
+    s, cfg, sent = _setup_basic(monkeypatch, tmp_path, oa_status=("exists", "现有正文"))
+    raw = "往日报后面加一条：完成生产验证"
+    s._handle_daily_report_edit_command(raw, "u1", cfg, action="append", body=s._extract_body_from_raw(raw))
+    item = s._edit_confirmations.peek("u1")
+    assert item is not None and item.final_content == "现有正文\n完成生产验证"
+
+
+def test_confirm_passes_user_id_to_modify(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_edit_confirmation as ec
+    s._msgid_inflight.clear()
+    s._msgid_seen.clear()
+    clk = [1000.0]
+    s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
+    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date="2026-07-29",
+                               original_content_hash=ec.content_hash("原"), original_preview="原",
+                               final_content="新正文", created_at=clk[0], expires_at=clk[0] + 120)
+    s._edit_confirmations.save(item)
+    import src.target as t
+    captured = {}
+    monkeypatch.setattr(t, "modify_daily_report",
+                        lambda content, cfg, report_date=None, expected_content_hash=None, user_id=None:
+                        captured.update(user_id=user_id) or (True, "ok", {"action": "overwrite", "report_date": report_date}))
+    monkeypatch.setattr(s, "_send_wechat_text", lambda *a, **k: True)
+    from types import SimpleNamespace
+    s._handle_edit_confirmation("u1", SimpleNamespace(wechat=SimpleNamespace()), msg_id="M-pass")
+    assert captured["user_id"] == "u1"
+
+
+def test_confirm_consumed_sends_timeout(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_edit_confirmation as ec
+    s._msgid_inflight.clear()
+    s._msgid_seen.clear()
+    clk = [1000.0]
+    s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
+    sent = []
+    monkeypatch.setattr(s, "_send_wechat_text", lambda *a, **k: sent.append(a) or True)
+    from types import SimpleNamespace
+    assert s._handle_edit_confirmation("u1", SimpleNamespace(wechat=SimpleNamespace()), msg_id="M-to") is True
+    assert any("超时" in str(a) for a in sent)
+
+
+def test_consume_confirm_atomic_dedup(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_edit_confirmation as ec
+    s._msgid_inflight.clear()
+    s._msgid_seen.clear()
+    clk = [1000.0]
+    s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
+    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date="2026-07-29",
+                               original_content_hash="h", original_preview="p", final_content="c",
+                               created_at=clk[0], expires_at=clk[0] + 120)
+    s._edit_confirmations.save(item)
+    item1, dup1 = s._consume_confirm_or_skip("M-atom", "u1")
+    assert item1 is not None and dup1 is False
+    item2, dup2 = s._consume_confirm_or_skip("M-atom", "u1")
+    assert item2 is None and dup2 is True
+
+
+def test_route_confirm_present_routes_oa(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_edit_confirmation as ec
+    clk = [1000.0]
+    s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
+    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date="2026-07-29",
+                               original_content_hash="h", original_preview="p", final_content="c",
+                               created_at=clk[0], expires_at=clk[0] + 120)
+    s._edit_confirmations.save(item)
+    assert s._route_confirm_or_cancel("确认执行", "u1") is True
+
+
+def test_route_confirm_expired_falls_through(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_edit_confirmation as ec
+    clk = [1000.0]
+    s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
+    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date="2026-07-29",
+                               original_content_hash="h", original_preview="p", final_content="c",
+                               created_at=clk[0], expires_at=clk[0] + 1)
+    s._edit_confirmations.save(item)
+    clk[0] += 10
+    assert s._edit_confirmations.peek("u1") is None
+    assert s._route_confirm_or_cancel("确认执行", "u1") is False
+
+
+def test_stale_notify_false_keeps_marker(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_edit_confirmation as ec
+    monkeypatch.setattr(ec, "_marker_dir", lambda: tmp_path)
+    ec.begin_modify_marker("u1", "2026-07-29", "h")
+    monkeypatch.setattr(s, "_send_wechat_text", lambda *a, **k: False)
+    from types import SimpleNamespace
+    s._check_stale_modify_on_startup(SimpleNamespace(wechat=SimpleNamespace()))
+    assert len(ec.peek_stale_modify_markers()) == 1
+    monkeypatch.setattr(s, "_send_wechat_text", lambda *a, **k: True)
+    s._check_stale_modify_on_startup(SimpleNamespace(wechat=SimpleNamespace()))
+    assert ec.peek_stale_modify_markers() == []
+
+
+def test_background_thread_marks_done_only_on_success(monkeypatch, tmp_path):
+    import src.server as s
+    from types import SimpleNamespace
+    calls = []
+    monkeypatch.setattr(s, "_msgid_mark_done", lambda mid, *, processed: calls.append(processed))
+    monkeypatch.setattr(s, "_send_wechat_text", lambda *a, **k: None)
+    cfg_obj = SimpleNamespace(wechat=SimpleNamespace())
+
+    def ok_handler(*a, **k):
+        pass
+
+    def bad_handler(*a, **k):
+        raise RuntimeError("x")
+
+    s._run_in_background(ok_handler, msg_id="OK", cfg_obj=cfg_obj, from_user="u")
+    s._run_in_background(bad_handler, msg_id="BAD", cfg_obj=cfg_obj, from_user="u")
+    import time
+    time.sleep(0.2)
+    assert True in calls and False in calls

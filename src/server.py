@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 import threading
+import time as _time
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -85,6 +86,305 @@ def _msgid_mark_done(msg_id: str, *, processed: bool, clock=None) -> None:
         _msgid_inflight.pop(msg_id, None)
         if processed:
             _msgid_seen[msg_id] = clock()
+
+
+# ---- Task 7: 后台线程化、追加日报分流、8 指令分派、确认/取消、启动期检查 ----
+
+from src.daily_report_edit_confirmation import (
+    EditConfirmationStore, EditConfirmation, content_hash,
+    peek_stale_modify_markers, clear_modify_marker,
+)
+
+_edit_confirmations = EditConfirmationStore()
+_WECHAT_TEXT_MAX = 2000
+_AI_ACTION_MAP = {
+    "设置日报": "set_today", "追加日报": "append", "追加今日日报": "append_today",
+    "修改今日日报": "overwrite_today", "查看草稿": "view_draft", "清除草稿": "clear_draft",
+}
+
+
+def _send_long_text(cfg, text, from_user=None):
+    """分段发送长文本，每段不超过 _WECHAT_TEXT_MAX 字符。"""
+    if not text:
+        return
+    if len(text) <= _WECHAT_TEXT_MAX:
+        _send_wechat_text(cfg.wechat, text, from_user)
+        return
+    buf = ""
+    for line in text.split("\n"):
+        if buf and len(buf) + len(line) + 1 > _WECHAT_TEXT_MAX:
+            _send_wechat_text(cfg.wechat, buf, from_user)
+            buf = ""
+        while len(line) > _WECHAT_TEXT_MAX:
+            _send_wechat_text(cfg.wechat, line[:_WECHAT_TEXT_MAX], from_user)
+            line = line[_WECHAT_TEXT_MAX:]
+        buf = (buf + "\n" + line) if buf else line
+    if buf:
+        _send_wechat_text(cfg.wechat, buf, from_user)
+
+
+def _run_in_background(fn, *args, msg_id="", cfg_obj=None, from_user=None, **kwargs):
+    """后台线程执行 handler，成败决定 _msgid_mark_done(processed=ok)。"""
+
+    def _worker():
+        ok = True
+        try:
+            fn(*args, **kwargs)
+        except Exception as exc:
+            ok = False
+            if cfg_obj is not None and from_user is not None:
+                try:
+                    _send_wechat_text(cfg_obj.wechat, f"处理失败：{exc}", from_user)
+                except Exception:
+                    pass
+        finally:
+            if msg_id:
+                _msgid_mark_done(msg_id, processed=ok)
+
+    if msg_id and not _msgid_should_process(msg_id):
+        return
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _dispatch_append_report(body, from_user, cfg) -> bool:
+    """追加日报自动分流：已提交 OA → 待确认；未提交有草稿 → 追加草稿；无草稿 → 智能文档+追加。"""
+    import time as _time
+    from src.beijing_time import today_str
+    from src.target import query_today_report
+    from src.daily_report_draft import load_draft, append_draft, save_draft
+    from src.report_builder import build_report_with_meta
+
+    today = today_str()
+    status, existing = query_today_report(cfg, today)
+    if status == "error":
+        _send_wechat_text(cfg.wechat, "查询今天 OA 日报失败，未修改。", from_user)
+        return True
+    if status == "exists":
+        final = existing.rstrip("\n") + "\n" + body
+        item = EditConfirmation(user_id=from_user, action="append_today", report_date=today,
+            original_content_hash=content_hash(existing), original_preview=existing[:80],
+            final_content=final, created_at=_time.monotonic(), expires_at=_time.monotonic() + 120)
+        _edit_confirmations.save(item)
+        _send_long_text(cfg, f"目标日期：{today}\n原正文摘要：{existing[:80]}\n修改后正文：\n{final}", from_user)
+        _send_wechat_text(cfg.wechat, '回复"确认执行"提交，或"取消执行"放弃。', from_user)
+        return True
+
+    draft = load_draft()
+    if draft is not None and draft.report_date != today:
+        _send_wechat_text(cfg.wechat, f'存在 {draft.report_date} 的过期草稿，请先"清除草稿"或"设置日报"。',
+                          from_user)
+        return True
+    if draft is not None and draft.report_date == today:
+        new = append_draft(today, body)
+        _send_wechat_text(cfg.wechat, f"已追加到今天草稿，版本 {new.revision}。", from_user)
+        _send_long_text(cfg, new.content, from_user)
+        return True
+
+    # 无 OA、无今天草稿：先 Cookie 预检
+    try:
+        from src.cookies_checker import check_cookies
+        cookie_ok = check_cookies(cfg)
+    except Exception as exc:
+        _send_wechat_text(cfg.wechat, f"智能文档 Cookie 检查失败，未创建追加草稿：{exc}", from_user)
+        return True
+    if not cookie_ok:
+        _send_wechat_text(cfg.wechat, "智能文档 Cookie 失效，未创建追加草稿。", from_user)
+        return True
+    try:
+        report, source, meta = build_report_with_meta(cfg)
+    except Exception as exc:
+        _send_wechat_text(cfg.wechat, f"智能文档读取失败，未创建草稿：{exc}", from_user)
+        return True
+    if source != "smart_sheet" or meta.get("smart_doc_status") != "normal" or not report.strip():
+        _send_wechat_text(cfg.wechat, "智能文档状态异常或回退上一条日报，未创建追加草稿。", from_user)
+        return True
+    new = save_draft(today, report.rstrip("\n") + "\n" + body, "smart_sheet_append")
+    _send_wechat_text(cfg.wechat,
+                      f"已根据智能文档生成草稿并追加，来源 智能文档加手工追加，版本 {new.revision}。将在提交时使用。",
+                      from_user)
+    _send_long_text(cfg, new.content, from_user)
+    return True
+
+
+def _handle_daily_report_edit_command(raw_content, from_user, cfg, *, action=None, body=None):
+    """8 个日报编辑指令分派。"""
+    import time as _time
+    from src.beijing_time import today_str
+    from src.daily_report_draft import load_draft, save_draft, clear_draft
+    from src.target import query_today_report
+
+    if action is None:
+        parsed = parse_daily_report_edit_command(raw_content)
+        if parsed is None:
+            return False
+        action, body = parsed.action, parsed.body
+    today = today_str()
+
+    if action == "view_draft":
+        draft = load_draft()
+        if draft is None:
+            _send_wechat_text(cfg.wechat, "当前没有草稿。", from_user)
+        else:
+            _send_long_text(cfg,
+                            f"草稿日期：{draft.report_date}\n来源：{draft.origin}\n版本：{draft.revision}\n"
+                            f"更新时间：{draft.updated_at}\n正文：\n{draft.content}",
+                            from_user)
+        return True
+
+    if action == "clear_draft":
+        clear_draft()
+        _send_wechat_text(cfg.wechat, "草稿已清除。", from_user)
+        return True
+
+    if action == "set_today":
+        if not body.strip():
+            _send_wechat_text(cfg.wechat, "格式：设置日报\\n[完整内容]", from_user)
+            return True
+        status, _ = query_today_report(cfg, today)
+        if status == "error":
+            _send_wechat_text(cfg.wechat, "查询今天 OA 失败，未保存草稿。", from_user)
+            return True
+        if status == "exists":
+            _send_wechat_text(cfg.wechat, '今天已提交日报，请改用"修改今日日报"。', from_user)
+            return True
+        new = save_draft(today, body, "manual")
+        _send_wechat_text(cfg.wechat, f"已保存今天草稿，版本 {new.revision}。", from_user)
+        return True
+
+    if action == "append":
+        if not body.strip():
+            _send_wechat_text(cfg.wechat, "格式：追加日报\\n[追加内容]", from_user)
+            return True
+        return _dispatch_append_report(body, from_user, cfg)
+
+    if action == "append_today":
+        if not body.strip():
+            _send_wechat_text(cfg.wechat, "格式：追加今日日报\\n[追加内容]", from_user)
+            return True
+        status, existing = query_today_report(cfg, today)
+        if status == "error":
+            _send_wechat_text(cfg.wechat, "查询今天 OA 失败。", from_user)
+            return True
+        if status != "exists":
+            _send_wechat_text(cfg.wechat, '今天尚未提交日报，请改用"追加日报"。', from_user)
+            return True
+        final = existing.rstrip("\n") + "\n" + body
+        item = EditConfirmation(user_id=from_user, action="append_today", report_date=today,
+            original_content_hash=content_hash(existing), original_preview=existing[:80],
+            final_content=final, created_at=_time.monotonic(), expires_at=_time.monotonic() + 120)
+        _edit_confirmations.save(item)
+        _send_long_text(cfg, f"目标日期：{today}\n原正文摘要：{existing[:80]}\n修改后正文：\n{final}", from_user)
+        _send_wechat_text(cfg.wechat, '回复"确认执行"提交，或"取消执行"放弃。', from_user)
+        return True
+
+    if action == "overwrite_today":
+        if not body.strip():
+            _send_wechat_text(cfg.wechat, "格式：修改今日日报\\n[完整内容]", from_user)
+            return True
+        status, existing = query_today_report(cfg, today)
+        if status == "error":
+            _send_wechat_text(cfg.wechat, "查询今天 OA 失败。", from_user)
+            return True
+        if status != "exists":
+            _send_wechat_text(cfg.wechat, '今天尚未提交日报，请改用"设置日报"。', from_user)
+            return True
+        item = EditConfirmation(user_id=from_user, action="overwrite_today", report_date=today,
+            original_content_hash=content_hash(existing), original_preview=existing[:80],
+            final_content=body, created_at=_time.monotonic(), expires_at=_time.monotonic() + 120)
+        _edit_confirmations.save(item)
+        _send_long_text(cfg, f"目标日期：{today}\n原正文摘要：{existing[:80]}\n修改后正文：\n{body}", from_user)
+        _send_wechat_text(cfg.wechat, '回复"确认执行"提交，或"取消执行"放弃。', from_user)
+        return True
+
+    return False
+
+
+_confirm_dedup_lock = threading.Lock()
+
+
+def _consume_confirm_or_skip(msg_id: str, from_user: str):
+    """原子地完成 MsgId 在途标记与待确认项消费（同一临界区）。
+    返回 (item, duplicate)：item 为已消费的 EditConfirmation；duplicate=True 表示 MsgId 重复回调。"""
+    with _confirm_dedup_lock:
+        if msg_id and (msg_id in _msgid_seen or msg_id in _msgid_inflight):
+            return None, True  # 重复回调，不消费
+        if msg_id:
+            _msgid_inflight[msg_id] = _time.monotonic()
+        item = _edit_confirmations.confirm(from_user)  # 单次消费
+    return item, False
+
+
+def _route_confirm_or_cancel(stripped: str, from_user: str) -> bool:
+    """是否由 OA 确认路径处理。True=OA（后台执行），False=回落 AI 流程。"""
+    if stripped not in ("确认执行", "取消执行"):
+        return False
+    return _edit_confirmations.peek(from_user) is not None
+
+
+def _handle_edit_confirmation(from_user, cfg, msg_id: str = "") -> bool:
+    """确认执行 OA 修改。"""
+    from src.target import modify_daily_report
+    item, duplicate = _consume_confirm_or_skip(msg_id, from_user)
+    if item is None:
+        if not duplicate:
+            _send_wechat_text(cfg.wechat, "待确认的日报修改已超时或不存在，请重新发起。", from_user)
+        if msg_id:
+            _msgid_mark_done(msg_id, processed=True)
+        return True
+    try:
+        ok, msg, meta = modify_daily_report(item.final_content, cfg, item.report_date,
+                                             expected_content_hash=item.original_content_hash,
+                                             user_id=item.user_id)
+        action = meta.get("action")
+        if ok and action == "overwrite":
+            _send_wechat_text(cfg.wechat, f"日报已修改：{msg}", from_user)
+        elif action == "unknown":
+            _send_wechat_text(cfg.wechat, "修改结果未知，请手动核对 OA 当天日报。", from_user)
+        else:
+            _send_wechat_text(cfg.wechat, f"修改失败：{msg}", from_user)
+    finally:
+        if msg_id:
+            _msgid_mark_done(msg_id, processed=True)
+    return True
+
+
+def _handle_edit_cancel(from_user, cfg) -> bool:
+    if _edit_confirmations.cancel(from_user):
+        _send_wechat_text(cfg.wechat, "已取消本次日报修改。", from_user)
+        return True
+    return False
+
+
+def _run_confirm_in_background(fn, from_user, cfg, msg_id="", cfg_obj=None):
+    """确认执行专用：不在派发时标记在途（消费时在 _consume_confirm_or_skip 内原子标记）。"""
+
+    def _worker():
+        try:
+            fn(from_user, cfg, msg_id=msg_id)
+        except Exception as exc:
+            try:
+                _send_wechat_text(cfg_obj.wechat, f"处理失败：{exc}", from_user)
+            except Exception:
+                pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _check_stale_modify_on_startup(cfg):
+    """启动期检查残留修改标记，通知对应用户核对。通知成功才清除标记。"""
+    for stale in peek_stale_modify_markers():  # 只读不删
+        user_id = stale.get("user_id")
+        report_date = stale.get("report_date", "未知日期")
+        try:
+            sent_ok = _send_wechat_text(cfg.wechat,
+                f"上次日报修改（{report_date}）可能未完成，请核对 OA 当天正文。", user_id)
+        except Exception as e:
+            logger.error(f"stale modify notify failed: {e}", exc_info=True)
+            continue  # 保留标记，下次重启再提醒
+        if sent_ok:
+            clear_modify_marker(user_id)
+        else:
+            logger.warning("stale modify notify returned False, keep marker for next restart")
 
 
 def _rename_cmd(name: str) -> None:
@@ -830,9 +1130,29 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
             msg_type = msg.get("MsgType", "")
 
             if msg_type == "text":
-                content = extract_text_content(msg)
-                content = _normalize_daily_report_command_text(content)
+                raw_content = extract_text_content(msg)
                 from_user = msg.get("FromUserName", "")
+                msg_id = msg.get("MsgId", "")
+
+                # 1) 精确日报编辑指令：后台线程处理，保留原始多行正文
+                if parse_daily_report_edit_command(raw_content) is not None:
+                    _run_in_background(_handle_daily_report_edit_command, raw_content, from_user, cfg,
+                                       msg_id=msg_id, cfg_obj=cfg, from_user=from_user)
+                    return "", 200
+
+                # 2) 确认/取消：peek 过滤过期；命中 OA 待确认才走 OA 路径，否则回落 AI 流程
+                stripped = raw_content.strip()
+                if _route_confirm_or_cancel(stripped, from_user):
+                    if stripped == "确认执行":
+                        _run_confirm_in_background(_handle_edit_confirmation, from_user, cfg,
+                                                  msg_id=msg_id, cfg_obj=cfg)
+                    else:
+                        _run_in_background(_handle_edit_cancel, from_user, cfg,
+                                           msg_id=msg_id, cfg_obj=cfg, from_user=from_user)
+                    return "", 200
+
+                # 3) 原有流程：标准化、_ai_command_in_progress、ai_bridge.prepare 等保持不变
+                content = _normalize_daily_report_command_text(raw_content)
 
                 if _ai_command_in_progress():
                     _send_wechat_text(cfg.wechat, _busy_reply(), from_user)
@@ -844,6 +1164,21 @@ def create_app(cfg: Config, ai_assistant=None) -> Flask:
                 if prepared.handled:
                     return "", 200
                 content = prepared.content
+
+                # 4) AI 路由命中日报动作：服务器从原始消息提取正文后后台处理
+                if content in _AI_ACTION_MAP:
+                    body = _extract_body_from_raw(raw_content)
+                    if content in ("设置日报", "追加日报", "追加今日日报", "修改今日日报") and not body.strip():
+                        _send_wechat_text(cfg.wechat,
+                            "未识别到日报正文。请用换行或冒号分隔动作与正文，例如：\n设置日报\\n一、任务内容",
+                            from_user)
+                        return "", 200
+                    _run_in_background(_handle_daily_report_edit_command, raw_content, from_user, cfg,
+                                       action=_AI_ACTION_MAP[content], body=body,
+                                       msg_id=msg_id, cfg_obj=cfg, from_user=from_user)
+                    return "", 200
+
+                # 5) 其它：沿用原有分派块（不变）
 
                 if is_cookies_update_message(content):
                     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")

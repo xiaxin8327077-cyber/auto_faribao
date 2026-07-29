@@ -286,3 +286,14 @@ def test_msgid_inflight_orphan_cleared_after_ttl():
 def test_msgid_empty_always_processes():
     s = _srv()
     assert s._msgid_should_process("", clock=lambda: 1.0) is True
+
+
+def test_send_long_text_segments(monkeypatch):
+    s = _srv()
+    from types import SimpleNamespace
+    sent = []
+    monkeypatch.setattr(s, "_send_wechat_text", lambda cfg, msg, u=None: sent.append(msg))
+    long = "\n".join(f"行{i}" + "x" * 600 for i in range(10))
+    s._send_long_text(SimpleNamespace(wechat=SimpleNamespace()), long, "u1")
+    assert len(sent) >= 2
+    assert "".join(sent).replace("\n", "") == long.replace("\n", "")
