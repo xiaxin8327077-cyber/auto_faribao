@@ -78,3 +78,28 @@ final result: passed
 - The locally served Lucide close icon loaded successfully.
 
 final result: passed
+
+## Product holding line iteration
+
+- Spec: `docs/superpowers/specs/2026-07-29-nav-dashboard-product-holdings-design.md`
+- Local development state: shares not configured in `config.yaml` for either product, so the local dashboard has zero populated holding lines.
+
+### Iteration 1 (initial)
+
+- Layout: holding as sibling of `.code` inside the name-column wrapper.
+- Result: text wraps in the narrow 130-150px column, breaking into two lines per row.
+- User feedback: "这个不应转行才对" (this shouldn't wrap).
+
+### Iteration 2 (cross-column, name-aligned)
+
+- Layout: holding moved out of the name column to be a direct child of `<article class="product">`, with `grid-column: 2 / -1` so its left edge aligns with `.name` and it spans columns 2-4.
+- Visual evidence: local IAB screenshot surface is broken in this environment (all `tab.screenshot()` calls time out). Functional verification used three independent layers instead:
+  1. Python contract: 11 cases in `tests/test_nav_dashboard_page.py` all pass, locking the exact output strings (e.g. `401133.95 份 · 市值 401,628.95 元`).
+  2. JS function: 11 cases evaluated in-browser via `tab.playwright.evaluate(() => formatHolding(...))` returned identical output to the Python contract.
+  3. DOM snapshot with mocked shares: temporarily injected shares into `data/nav_dashboard_state.json`, reloaded the page, captured the AI/ARIA tree, and used `getBoundingClientRect()` to measure positions. Both product rows showed `401133.95 份 · 市值 432,382.28 元` and `36667.07 份 · 市值 39,186.10 元` on a single line. The holding `left` (66px) equals the name `left` (66px) in both 390x844 and 430x932 viewports. The global estimated market value re-computed to `471,568.38` yuan (math: 401133.95 × 1.077900 + 36667.07 × 1.068700 = 432,382.28 + 39,186.10 = 471,568.38). The mock state was restored from a `.real` backup.
+- Production re-verification required: deploy this commit to Seoul server, add `shares` to `config.yaml` for at least one product, capture 390x844 and 430x932 screenshots, and confirm `scrollWidth <= innerWidth` for both. The current change is correct by the three layers above; the production screenshot only confirms pixel-level rendering.
+- Regression: bottom sheet still opens, daily/monthly/yearly tabs present, cumulative profit unaffected, top metric cards unchanged.
+- `.holding` rule: `grid-column: 2 / -1; margin-top: 4px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums`, same visual weight as `.code`.
+- Empty-state behavior: when `shares` is empty the `<div class="holding">` node is not emitted at all (no 4px blank gap), matching the chosen "完全隐藏" UX. Verified: 2 products rendered, 0 holding elements when shares are unset.
+
+final result: passed (functional); pending production screenshot re-verification

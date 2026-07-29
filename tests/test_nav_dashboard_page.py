@@ -12,12 +12,16 @@ def test_holding_css_rule_exists():
     page = _read_page()
     assert ".holding" in page
     assert "font-variant-numeric: tabular-nums" in page
+    # holding 跨列对齐名称左边缘（从 grid column 2 到末尾）
+    assert "grid-column: 2 / -1" in page
 
 
 def test_product_template_contains_holding_node():
     page = _read_page()
     assert '<div class="holding">' in page
     assert "holding" in page
+    # holding 在 .income 之后、</article> 之前（article 级别子节点）
+    assert "</div>${(() => { const h = formatHolding" in page or "</div>${(() => {" in page
 
 
 def test_top_metrics_unchanged():

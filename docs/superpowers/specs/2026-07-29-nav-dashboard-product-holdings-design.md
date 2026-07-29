@@ -71,10 +71,11 @@
 
 ## 视觉样式
 
-新增 `.holding` CSS 规则，完全沿用 `.code` 的视觉权重：
+新增 `.holding` CSS 规则，**跨列对齐到产品名称左边缘**：
 
 ```css
 .holding {
+  grid-column: 2 / -1;
   margin-top: 4px;
   color: var(--muted);
   font-size: 10px;
@@ -82,7 +83,10 @@
 }
 ```
 
-`font-variant-numeric: tabular-nums` 让份额与市值的数字等宽，避免不同位数的份额（如 `401133.95` 与 `87,728.31`）抖动宽度。
+- `grid-column: 2 / -1`：在 `<article class="product">` 的 4 列 grid（rank / name+code / nav+date / income+pct）中，holding 节点从第 2 列（名称列）开始、跨到最右。这样 holding 的左边缘与 `.name` 严格对齐（实测在 390px 与 430px 视口下均为 66px），同时获得 4 列总宽（317-357px）容纳完整文本。
+- `font-variant-numeric: tabular-nums`：份额与市值的数字等宽，避免不同位数的份额（如 `401133.95` 与 `87,728.31`）抖动宽度。
+
+**结构变化**：原 plan 中 holding 作为 `.code` 之后的兄弟节点嵌在名称列 wrapper 内，实际渲染时因列宽不足（约 130-150px）会强制换行（用户截图反馈）。改为 article 级别 grid 子节点后，文本单行不换行，与"主信息"行（净值/收益）形成清晰的"附注"层级。
 
 隐藏逻辑用模板三元判断 `holding ? \`<div class="holding">${esc(holding)}</div>\` : ''`，避免留下空 `<div>` 产生的 4px 空白高度。
 
