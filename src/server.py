@@ -2462,8 +2462,99 @@ def _start_report_cookie_renewal(cfg: Config, cookies_error: Exception) -> None:
         )
 
 
+def _canonical_submit_action(action: str) -> str:
+    """将 submit_daily_report 返回的 action 规范化为固定词表。"""
+    return {"提交": "submit", "覆盖": "overwrite", "skipped": "skipped"}.get(str(action), "failed")
+
+
+def _safe_notify_failure(cfg, msg, report_source, report_meta, report_info=None):
+    try:
+        notify_report_failure(cfg, msg, report_source=report_source,
+                              smart_doc_status=(report_meta or {}).get("smart_doc_status"),
+                              smart_doc_error=(report_meta or {}).get("smart_doc_error"),
+                              screenshot=(report_info or {}).get("screenshot"))
+    except Exception as e:
+        logger.error(f"notify failure failed: {e}", exc_info=True)
+
+
+def _submit_and_notify(content: str, cfg: Config, report_source: str = None,
+                       report_meta: dict = None, on_actual_write=None) -> bool:
+    """统一提交入口。skipped 只发提示、不调 notify_report_success；
+    非 submit/overwrite/skipped 的未知动作报"结果无法确认"并 return False。
+    on_actual_write(meta) 在 OA 确认写入后、发送企微成功通知前调用。"""
+    report_meta = report_meta or {}
+    try:
+        success, msg, report_info = submit_daily_report(content, cfg)
+    except Exception as e:
+        logger.error(f"Submit crashed: {e}", exc_info=True)
+        _safe_notify_failure(cfg, f"日报提交流程异常: {e}", report_source, report_meta)
+        return False
+    if not success:
+        _safe_notify_failure(cfg, msg, report_source, report_meta, report_info)
+        return False
+
+    action = _canonical_submit_action(report_info.get("action"))
+    if action == "skipped":
+        try:
+            _send_wechat_text(cfg.wechat, msg, None)
+        except Exception as e:
+            logger.error(f"skip notify failed: {e}", exc_info=True)
+        return True
+    if action not in ("submit", "overwrite"):
+        # 未知动作：不报成功、不清草稿、报告无法确认
+        _safe_notify_failure(cfg, f"提交结果无法确认（动作：{report_info.get('action')}），请手动核对。",
+                             report_source, report_meta, report_info)
+        return False
+
+    if on_actual_write is not None:
+        try:
+            on_actual_write(report_info)
+        except Exception as e:
+            logger.error(f"post-write callback failed: {e}", exc_info=True)
+            report_info["draft_note"] = f"草稿后续处理失败：{e}"
+    try:
+        notify_report_success(cfg, content, report_info, report_source=report_source,
+                              smart_doc_status=report_meta.get("smart_doc_status"),
+                              smart_doc_error=report_meta.get("smart_doc_error"))
+    except Exception as e:
+        logger.error(f"notify success failed: {e}", exc_info=True)
+    return True
+
+
 def auto_submit_if_needed(cfg: Config, *, precheck_cookies: bool = True) -> bool:
-    """Called by scheduler at 17:45. Auto-submits if no manual report was provided."""
+    """Called by scheduler at 17:45. Auto-submits if no manual report was provided.
+    草稿优先：存在今天有效草稿时跳过智能文档 Cookie 检查和 build_report_with_meta。"""
+    from src.daily_report_draft import load_draft, clear_draft, DraftCorruptError
+    from src.beijing_time import today_str
+
+    today = today_str()
+    try:
+        draft = load_draft()
+    except DraftCorruptError as exc:
+        _safe_notify_failure(cfg, f"草稿文件损坏，提交失败：{exc}", None, {})
+        return False
+    if draft is not None and draft.report_date != today:
+        _safe_notify_failure(cfg, f'存在 {draft.report_date} 的过期草稿，请先"查看草稿"并"清除草稿"。', None, {})
+        return False
+    if draft is not None and draft.report_date == today:
+        recorded_date, recorded_revision = draft.report_date, draft.revision
+        smart_status = "not_used" if draft.origin == "manual" else "normal"
+
+        def _on_actual_write(meta: dict):
+            if _canonical_submit_action(meta.get("action")) in ("submit", "overwrite"):
+                try:
+                    cleared = clear_draft(expected_report_date=recorded_date, expected_revision=recorded_revision)
+                except DraftCorruptError:
+                    cleared = False
+                meta["draft_note"] = "草稿已清除。" if cleared else '草稿清除失败，请手动发送"清除草稿"。'
+
+        return _submit_and_notify(
+            draft.content, cfg,
+            report_source="manual" if draft.origin == "manual" else "smart_sheet_append",
+            report_meta={"report_date": today, "origin": draft.origin, "smart_doc_status": smart_status},
+            on_actual_write=_on_actual_write)
+
+    # ↓↓↓ 以下保留原有 precheck_cookies + build_report_with_meta + _submit_and_notify 流程 ↓↓↓
     if precheck_cookies:
         from src.cookies_checker import CookiesError, CookiesNetworkError, check_cookies
 
@@ -2509,42 +2600,6 @@ def auto_submit_if_needed(cfg: Config, *, precheck_cookies: bool = True) -> bool
             return False
 
     return _submit_and_notify(report, cfg, source, meta)
-
-
-def _submit_and_notify(content: str, cfg: Config, report_source: str = None,
-                       report_meta: dict = None) -> bool:
-    report_meta = report_meta or {}
-    try:
-        success, msg, report_info = submit_daily_report(content, cfg)
-        if success:
-            notify_report_success(
-                cfg,
-                content,
-                report_info,
-                report_source=report_source,
-                smart_doc_status=report_meta.get("smart_doc_status"),
-                smart_doc_error=report_meta.get("smart_doc_error"),
-            )
-            return True
-        notify_report_failure(
-            cfg,
-            msg,
-            report_source=report_source,
-            smart_doc_status=report_meta.get("smart_doc_status"),
-            smart_doc_error=report_meta.get("smart_doc_error"),
-            screenshot=report_info.get("screenshot"),
-        )
-        return False
-    except Exception as e:
-        logger.error(f"Submit flow crashed: {e}", exc_info=True)
-        notify_report_failure(
-            cfg,
-            f"日报提交流程异常: {e}",
-            report_source=report_source,
-            smart_doc_status=report_meta.get("smart_doc_status"),
-            smart_doc_error=report_meta.get("smart_doc_error"),
-        )
-        return False
 
 
 def _is_cookies_expiry_error(error: str) -> bool:

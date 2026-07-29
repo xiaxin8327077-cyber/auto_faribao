@@ -968,3 +968,115 @@ def test_browser_close_exception_does_not_mask_login_failure(monkeypatch):
     assert len(raised_exceptions) == 1
     assert isinstance(raised_exceptions[0], checker.CookiesError)
     assert "login" in str(raised_exceptions[0]).lower()
+
+
+# ---- Task 6: 草稿优先提交、条件清除、通知安全 ----
+
+def _srv():
+    import src.server as s
+    return s
+
+
+def test_canonical_submit_action_maps_chinese():
+    s = _srv()
+    assert s._canonical_submit_action("提交") == "submit"
+    assert s._canonical_submit_action("覆盖") == "overwrite"
+    assert s._canonical_submit_action("skipped") == "skipped"
+    assert s._canonical_submit_action("别的") == "failed"
+
+
+def _patch_notifier(monkeypatch, cap):
+    import src.server as s
+
+    def _succ(cfg, content, report_info, **k):
+        cap.setdefault("success", {"info": report_info, "k": k})
+
+    monkeypatch.setattr(s, "notify_report_success", _succ)
+    monkeypatch.setattr(s, "notify_report_failure", lambda *a, **k: cap.setdefault("failure", a))
+    monkeypatch.setattr(s, "_send_wechat_text", lambda *a, **k: cap.setdefault("text", a))
+
+
+def test_draft_first_submit_skips_smart_doc_and_clears(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_draft as d
+    monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
+    d.save_draft("2026-07-29", "草稿正文", "manual")
+    calls = {"cookie": 0, "build": 0, "submit": []}
+    import src.cookies_checker as cc
+    monkeypatch.setattr(cc, "check_cookies", lambda c: calls.__setitem__("cookie", calls["cookie"] + 1) or True)
+    import src.report_builder as rb
+    monkeypatch.setattr(rb, "build_report_with_meta",
+                        lambda c: calls.__setitem__("build", calls["build"] + 1) or ("x", "smart_sheet", {}))
+    monkeypatch.setattr(s, "submit_daily_report",
+                        lambda content, cfg: (calls["submit"].append(content),
+                                             (True, "ok", {"action": "提交", "report_date": "2026-07-29"}))[1])
+    cap = {}
+    _patch_notifier(monkeypatch, cap)
+    from types import SimpleNamespace
+    s.auto_submit_if_needed(SimpleNamespace(wechat=SimpleNamespace()), precheck_cookies=True)
+    assert calls["cookie"] == 0 and calls["build"] == 0 and calls["submit"] == ["草稿正文"]
+    assert d.load_draft() is None
+    assert "success" in cap and "failure" not in cap
+    assert cap["success"]["k"]["smart_doc_status"] == "not_used"
+    assert cap["success"]["info"].get("draft_note") == "草稿已清除。"
+
+
+def test_skipped_does_not_notify_success(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_draft as d
+    monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
+    d.save_draft("2026-07-29", "草稿正文", "manual")
+    monkeypatch.setattr(s, "submit_daily_report",
+                        lambda content, cfg: (True, "今日日报已审核，跳过", {"action": "skipped"}))
+    cap = {}
+    _patch_notifier(monkeypatch, cap)
+    from types import SimpleNamespace
+    s.auto_submit_if_needed(SimpleNamespace(wechat=SimpleNamespace()), precheck_cookies=True)
+    assert "success" not in cap and "failure" not in cap
+    assert "text" in cap and d.load_draft() is not None
+
+
+def test_unknown_action_reports_unconfirmed(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_draft as d
+    monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
+    d.save_draft("2026-07-29", "草稿正文", "manual")
+    monkeypatch.setattr(s, "submit_daily_report", lambda content, cfg: (True, "ok", {"action": "weird"}))
+    cap = {}
+    _patch_notifier(monkeypatch, cap)
+    from types import SimpleNamespace
+    ret = s.auto_submit_if_needed(SimpleNamespace(wechat=SimpleNamespace()), precheck_cookies=True)
+    assert ret is False
+    assert "failure" in cap and "无法确认" in str(cap["failure"])
+    assert d.load_draft() is not None
+
+
+def test_clear_failure_sets_draft_note_not_failure(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_draft as d
+    monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
+    d.save_draft("2026-07-29", "草稿正文", "manual")
+    monkeypatch.setattr(s, "submit_daily_report", lambda content, cfg: (True, "ok", {"action": "提交"}))
+    monkeypatch.setattr(d, "clear_draft", lambda **k: (_ for _ in ()).throw(d.DraftCorruptError("bad")))
+    cap = {}
+    _patch_notifier(monkeypatch, cap)
+    from types import SimpleNamespace
+    s.auto_submit_if_needed(SimpleNamespace(wechat=SimpleNamespace()), precheck_cookies=True)
+    assert "草稿清除失败" in cap["success"]["info"].get("draft_note", "")
+    assert "failure" not in cap
+
+
+def test_notify_exception_does_not_flip_to_failure(monkeypatch, tmp_path):
+    import src.server as s
+    import src.daily_report_draft as d
+    monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
+    d.save_draft("2026-07-29", "草稿正文", "manual")
+    monkeypatch.setattr(s, "submit_daily_report", lambda content, cfg: (True, "ok", {"action": "提交"}))
+    monkeypatch.setattr(s, "notify_report_success",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(s, "notify_report_failure", lambda *a, **k: None)
+    monkeypatch.setattr(s, "_send_wechat_text", lambda *a, **k: None)
+    from types import SimpleNamespace
+    ret = s.auto_submit_if_needed(SimpleNamespace(wechat=SimpleNamespace()), precheck_cookies=True)
+    # 通知失败不翻结果；草稿已在 OA 写入成功后清除（按计划：通知失败不改变 OA 写入结论）
+    assert ret is True and d.load_draft() is None
