@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 import hashlib
 import json
+import urllib.parse
 
 import pytest
 
@@ -488,3 +489,173 @@ def test_market_provider_factory_constructs_changsheng_seam(monkeypatch):
         providers.get_market_provider("changsheng_fund"),
         PlaceholderChangshengProvider,
     )
+
+
+def test_changsheng_pairs_date_and_nav_arrays_without_using_stale_date():
+    from src.portfolio_providers import ChangshengFundProvider
+
+    provider = ChangshengFundProvider(
+        opener=lambda *_args, **_kwargs: {
+            "status": 1,
+            "DateArray": ["2026.07.28", "2026.07.29"],
+            "DwjzArray": ["1.0319", "1.0321"],
+        }
+    )
+    product = provider.resolve_product("003103")
+    quotes = provider.fetch_quotes(
+        product,
+        date(2026, 7, 28),
+        date(2026, 7, 30),
+    )
+
+    assert [(quote.quote_date, quote.unit_nav) for quote in quotes] == [
+        (date(2026, 7, 29), Decimal("1.0321")),
+        (date(2026, 7, 28), Decimal("1.0319")),
+    ]
+    assert not any(quote.quote_date == date(2026, 7, 30) for quote in quotes)
+
+
+def test_changsheng_rejects_misaligned_arrays():
+    from src.portfolio_providers import ChangshengFundProvider
+
+    provider = ChangshengFundProvider(
+        opener=lambda *_args, **_kwargs: {
+            "status": 1,
+            "DateArray": ["2026.07.29"],
+            "DwjzArray": [],
+        }
+    )
+
+    with pytest.raises(ProviderError, match="array lengths"):
+        provider.fetch_quotes(
+            provider.resolve_product("015736"),
+            date(2026, 7, 29),
+            date(2026, 7, 30),
+        )
+
+
+def test_changsheng_posts_exact_official_form():
+    from src.portfolio_providers import ChangshengFundProvider
+
+    requests = []
+
+    def opener(request, **_kwargs):
+        requests.append(request)
+        return {"status": 1, "DateArray": [], "DwjzArray": []}
+
+    provider = ChangshengFundProvider(opener=opener)
+    provider.fetch_quotes(
+        provider.resolve_product("003103"),
+        date(2026, 7, 28),
+        date(2026, 7, 30),
+    )
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.full_url == "https://www.csfunds.com.cn/front/ajax/invoke"
+    assert request.get_method() == "POST"
+    assert request.get_header("Content-type") == (
+        "application/x-www-form-urlencoded; charset=UTF-8"
+    )
+    form = urllib.parse.parse_qs(request.data.decode("utf-8"))
+    assert form == {
+        "_ZVING_METHOD": ["fund/loadNetWorth"],
+        "_ZVING_URL": ["%2Fc%2F2022-05-10%2F190157.shtml"],
+        "_ZVING_DATA": [
+            '{"FundType":"Bond","FundCode":"003103",'
+            '"TimeSlots":"2026-07-28~2026-07-30"}'
+        ],
+        "_ZVING_DATA_FORMAT": ["json"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("code", "name"),
+    [
+        ("003103", "长盛盛裕纯债债券型证券投资基金C类"),
+        ("015736", "长盛盛裕纯债债券型证券投资基金D类"),
+    ],
+)
+def test_changsheng_resolves_only_exact_fund_identities(code, name):
+    from src.portfolio_providers import ChangshengFundProvider
+
+    product = ChangshengFundProvider(
+        opener=lambda *_args, **_kwargs: {}
+    ).resolve_product(code)
+
+    assert product == MarketProduct(
+        "changsheng_fund",
+        code,
+        name,
+        ProductType.PUBLIC_FUND,
+    )
+
+
+def test_changsheng_rejects_unknown_fund_code():
+    from src.portfolio_providers import ChangshengFundProvider
+
+    with pytest.raises(ProviderError, match="无法可靠识别产品类型"):
+        ChangshengFundProvider(
+            opener=lambda *_args, **_kwargs: {}
+        ).resolve_product("003104")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"status": 0, "DateArray": [], "DwjzArray": []},
+        {"status": 1, "DateArray": "2026.07.29", "DwjzArray": ["1.0321"]},
+        {"status": 1, "DateArray": ["2026.07.29"], "DwjzArray": "1.0321"},
+    ],
+)
+def test_changsheng_rejects_invalid_status_or_array_shapes(response):
+    from src.portfolio_providers import ChangshengFundProvider
+
+    provider = ChangshengFundProvider(
+        opener=lambda *_args, **_kwargs: response
+    )
+
+    with pytest.raises(ProviderError):
+        provider.fetch_quotes(
+            provider.resolve_product("003103"),
+            date(2026, 7, 29),
+            date(2026, 7, 30),
+        )
+
+
+def test_changsheng_raw_hash_depends_only_on_each_date_nav_pair():
+    from src.portfolio_providers import ChangshengFundProvider
+
+    responses = iter(
+        [
+            {
+                "status": 1,
+                "DateArray": ["2026.07.29"],
+                "DwjzArray": ["1.0321"],
+                "ignored": "first response",
+            },
+            {
+                "status": 1,
+                "DateArray": ["2026.07.28", "2026.07.29"],
+                "DwjzArray": ["1.0319", "1.0321"],
+                "ignored": "second response",
+            },
+        ]
+    )
+    provider = ChangshengFundProvider(
+        opener=lambda *_args, **_kwargs: next(responses)
+    )
+    product = provider.resolve_product("003103")
+
+    first_hash = provider.fetch_quotes(
+        product,
+        date(2026, 7, 29),
+        date(2026, 7, 29),
+    )[0].raw_hash
+    second_hash = provider.fetch_quotes(
+        product,
+        date(2026, 7, 28),
+        date(2026, 7, 29),
+    )[0].raw_hash
+
+    assert first_hash == second_hash

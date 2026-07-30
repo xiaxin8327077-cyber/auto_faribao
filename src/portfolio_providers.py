@@ -1,5 +1,8 @@
 import hashlib
 import json
+import urllib.parse
+import urllib.request
+from datetime import datetime
 from decimal import Decimal
 
 from src.nav_monitor import (
@@ -30,6 +33,10 @@ VERIFIED_CASH_PRODUCTS = {
 CITIC_CASH_INCOME_FIELDS = frozenset(
     ("tenThousandIncomeAmt", "outTenThousandIncomeAmt")
 )
+FUND_IDENTITIES = {
+    "003103": ("长盛盛裕纯债债券型证券投资基金C类", "Bond"),
+    "015736": ("长盛盛裕纯债债券型证券投资基金D类", "Bond"),
+}
 
 
 def _raw_hash(item: dict) -> str:
@@ -71,6 +78,16 @@ def _citic_cash_income_field(product: MarketProduct) -> str:
     if income_field not in CITIC_CASH_INCOME_FIELDS:
         raise ProviderError("无法可靠识别产品类型")
     return income_field
+
+
+def _open_json_request(request, timeout=10) -> dict:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read()
+        charset = response.headers.get_content_charset() or "utf-8"
+    try:
+        return json.loads(raw.decode(charset, "replace"))
+    except json.JSONDecodeError as exc:
+        raise ProviderError(f"接口返回不是有效 JSON：{exc}") from exc
 
 
 class CiticPortfolioProvider:
@@ -299,14 +316,108 @@ class NanyinPortfolioProvider:
         raise ProviderError("无法可靠识别产品类型")
 
 
+class ChangshengFundProvider:
+    provider = "changsheng_fund"
+    URL = "https://www.csfunds.com.cn/front/ajax/invoke"
+
+    def __init__(self, opener=None):
+        self.opener = opener or _open_json_request
+
+    def resolve_product(self, code: str) -> MarketProduct:
+        normalized = _normalize_code(code)
+        identity = FUND_IDENTITIES.get(normalized)
+        if identity is None:
+            raise ProviderError("无法可靠识别产品类型")
+        name, _fund_type = identity
+        return MarketProduct(
+            self.provider,
+            normalized,
+            name,
+            ProductType.PUBLIC_FUND,
+        )
+
+    def fetch_quotes(self, product, start_date, end_date) -> list[MarketQuote]:
+        _require_product(self.provider, product)
+        resolved_product = self.resolve_product(product.code)
+        _name, fund_type = FUND_IDENTITIES[resolved_product.code]
+        form = {
+            "_ZVING_METHOD": "fund/loadNetWorth",
+            "_ZVING_URL": "%2Fc%2F2022-05-10%2F190157.shtml",
+            "_ZVING_DATA": json.dumps(
+                {
+                    "FundType": fund_type,
+                    "FundCode": resolved_product.code,
+                    "TimeSlots": (
+                        f"{start_date.isoformat()}~{end_date.isoformat()}"
+                    ),
+                },
+                separators=(",", ":"),
+            ),
+            "_ZVING_DATA_FORMAT": "json",
+        }
+        request = urllib.request.Request(
+            self.URL,
+            data=urllib.parse.urlencode(form).encode("utf-8"),
+            headers={
+                "Content-Type": (
+                    "application/x-www-form-urlencoded; charset=UTF-8"
+                ),
+            },
+            method="POST",
+        )
+        try:
+            data = self.opener(request, timeout=10)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError("长盛基金行情接口请求失败") from exc
+        if not isinstance(data, dict) or data.get("status") != 1:
+            raise ProviderError("长盛基金行情接口状态异常")
+
+        date_values = data.get("DateArray")
+        nav_values = data.get("DwjzArray")
+        if not isinstance(date_values, list) or not isinstance(nav_values, list):
+            raise ProviderError("Changsheng date/NAV arrays must be lists")
+        if len(date_values) != len(nav_values):
+            raise ProviderError("Changsheng date/NAV array lengths differ")
+
+        quotes = []
+        for raw_date, raw_nav in zip(date_values, nav_values):
+            try:
+                quote_date = datetime.strptime(
+                    str(raw_date).strip(),
+                    "%Y.%m.%d",
+                ).date()
+                unit_nav = _parse_decimal(raw_nav)
+                quote = MarketQuote(
+                    product_code=resolved_product.code,
+                    quote_date=quote_date,
+                    unit_nav=unit_nav,
+                    source=self.provider,
+                    raw_hash=_raw_hash(
+                        {
+                            "quote_date": str(raw_date).strip(),
+                            "unit_nav": str(raw_nav).strip(),
+                        }
+                    ),
+                )
+                validate_market_quote(resolved_product.product_type, quote)
+            except Exception as exc:
+                raise ProviderError("长盛基金净值数据无效") from exc
+            if start_date <= quote_date <= end_date:
+                quotes.append(quote)
+        return sorted(
+            quotes,
+            key=lambda quote: quote.quote_date,
+            reverse=True,
+        )
+
+
 def get_market_provider(provider: str):
     if provider == "citic_wealth":
         return CiticPortfolioProvider()
     if provider == "nanyin_wealth":
         return NanyinPortfolioProvider()
     if provider == "changsheng_fund":
-        provider_class = globals().get("ChangshengFundProvider")
-        if provider_class is None:
-            raise ProviderError("长盛基金行情适配器尚未实现")
-        return provider_class()
+        return ChangshengFundProvider()
     raise ProviderError(f"不支持的行情机构：{provider}")
