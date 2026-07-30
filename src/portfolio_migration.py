@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -181,6 +182,20 @@ def _legacy_profit_rows(state: dict):
             raise ValueError("legacy automatic profit entry has no nav_date")
         yield profit_date, amount, "automatic", _source_json(entry)
 
+    periods = state.get("manual_period_profits", [])
+    if not isinstance(periods, list):
+        raise ValueError("legacy manual_period_profits must be a list")
+    for entry in periods:
+        if not isinstance(entry, dict):
+            raise ValueError("legacy manual period profit entry must be an object")
+        amount = entry.get("amount")
+        if amount in (None, ""):
+            raise ValueError("legacy manual period profit entry has no amount")
+        period = str(entry.get("period") or "")
+        if not period:
+            raise ValueError("legacy manual period profit entry has no period")
+        yield period, amount, "manual_period", _source_json(entry)
+
     manual = state.get("manual_daily_profits", {})
     if not isinstance(manual, dict):
         raise ValueError("legacy manual_daily_profits must be an object")
@@ -193,7 +208,7 @@ def _legacy_profit_rows(state: dict):
             raise ValueError(
                 f"legacy manual profit entry has no amount: {profit_date}"
             )
-        yield str(profit_date), amount, "manual", _source_json(source)
+        yield str(profit_date), amount, "manual_daily", _source_json(source)
 
 
 def _source_json(value) -> str:
@@ -204,7 +219,7 @@ def _contains_current_schema(path: Path) -> bool:
     if not path.is_file():
         return False
     try:
-        with sqlite3.connect(path) as conn:
+        with _read_only_connection(path) as conn:
             row = conn.execute(
                 "SELECT 1 FROM schema_migrations WHERE version = ?",
                 (SCHEMA_VERSION,),
@@ -219,8 +234,7 @@ def _validate_candidate(
     expected_product_count: int,
     expected_shares: dict[str, Decimal],
 ) -> None:
-    database = PortfolioDatabase(path)
-    with database.connection() as conn:
+    with _read_only_connection(path) as conn:
         versions = {
             row[0] for row in conn.execute(
                 "SELECT version FROM schema_migrations"
@@ -262,8 +276,7 @@ def _validate_candidate(
 
 
 def _database_counts(path: Path) -> tuple[int, int, int]:
-    database = PortfolioDatabase(path)
-    with database.connection() as conn:
+    with _read_only_connection(path) as conn:
         products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
         opening_positions = conn.execute(
             """SELECT COUNT(*) FROM transactions
@@ -274,6 +287,19 @@ def _database_counts(path: Path) -> tuple[int, int, int]:
             "SELECT COUNT(*) FROM legacy_profit_history"
         ).fetchone()[0]
     return products, opening_positions, profit_rows
+
+
+@contextmanager
+def _read_only_connection(path: Path):
+    uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA query_only = ON")
+        conn.execute("PRAGMA foreign_keys = ON")
+        yield conn
+    finally:
+        conn.close()
 
 
 def _backup_legacy_inputs(
