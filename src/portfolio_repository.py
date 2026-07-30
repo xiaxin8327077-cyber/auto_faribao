@@ -9,6 +9,8 @@ from src.portfolio_models import (
     Product,
     ProductStatus,
     ProductType,
+    SipPlan,
+    SipPlanStatus,
     Transaction,
     TransactionStatus,
     TransactionType,
@@ -32,6 +34,13 @@ _QUOTE_COLUMNS = """
     p.code AS product_code, q.quote_date, q.unit_nav, q.cumulative_nav,
     q.income_per_10k, q.seven_day_annualized_rate, q.source,
     q.source_timestamp, q.raw_hash
+"""
+_PLAN_COLUMNS = """
+    id, product_id, daily_amount, purchase_fee_rate, source_cash_product_id,
+    status, start_date
+"""
+_PLAN_EXECUTION_COLUMNS = """
+    id, plan_id, intended_trade_date, status, reason, transaction_id
 """
 
 
@@ -359,7 +368,10 @@ class PortfolioRepository:
         return self._quote_from_row(row) if row else None
 
     def latest_quote(
-        self, product_id: str, on_or_before: date | None = None
+        self,
+        product_id: str,
+        on_or_before: date | None = None,
+        conn: sqlite3.Connection | None = None,
     ) -> MarketQuote | None:
         query = (
             f"SELECT {_QUOTE_COLUMNS} FROM quotes q "
@@ -370,9 +382,172 @@ class PortfolioRepository:
             query += " AND q.quote_date <= ?"
             params += (on_or_before.isoformat(),)
         query += " ORDER BY q.quote_date DESC LIMIT 1"
-        with self.database.connection() as conn:
+        if conn is None:
+            with self.database.connection() as owned:
+                row = owned.execute(query, params).fetchone()
+        else:
             row = conn.execute(query, params).fetchone()
         return self._quote_from_row(row) if row else None
+
+    def save_plan(
+        self,
+        plan: SipPlan,
+        conn: sqlite3.Connection | None = None,
+    ) -> SipPlan:
+        if conn is None:
+            with self.database.transaction() as owned:
+                return self.save_plan(plan, owned)
+        conn.execute(
+            """INSERT INTO sip_plans
+               (id, product_id, daily_amount, purchase_fee_rate,
+                source_cash_product_id, status, start_date)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   product_id = excluded.product_id,
+                   daily_amount = excluded.daily_amount,
+                   purchase_fee_rate = excluded.purchase_fee_rate,
+                   source_cash_product_id = excluded.source_cash_product_id,
+                   status = excluded.status,
+                   start_date = excluded.start_date,
+                   updated_at = CURRENT_TIMESTAMP,
+                   paused_at = CASE
+                       WHEN excluded.status = 'paused' THEN CURRENT_TIMESTAMP
+                       ELSE NULL
+                   END""",
+            (
+                plan.id,
+                plan.product_id,
+                optional_decimal_text(plan.daily_amount),
+                optional_decimal_text(plan.purchase_fee_rate),
+                plan.source_cash_product_id or None,
+                plan.status.value,
+                plan.start_date.isoformat(),
+            ),
+        )
+        return plan
+
+    def get_plan(
+        self,
+        plan_id: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> SipPlan | None:
+        query = f"SELECT {_PLAN_COLUMNS} FROM sip_plans WHERE id = ?"
+        if conn is None:
+            with self.database.connection() as owned:
+                row = owned.execute(query, (plan_id,)).fetchone()
+        else:
+            row = conn.execute(query, (plan_id,)).fetchone()
+        return self._plan_from_row(row) if row else None
+
+    def list_plans(
+        self,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[SipPlan]:
+        query = f"SELECT {_PLAN_COLUMNS} FROM sip_plans ORDER BY created_at, id"
+        if conn is None:
+            with self.database.connection() as owned:
+                rows = owned.execute(query).fetchall()
+        else:
+            rows = conn.execute(query).fetchall()
+        return [self._plan_from_row(row) for row in rows]
+
+    def save_plan_execution(
+        self,
+        execution,
+        conn: sqlite3.Connection | None = None,
+    ):
+        if conn is None:
+            with self.database.transaction() as owned:
+                return self.save_plan_execution(execution, owned)
+        existing = conn.execute(
+            f"""SELECT {_PLAN_EXECUTION_COLUMNS}
+                FROM plan_executions
+                WHERE plan_id = ? AND intended_trade_date = ?""",
+            (
+                execution.plan_id,
+                execution.intended_trade_date.isoformat(),
+            ),
+        ).fetchone()
+        if existing is not None and existing["id"] != execution.id:
+            return self._plan_execution_from_row(existing)
+        if existing is None:
+            conn.execute(
+                """INSERT INTO plan_executions
+                   (id, plan_id, intended_trade_date, status, reason,
+                    transaction_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    execution.id,
+                    execution.plan_id,
+                    execution.intended_trade_date.isoformat(),
+                    execution.status,
+                    execution.reason,
+                    execution.transaction_id or None,
+                ),
+            )
+        else:
+            conn.execute(
+                """UPDATE plan_executions
+                   SET status = ?, reason = ?, transaction_id = ?
+                   WHERE id = ?""",
+                (
+                    execution.status,
+                    execution.reason,
+                    execution.transaction_id or None,
+                    execution.id,
+                ),
+            )
+        return execution
+
+    def get_plan_execution(
+        self,
+        plan_id: str,
+        intended_trade_date: date,
+        conn: sqlite3.Connection | None = None,
+    ):
+        query = (
+            f"SELECT {_PLAN_EXECUTION_COLUMNS} FROM plan_executions "
+            "WHERE plan_id = ? AND intended_trade_date = ?"
+        )
+        params = (plan_id, intended_trade_date.isoformat())
+        if conn is None:
+            with self.database.connection() as owned:
+                row = owned.execute(query, params).fetchone()
+        else:
+            row = conn.execute(query, params).fetchone()
+        return self._plan_execution_from_row(row) if row else None
+
+    def get_plan_execution_by_id(
+        self,
+        execution_id: str,
+        conn: sqlite3.Connection | None = None,
+    ):
+        query = (
+            f"SELECT {_PLAN_EXECUTION_COLUMNS} FROM plan_executions "
+            "WHERE id = ?"
+        )
+        if conn is None:
+            with self.database.connection() as owned:
+                row = owned.execute(query, (execution_id,)).fetchone()
+        else:
+            row = conn.execute(query, (execution_id,)).fetchone()
+        return self._plan_execution_from_row(row) if row else None
+
+    def list_plan_executions(
+        self,
+        plan_id: str,
+        conn: sqlite3.Connection | None = None,
+    ):
+        query = (
+            f"SELECT {_PLAN_EXECUTION_COLUMNS} FROM plan_executions "
+            "WHERE plan_id = ? ORDER BY intended_trade_date, created_at, id"
+        )
+        if conn is None:
+            with self.database.connection() as owned:
+                rows = owned.execute(query, (plan_id,)).fetchall()
+        else:
+            rows = conn.execute(query, (plan_id,)).fetchall()
+        return [self._plan_execution_from_row(row) for row in rows]
 
     def append_audit(
         self,
@@ -465,6 +640,33 @@ class PortfolioRepository:
             locked_shares=Decimal(row["locked_shares"]),
             total_shares=Decimal(row["total_shares"]),
             cost_basis=Decimal(row["cost_basis"]),
+        )
+
+    @staticmethod
+    def _plan_from_row(row) -> SipPlan:
+        return SipPlan(
+            id=row["id"],
+            product_id=row["product_id"],
+            daily_amount=Decimal(row["daily_amount"]),
+            purchase_fee_rate=Decimal(row["purchase_fee_rate"]),
+            source_cash_product_id=row["source_cash_product_id"] or "",
+            status=SipPlanStatus(row["status"]),
+            start_date=date.fromisoformat(row["start_date"]),
+        )
+
+    @staticmethod
+    def _plan_execution_from_row(row):
+        from src.portfolio_sip import PlanExecution
+
+        return PlanExecution(
+            id=row["id"],
+            plan_id=row["plan_id"],
+            intended_trade_date=date.fromisoformat(
+                row["intended_trade_date"]
+            ),
+            status=row["status"],
+            reason=row["reason"],
+            transaction_id=row["transaction_id"] or "",
         )
 
     @staticmethod
