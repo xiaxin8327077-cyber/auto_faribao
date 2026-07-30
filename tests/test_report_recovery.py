@@ -4,6 +4,10 @@ import threading
 
 import pytest
 
+from src.beijing_time import today_str as _today_str
+
+TODAY = _today_str()
+
 
 @contextmanager
 def _null_cm():
@@ -1000,7 +1004,7 @@ def test_draft_first_submit_skips_smart_doc_and_clears(monkeypatch, tmp_path):
     import src.server as s
     import src.daily_report_draft as d
     monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
-    d.save_draft("2026-07-29", "草稿正文", "manual")
+    d.save_draft(TODAY, "草稿正文", "manual")
     calls = {"cookie": 0, "build": 0, "submit": []}
     import src.cookies_checker as cc
     monkeypatch.setattr(cc, "check_cookies", lambda c: calls.__setitem__("cookie", calls["cookie"] + 1) or True)
@@ -1009,7 +1013,7 @@ def test_draft_first_submit_skips_smart_doc_and_clears(monkeypatch, tmp_path):
                         lambda c: calls.__setitem__("build", calls["build"] + 1) or ("x", "smart_sheet", {}))
     monkeypatch.setattr(s, "submit_daily_report",
                         lambda content, cfg: (calls["submit"].append(content),
-                                             (True, "ok", {"action": "提交", "report_date": "2026-07-29"}))[1])
+                                             (True, "ok", {"action": "提交", "report_date": TODAY}))[1])
     cap = {}
     _patch_notifier(monkeypatch, cap)
     from types import SimpleNamespace
@@ -1025,7 +1029,7 @@ def test_skipped_does_not_notify_success(monkeypatch, tmp_path):
     import src.server as s
     import src.daily_report_draft as d
     monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
-    d.save_draft("2026-07-29", "草稿正文", "manual")
+    d.save_draft(TODAY, "草稿正文", "manual")
     monkeypatch.setattr(s, "submit_daily_report",
                         lambda content, cfg: (True, "今日日报已审核，跳过", {"action": "skipped"}))
     cap = {}
@@ -1040,7 +1044,7 @@ def test_unknown_action_reports_unconfirmed(monkeypatch, tmp_path):
     import src.server as s
     import src.daily_report_draft as d
     monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
-    d.save_draft("2026-07-29", "草稿正文", "manual")
+    d.save_draft(TODAY, "草稿正文", "manual")
     monkeypatch.setattr(s, "submit_daily_report", lambda content, cfg: (True, "ok", {"action": "weird"}))
     cap = {}
     _patch_notifier(monkeypatch, cap)
@@ -1055,7 +1059,7 @@ def test_clear_failure_sets_draft_note_not_failure(monkeypatch, tmp_path):
     import src.server as s
     import src.daily_report_draft as d
     monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
-    d.save_draft("2026-07-29", "草稿正文", "manual")
+    d.save_draft(TODAY, "草稿正文", "manual")
     monkeypatch.setattr(s, "submit_daily_report", lambda content, cfg: (True, "ok", {"action": "提交"}))
     monkeypatch.setattr(d, "clear_draft", lambda **k: (_ for _ in ()).throw(d.DraftCorruptError("bad")))
     cap = {}
@@ -1070,7 +1074,7 @@ def test_notify_exception_does_not_flip_to_failure(monkeypatch, tmp_path):
     import src.server as s
     import src.daily_report_draft as d
     monkeypatch.setattr(d, "_draft_path", lambda: tmp_path / "daily_report_draft.json")
-    d.save_draft("2026-07-29", "草稿正文", "manual")
+    d.save_draft(TODAY, "草稿正文", "manual")
     monkeypatch.setattr(s, "submit_daily_report", lambda content, cfg: (True, "ok", {"action": "提交"}))
     monkeypatch.setattr(s, "notify_report_success",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
@@ -1152,7 +1156,7 @@ def test_confirm_passes_user_id_to_modify(monkeypatch, tmp_path):
     s._msgid_seen.clear()
     clk = [1000.0]
     s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
-    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date="2026-07-29",
+    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date=TODAY,
                                original_content_hash=ec.content_hash("原"), original_preview="原",
                                final_content="新正文", created_at=clk[0], expires_at=clk[0] + 120)
     s._edit_confirmations.save(item)
@@ -1188,7 +1192,7 @@ def test_consume_confirm_atomic_dedup(monkeypatch, tmp_path):
     s._msgid_seen.clear()
     clk = [1000.0]
     s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
-    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date="2026-07-29",
+    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date=TODAY,
                                original_content_hash="h", original_preview="p", final_content="c",
                                created_at=clk[0], expires_at=clk[0] + 120)
     s._edit_confirmations.save(item)
@@ -1203,7 +1207,7 @@ def test_route_confirm_present_routes_oa(monkeypatch, tmp_path):
     import src.daily_report_edit_confirmation as ec
     clk = [1000.0]
     s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
-    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date="2026-07-29",
+    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date=TODAY,
                                original_content_hash="h", original_preview="p", final_content="c",
                                created_at=clk[0], expires_at=clk[0] + 120)
     s._edit_confirmations.save(item)
@@ -1215,7 +1219,7 @@ def test_route_confirm_expired_falls_through(monkeypatch, tmp_path):
     import src.daily_report_edit_confirmation as ec
     clk = [1000.0]
     s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
-    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date="2026-07-29",
+    item = ec.EditConfirmation(user_id="u1", action="overwrite_today", report_date=TODAY,
                                original_content_hash="h", original_preview="p", final_content="c",
                                created_at=clk[0], expires_at=clk[0] + 1)
     s._edit_confirmations.save(item)
@@ -1228,7 +1232,7 @@ def test_stale_notify_false_keeps_marker(monkeypatch, tmp_path):
     import src.server as s
     import src.daily_report_edit_confirmation as ec
     monkeypatch.setattr(ec, "_marker_dir", lambda: tmp_path)
-    ec.begin_modify_marker("u1", "2026-07-29", "h")
+    ec.begin_modify_marker("u1", TODAY, "h")
     monkeypatch.setattr(s, "_send_wechat_text", lambda *a, **k: False)
     from types import SimpleNamespace
     s._check_stale_modify_on_startup(SimpleNamespace(wechat=SimpleNamespace()))
@@ -1248,7 +1252,7 @@ def test_expired_confirm_execution_shows_timeout_not_ai(monkeypatch, tmp_path):
     s._edit_confirmations = ec.EditConfirmationStore(clock=lambda: clk[0])
     # 创建已过期待确认项（过期）
     item = ec.EditConfirmation(user_id="expired_user", action="overwrite_today",
-        report_date="2026-07-29", original_content_hash="h", original_preview="p",
+        report_date=TODAY, original_content_hash="h", original_preview="p",
         final_content="c", created_at=clk[0], expires_at=clk[0] + 1)
     s._edit_confirmations.save(item)
     clk[0] += 10  # 过期
