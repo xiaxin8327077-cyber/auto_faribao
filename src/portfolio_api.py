@@ -1,24 +1,29 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import asdict, is_dataclass
-from datetime import date
+from dataclasses import asdict, is_dataclass, replace
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 import hashlib
 import json
 import threading
 import time
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, uuid5
 
 from flask import Blueprint, jsonify, request
+from werkzeug.exceptions import HTTPException
 
-from src.portfolio_market import QuoteSyncService, validate_market_quote
+from src.beijing_time import now as beijing_now
+from src.nav_monitor import ProviderError
+from src.portfolio_market import validate_market_quote
 from src.portfolio_models import (
     MarketProduct,
     Product,
     ProductStatus,
     ProductType,
+    SipPlan,
+    SipPlanStatus,
     decimal_text,
 )
 from src.portfolio_positions import PositionProjector
@@ -28,6 +33,7 @@ from src.portfolio_transactions import PortfolioTransactionService
 
 _WRITE_LIMIT = 30
 _WRITE_WINDOW_SECONDS = 60.0
+_PRODUCT_QUOTE_LOOKBACK_DAYS = 14
 _SENSITIVE_KEYS = {
     "authorization",
     "idempotency-key",
@@ -141,12 +147,39 @@ def _identity(product: MarketProduct):
     }
 
 
+def _identity_fingerprint(identity):
+    return hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _today():
+    return date.today()
+
+
 def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
     blueprint = Blueprint("portfolio_api", __name__)
     rate_buckets = defaultdict(deque)
     rate_lock = threading.Lock()
-    replay_cache = {}
-    replay_lock = threading.Lock()
+
+    @blueprint.errorhandler(Exception)
+    def handle_portfolio_error(exc):
+        if isinstance(exc, HTTPException):
+            return _error(
+                "http_error",
+                exc.description,
+                exc.code or 500,
+            )
+        return _error(
+            "internal_error",
+            "portfolio API request failed",
+            500,
+        )
 
     def repository():
         return getattr(runtime, "repository", None) if runtime is not None else None
@@ -242,14 +275,30 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             raise ValueError("JSON body must be an object")
         return body
 
-    def audit(action, object_type, object_id, body, result, idem):
+    def audit(
+        action,
+        object_type,
+        object_id,
+        body,
+        result,
+        idem,
+        *,
+        conn=None,
+    ):
         repo = repository()
         if repo is None:
-            return
+            raise RuntimeError("portfolio runtime is unavailable")
         audit_id = str(
             uuid5(
                 NAMESPACE_URL,
-                f"portfolio-api:{action}:{idem}:{result}",
+                (
+                    f"portfolio-api-business:{action}:{idem}"
+                    if result == "success"
+                    else (
+                        f"portfolio-api-business:{action}:{idem}:"
+                        f"{result}:{request_fingerprint(body)}"
+                    )
+                ),
             )
         )
         after = json.dumps(
@@ -258,23 +307,45 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             sort_keys=True,
             separators=(",", ":"),
         )
-        try:
+        before = "{}"
+
+        def append(target):
+            existing = target.execute(
+                """SELECT action, object_type, object_id, before_json,
+                          after_json, result, source
+                   FROM audit_logs WHERE id = ?""",
+                (audit_id,),
+            ).fetchone()
+            expected = (
+                action,
+                object_type,
+                object_id or "",
+                before,
+                after,
+                result,
+                "web",
+            )
+            if existing is not None:
+                if tuple(existing) != expected:
+                    raise RuntimeError("audit record conflicts with request")
+                return
             repo.append_audit(
                 audit_id,
                 action,
                 object_type,
                 object_id or "",
-                "{}",
+                before,
                 after,
                 result,
                 "web",
+                conn=target,
             )
-        except Exception:
-            # An identical retry has already produced the same immutable audit.
-            pass
 
-    def replay_key(action, idem):
-        return action, idem
+        if conn is not None:
+            append(conn)
+            return
+        with repo.database.transaction() as owned:
+            append(owned)
 
     def request_fingerprint(body):
         return hashlib.sha256(
@@ -286,36 +357,185 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             ).encode("utf-8")
         ).hexdigest()
 
-    def replay(action, idem, body):
-        with replay_lock:
-            cached = replay_cache.get(replay_key(action, idem))
-        if cached is None:
+    def operation_id(idem):
+        return str(
+            uuid5(NAMESPACE_URL, f"portfolio-api-idempotency:{idem}")
+        )
+
+    def operation_record(action, idem, body, conn=None):
+        repo = repository()
+        if repo is None:
             return None
-        fingerprint, payload, status = cached
-        if fingerprint != request_fingerprint(body):
+        query = (
+            "SELECT object_type, before_json, after_json, result, source "
+            "FROM audit_logs WHERE id = ? AND action = 'api_idempotency'"
+        )
+        if conn is None:
+            with repo.database.connection() as owned:
+                row = owned.execute(query, (operation_id(idem),)).fetchone()
+        else:
+            row = conn.execute(query, (operation_id(idem),)).fetchone()
+        if row is None:
+            return None
+        try:
+            before = json.loads(row["before_json"])
+            stored = json.loads(row["after_json"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("idempotency record is corrupt") from exc
+        if (
+            row["object_type"] != action
+            or row["source"] != "web"
+            or before.get("fingerprint") != request_fingerprint(body)
+        ):
             raise ValueError("idempotency key conflicts with existing request")
+        if (
+            row["result"] not in {"success", "rejected"}
+            or not isinstance(stored, dict)
+            or not isinstance(stored.get("status"), int)
+            or not isinstance(stored.get("payload"), dict)
+        ):
+            raise RuntimeError("idempotency record is incomplete")
+        return stored["payload"], stored["status"]
+
+    def replay(action, idem, body, conn=None):
+        stored = operation_record(action, idem, body, conn=conn)
+        if stored is None:
+            return None
+        payload, status = stored
         return jsonify(payload), status
 
-    def remember(action, idem, body, payload, status):
-        with replay_lock:
-            replay_cache[replay_key(action, idem)] = (
-                request_fingerprint(body),
-                payload,
-                status,
+    def remember(action, idem, body, payload, status, *, result="success", conn=None):
+        repo = repository()
+        if repo is None:
+            raise RuntimeError("portfolio runtime is unavailable")
+
+        def persist(target):
+            stored = operation_record(action, idem, body, conn=target)
+            if stored is not None:
+                stored_payload, stored_status = stored
+                if stored_payload != payload or stored_status != status:
+                    raise RuntimeError(
+                        "idempotency response conflicts with stored response"
+                    )
+                return
+            repo.append_audit(
+                operation_id(idem),
+                "api_idempotency",
+                action,
+                hashlib.sha256(idem.encode("utf-8")).hexdigest(),
+                before_json=json.dumps(
+                    {"fingerprint": request_fingerprint(body)},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                after_json=json.dumps(
+                    {"payload": payload, "status": status},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                result=result,
+                source="web",
+                conn=target,
             )
 
-    def business_error(action, object_type, object_id, body, exc, idem):
-        audit(
-            action,
-            object_type,
-            object_id,
-            {**_safe_audit_value(body), "error": str(exc)[:240]},
-            "rejected",
-            idem,
-        )
-        return _error("validation_error", str(exc), 400)
+        if conn is not None:
+            persist(conn)
+            return
+        with repo.database.transaction() as owned:
+            persist(owned)
 
-    def product_preview(body):
+    def business_error(
+        action,
+        object_type,
+        object_id,
+        body,
+        exc,
+        idem,
+        *,
+        code="validation_error",
+        status=400,
+        persist=True,
+        operation_action=None,
+    ):
+        safe_body = {
+            **_safe_audit_value(body),
+            "error": str(exc)[:240],
+        }
+        payload = {"error": code, "message": str(exc)}
+        try:
+            if persist:
+                operation_action = operation_action or action
+                try:
+                    cached = replay(operation_action, idem, body)
+                except ValueError as replay_error:
+                    if "idempotency key conflicts" not in str(replay_error):
+                        raise
+                    audit(
+                        action,
+                        object_type,
+                        object_id,
+                        safe_body,
+                        "rejected",
+                        idem,
+                    )
+                    return jsonify(payload), status
+                if cached:
+                    return cached
+                with repository().database.transaction() as conn:
+                    audit(
+                        action,
+                        object_type,
+                        object_id,
+                        safe_body,
+                        "rejected",
+                        idem,
+                        conn=conn,
+                    )
+                    remember(
+                        operation_action,
+                        idem,
+                        body,
+                        payload,
+                        status,
+                        result="rejected",
+                        conn=conn,
+                    )
+            else:
+                audit(
+                    action,
+                    object_type,
+                    object_id,
+                    safe_body,
+                    "rejected",
+                    idem,
+                )
+        except Exception:
+            return _error(
+                "audit_failed",
+                "failed to persist portfolio audit",
+                500,
+            )
+        return jsonify(payload), status
+
+    def product_preview(body, *, require_identity=False):
+        operation = str(body.get("operation") or "").strip().lower()
+        if operation == "disable":
+            product_id = _required_text(body.get("product_id"), "product_id")
+            product = repository().require_product(product_id)
+            identity = {
+                "provider": product.provider,
+                "code": product.code,
+                "name": product.name,
+                "product_type": product.product_type.value,
+                "registration_code": product.registration_code,
+            }
+            return {
+                "operation": "disable",
+                "product": identity,
+                "identity_fingerprint": _identity_fingerprint(identity),
+                "message": "product will be disabled",
+            }, None, None
         code = _required_text(body.get("code"), "code")
         declared_type = (
             body.get("product_type") or body.get("wealth_type") or ""
@@ -336,27 +556,53 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             raise ValueError("resolved product name does not match request")
         if declared_type and str(declared_type) != resolved.product_type.value:
             raise ValueError("resolved product type does not match request")
-        expected_registration = body.get("registration_code")
-        if (
-            expected_registration
-            and expected_registration != resolved.registration_code
-        ):
-            raise ValueError("resolved product identity changed")
+        identity = _identity(resolved)
+        fingerprint = _identity_fingerprint(identity)
+        if require_identity:
+            supplied_identity = body.get("identity")
+            supplied_fingerprint = _required_text(
+                body.get("identity_fingerprint"),
+                "identity_fingerprint",
+            )
+            supplied_registration = _required_text(
+                body.get("registration_code")
+                or (
+                    supplied_identity.get("registration_code")
+                    if isinstance(supplied_identity, dict)
+                    else ""
+                ),
+                "registration_code",
+            )
+            if (
+                not isinstance(supplied_identity, dict)
+                or supplied_identity != identity
+                or supplied_fingerprint != fingerprint
+                or supplied_registration != resolved.registration_code
+            ):
+                raise ValueError("resolved product identity changed")
 
-        today = date.today()
-        quotes = provider.fetch_quotes(resolved, today, today)
-        if not quotes:
-            raise ValueError("provider returned no valid quote")
-        for quote in quotes:
+        end_date = _today()
+        start_date = end_date - timedelta(days=_PRODUCT_QUOTE_LOOKBACK_DAYS)
+        quotes = provider.fetch_quotes(resolved, start_date, end_date)
+        valid_quotes = []
+        for quote in quotes or []:
             if quote.product_code.strip().upper() != resolved.code.upper():
                 raise ValueError("provider returned a quote for another product")
-            validate_market_quote(resolved.product_type, quote)
-        quote = sorted(quotes, key=lambda item: item.quote_date, reverse=True)[0]
+            try:
+                validate_market_quote(resolved.product_type, quote)
+            except ValueError:
+                continue
+            if start_date <= quote.quote_date <= end_date:
+                valid_quotes.append(quote)
+        if not valid_quotes:
+            raise ValueError("provider returned no valid quote")
+        quote = max(valid_quotes, key=lambda item: item.quote_date)
         return {
-            "product": _identity(resolved),
+            "product": identity,
+            "identity_fingerprint": fingerprint,
             "quote": _json_value(quote),
             "message": "official identity and quote verified",
-        }, resolved
+        }, resolved, quote
 
     def transaction_preview(body):
         repo, projector, _, _ = services()
@@ -368,11 +614,14 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             transaction = repo.get_transaction_by_id(transaction_id)
             if transaction is None:
                 raise ValueError("transaction not found")
+            reason = str(body.get("reason") or body.get("note") or "").strip()
+            if operation == "reverse":
+                reason = _required_text(reason, "reason")
             return {
                 "normalized_input": {
                     "operation": operation,
                     "transaction_id": transaction_id,
-                    "reason": str(body.get("reason") or body.get("note") or ""),
+                    "reason": reason,
                 },
                 "source_impact": "existing_transaction",
                 "destination_impact": operation,
@@ -436,6 +685,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 "product_id": product_id,
                 "source_cash_product_id": source_id,
                 "trade_date": trade_date.isoformat(),
+                "note": str(body.get("note") or ""),
             }
             return {
                 "normalized_input": normalized,
@@ -482,6 +732,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             "product_id": product_id,
             "shares": decimal_text(shares),
             "trade_date": trade_date.isoformat(),
+            "note": str(body.get("note") or ""),
         }
         return {
             "normalized_input": normalized,
@@ -540,13 +791,29 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         start_date = _parse_date(
             body.get("start_date"), "start_date", date.today()
         )
+        if "activate" in body and not isinstance(body["activate"], bool):
+            raise ValueError("activate must be a boolean")
+        activate = body.get("activate") is True
+        sip_id = str(body.get("sip_id") or body.get("plan_id") or "").strip()
+        if sip_id:
+            existing = repo.get_plan(sip_id)
+            if existing is None:
+                raise ValueError("plan not found")
+            if existing.status is not SipPlanStatus.DRAFT:
+                raise ValueError("only draft plans can be edited")
         return {
+            "sip_id": sip_id,
             "product_id": product_id,
             "daily_amount": decimal_text(amount),
             "purchase_fee_rate": decimal_text(fee_rate),
             "source_cash_product_id": source_id,
             "start_date": start_date.isoformat(),
-            "message": "SIP plan will be activated",
+            "activate": activate,
+            "message": (
+                "SIP plan will be activated"
+                if activate
+                else "SIP plan will be saved as draft"
+            ),
         }
 
     def adjustment_preview(body, product_id=None):
@@ -637,9 +904,9 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             return guard
         try:
             body = json_body()
-            preview, _ = product_preview(body)
+            preview, _, _ = product_preview(body)
             return jsonify({"preview": preview})
-        except ValueError as exc:
+        except (ProviderError, ValueError) as exc:
             return business_error(
                 "portfolio_product_preview",
                 "product",
@@ -647,6 +914,13 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 request.get_json(silent=True) or {},
                 exc,
                 idem,
+                code=(
+                    "provider_error"
+                    if isinstance(exc, ProviderError)
+                    else "validation_error"
+                ),
+                status=502 if isinstance(exc, ProviderError) else 400,
+                persist=False,
             )
 
     @blueprint.post("/api/portfolio/products")
@@ -668,34 +942,54 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             cached = replay("product", idem, body)
             if cached:
                 return cached
+            repo = repository()
             if str(body.get("operation") or "").strip().lower() == "disable":
                 product_id = _required_text(
                     body.get("product_id"), "product_id"
                 )
-                repo = repository()
-                repo.require_product(product_id)
                 with repo.database.transaction() as conn:
+                    cached = replay("product", idem, body, conn=conn)
+                    if cached:
+                        return cached
+                    product = repo.require_product(product_id, conn=conn)
                     conn.execute(
                         "UPDATE products SET status = ?, "
                         "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                         (ProductStatus.INACTIVE.value, product_id),
                     )
-                product = repo.require_product(product_id)
-                payload = {"product": _json_value(product)}
-                audit(
-                    "portfolio_product_disable",
-                    "product",
-                    product_id,
-                    payload,
-                    "success",
-                    idem,
-                )
-                remember("product", idem, body, payload, 200)
+                    product = replace(
+                        product, status=ProductStatus.INACTIVE
+                    )
+                    payload = {"product": _json_value(product)}
+                    audit(
+                        "portfolio_product_disable",
+                        "product",
+                        product_id,
+                        payload,
+                        "success",
+                        idem,
+                        conn=conn,
+                    )
+                    remember(
+                        "product",
+                        idem,
+                        body,
+                        payload,
+                        200,
+                        conn=conn,
+                    )
                 return jsonify(payload), 200
 
-            preview, resolved = product_preview(body)
+            preview, resolved, quote = product_preview(
+                body, require_identity=True
+            )
             product = Product(
-                id=str(uuid4()),
+                id=str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"portfolio-product:{idem}",
+                    )
+                ),
                 provider=resolved.provider,
                 code=resolved.code,
                 name=resolved.name,
@@ -708,23 +1002,37 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                     separators=(",", ":"),
                 ),
             )
-            repo = repository()
-            repo.add_product(product)
-            QuoteSyncService(repo, provider_factory).sync_product(
-                resolved, date.today(), date.today()
-            )
             payload = {"product": _json_value(product), "preview": preview}
-            audit(
-                "portfolio_product_create",
-                "product",
-                product.id,
-                payload,
-                "success",
-                idem,
-            )
-            remember("product", idem, body, payload, 201)
+            with repo.database.transaction() as conn:
+                cached = replay("product", idem, body, conn=conn)
+                if cached:
+                    return cached
+                repo.add_product(product, conn=conn)
+                repo.upsert_quote(
+                    product.id,
+                    quote,
+                    beijing_now().isoformat(timespec="seconds"),
+                    conn=conn,
+                )
+                audit(
+                    "portfolio_product_create",
+                    "product",
+                    product.id,
+                    payload,
+                    "success",
+                    idem,
+                    conn=conn,
+                )
+                remember(
+                    "product",
+                    idem,
+                    body,
+                    payload,
+                    201,
+                    conn=conn,
+                )
             return jsonify(payload), 201
-        except ValueError as exc:
+        except (ProviderError, ValueError) as exc:
             return business_error(
                 "portfolio_product_create",
                 "product",
@@ -732,6 +1040,19 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 body,
                 exc,
                 idem,
+                code=(
+                    "provider_error"
+                    if isinstance(exc, ProviderError)
+                    else "validation_error"
+                ),
+                status=502 if isinstance(exc, ProviderError) else 400,
+                operation_action="product",
+            )
+        except Exception:
+            return _error(
+                "portfolio_write_failed",
+                "portfolio product write failed",
+                500,
             )
 
     @blueprint.post("/api/portfolio/transactions/preview")
@@ -750,6 +1071,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 request.get_json(silent=True) or {},
                 exc,
                 idem,
+                persist=False,
             )
 
     @blueprint.post("/api/portfolio/transactions")
@@ -797,6 +1119,14 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                         "source_cash_product_id"
                     ],
                     fee_rate=normalized["fee_rate"],
+                    note=normalized["note"],
+                    audit_id=str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"portfolio-api-business:"
+                            f"portfolio_transaction_create:{idem}",
+                        )
+                    ),
                 )
                 status = 201
             else:
@@ -808,20 +1138,20 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                     destination_cash_product_id=normalized[
                         "destination_cash_product_id"
                     ],
+                    note=normalized["note"],
+                    audit_id=str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"portfolio-api-business:"
+                            f"portfolio_transaction_create:{idem}",
+                        )
+                    ),
                 )
                 status = 201
             payload = {
                 "transaction": _json_value(transaction),
                 "preview": preview,
             }
-            audit(
-                "portfolio_transaction_create",
-                "transaction",
-                transaction.id,
-                payload,
-                "success",
-                idem,
-            )
             remember("transaction", idem, body, payload, status)
             return jsonify(payload), status
         except ValueError as exc:
@@ -832,15 +1162,22 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 body,
                 exc,
                 idem,
+                operation_action="transaction",
+            )
+        except Exception:
+            return _error(
+                "portfolio_write_failed",
+                "portfolio transaction write failed",
+                500,
             )
 
     def transaction_operation(transaction_id, operation):
         idem, guard = write_guard()
         if guard:
             return guard
+        action = f"transaction:{operation}:{transaction_id}"
         try:
             body = json_body()
-            action = f"transaction:{operation}:{transaction_id}"
             cached = replay(action, idem, body)
             if cached:
                 return cached
@@ -856,14 +1193,6 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                     idem,
                 )
             payload = {"transaction": _json_value(transaction)}
-            audit(
-                f"portfolio_transaction_{operation}",
-                "transaction",
-                transaction_id,
-                payload,
-                "success",
-                idem,
-            )
             remember(action, idem, body, payload, 200)
             return jsonify(payload)
         except ValueError as exc:
@@ -874,6 +1203,13 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 request.get_json(silent=True) or {},
                 exc,
                 idem,
+                operation_action=action,
+            )
+        except Exception:
+            return _error(
+                "portfolio_write_failed",
+                f"portfolio transaction {operation} failed",
+                500,
             )
 
     @blueprint.post("/api/portfolio/transactions/<transaction_id>/cancel")
@@ -926,6 +1262,15 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 body,
                 exc,
                 idem,
+                operation_action=(
+                    f"adjust:{body_product_id or str(body.get('product_id') or '')}"
+                ),
+            )
+        except Exception:
+            return _error(
+                "portfolio_write_failed",
+                "portfolio position adjustment failed",
+                500,
             )
 
     @blueprint.post("/api/portfolio/positions/<product_id>/adjust")
@@ -948,6 +1293,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 request.get_json(silent=True) or {},
                 exc,
                 idem,
+                persist=False,
             )
 
     @blueprint.post("/api/portfolio/positions/adjustments")
@@ -970,6 +1316,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 request.get_json(silent=True) or {},
                 exc,
                 idem,
+                persist=False,
             )
 
     @blueprint.post("/api/portfolio/sip-plans")
@@ -993,38 +1340,93 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             if cached:
                 return cached
             preview = sip_preview(body)
-            _, _, _, sip = services()
             operation = preview.get("operation")
-            if operation == "pause":
-                plan = sip.pause(preview["sip_id"])
-                status = 200
-            elif operation == "resume":
-                plan = sip.resume(preview["sip_id"])
-                status = 200
-            else:
-                plan = sip.save_plan(
-                    product_id=preview["product_id"],
-                    daily_amount=preview["daily_amount"],
-                    purchase_fee_rate=preview["purchase_fee_rate"],
-                    source_cash_product_id=preview[
-                        "source_cash_product_id"
-                    ],
-                    start_date=_parse_date(
-                        preview["start_date"], "start_date"
-                    ),
+            repo = repository()
+            with repo.database.transaction() as conn:
+                cached = replay(action, idem, body, conn=conn)
+                if cached:
+                    return cached
+                if operation in {"pause", "resume"}:
+                    plan = repo.get_plan(preview["sip_id"], conn=conn)
+                    if plan is None:
+                        raise ValueError("plan not found")
+                    if plan.status is SipPlanStatus.DRAFT:
+                        raise ValueError(
+                            "plan is not active"
+                            if operation == "pause"
+                            else "plan is not paused"
+                        )
+                    plan = replace(
+                        plan,
+                        status=(
+                            SipPlanStatus.PAUSED
+                            if operation == "pause"
+                            else SipPlanStatus.ACTIVE
+                        ),
+                    )
+                    status = 200
+                else:
+                    existing = (
+                        repo.get_plan(preview["sip_id"], conn=conn)
+                        if preview["sip_id"]
+                        else None
+                    )
+                    if (
+                        existing is not None
+                        and existing.status is not SipPlanStatus.DRAFT
+                    ):
+                        raise ValueError("only draft plans can be edited")
+                    plan = SipPlan(
+                        id=(
+                            existing.id
+                            if existing is not None
+                            else str(
+                                uuid5(
+                                    NAMESPACE_URL,
+                                    f"portfolio-sip:{idem}",
+                                )
+                            )
+                        ),
+                        product_id=preview["product_id"],
+                        daily_amount=Decimal(preview["daily_amount"]),
+                        purchase_fee_rate=Decimal(
+                            preview["purchase_fee_rate"]
+                        ),
+                        source_cash_product_id=preview[
+                            "source_cash_product_id"
+                        ],
+                        status=(
+                            SipPlanStatus.ACTIVE
+                            if preview["activate"]
+                            else SipPlanStatus.DRAFT
+                        ),
+                        start_date=_parse_date(
+                            preview["start_date"], "start_date"
+                        ),
+                    )
+                    status = 200 if existing is not None else 201
+                repo.save_plan(plan, conn=conn)
+                payload = {
+                    "sip_plan": _json_value(plan),
+                    "preview": preview,
+                }
+                audit(
+                    "portfolio_sip_write",
+                    "sip_plan",
+                    plan.id,
+                    payload,
+                    "success",
+                    idem,
+                    conn=conn,
                 )
-                plan = sip.activate(plan.id)
-                status = 201
-            payload = {"sip_plan": _json_value(plan), "preview": preview}
-            audit(
-                "portfolio_sip_write",
-                "sip_plan",
-                plan.id,
-                payload,
-                "success",
-                idem,
-            )
-            remember(action, idem, body, payload, status)
+                remember(
+                    action,
+                    idem,
+                    body,
+                    payload,
+                    status,
+                    conn=conn,
+                )
             return jsonify(payload), status
         except ValueError as exc:
             return business_error(
@@ -1034,30 +1436,66 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 body,
                 exc,
                 idem,
+                operation_action="sip",
+            )
+        except Exception:
+            return _error(
+                "portfolio_write_failed",
+                "portfolio SIP write failed",
+                500,
             )
 
     def sip_operation(plan_id, operation):
         idem, guard = write_guard()
         if guard:
             return guard
+        action = f"sip:{operation}:{plan_id}"
         try:
             body = json_body()
-            action = f"sip:{operation}:{plan_id}"
             cached = replay(action, idem, body)
             if cached:
                 return cached
-            _, _, _, sip = services()
-            plan = sip.pause(plan_id) if operation == "pause" else sip.resume(plan_id)
-            payload = {"sip_plan": _json_value(plan)}
-            audit(
-                f"portfolio_sip_{operation}",
-                "sip_plan",
-                plan_id,
-                payload,
-                "success",
-                idem,
-            )
-            remember(action, idem, body, payload, 200)
+            repo = repository()
+            with repo.database.transaction() as conn:
+                cached = replay(action, idem, body, conn=conn)
+                if cached:
+                    return cached
+                plan = repo.get_plan(plan_id, conn=conn)
+                if plan is None:
+                    raise ValueError("plan not found")
+                if plan.status is SipPlanStatus.DRAFT:
+                    raise ValueError(
+                        "plan is not active"
+                        if operation == "pause"
+                        else "plan is not paused"
+                    )
+                plan = replace(
+                    plan,
+                    status=(
+                        SipPlanStatus.PAUSED
+                        if operation == "pause"
+                        else SipPlanStatus.ACTIVE
+                    ),
+                )
+                repo.save_plan(plan, conn=conn)
+                payload = {"sip_plan": _json_value(plan)}
+                audit(
+                    f"portfolio_sip_{operation}",
+                    "sip_plan",
+                    plan_id,
+                    payload,
+                    "success",
+                    idem,
+                    conn=conn,
+                )
+                remember(
+                    action,
+                    idem,
+                    body,
+                    payload,
+                    200,
+                    conn=conn,
+                )
             return jsonify(payload)
         except ValueError as exc:
             return business_error(
@@ -1067,6 +1505,13 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 request.get_json(silent=True) or {},
                 exc,
                 idem,
+                operation_action=action,
+            )
+        except Exception:
+            return _error(
+                "portfolio_write_failed",
+                f"portfolio SIP {operation} failed",
+                500,
             )
 
     @blueprint.post("/api/portfolio/sip-plans/<plan_id>/pause")
