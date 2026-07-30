@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+import threading
 
 import pytest
 
@@ -176,6 +177,75 @@ def test_purchase_retry_is_idempotent_and_does_not_lock_source_twice(services):
     assert projector.calculate("cash").locked_shares == Decimal("1000")
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("product_id", "other-fund"),
+        ("amount", Decimal("1001")),
+        ("trade_date", date(2026, 7, 31)),
+        ("source_cash_product_id", "other-cash"),
+        ("source_cash_product_id", ""),
+        ("fee_rate", Decimal("0.02")),
+        ("created_by", "api"),
+    ],
+)
+def test_purchase_idempotency_key_rejects_conflicting_request(
+    services, field, value
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "3000")
+    seed_cash(repository, "other-cash", "3000")
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    seed_product(repository, "other-fund", ProductType.PUBLIC_FUND, "009999")
+    request = {
+        "product_id": "fund",
+        "amount": Decimal("1000.00"),
+        "trade_date": TRADE_DATE,
+        "idempotency_key": "web:purchase-conflict",
+        "source_cash_product_id": "cash",
+        "fee_rate": Decimal("0.0100"),
+        "created_by": "web",
+    }
+    original = transactions.record_purchase(**request)
+    request[field] = value
+
+    with pytest.raises(
+        ValueError, match="idempotency key conflicts with existing request"
+    ):
+        transactions.record_purchase(**request)
+
+    assert repository.get_transaction_by_idempotency(
+        "web:purchase-conflict"
+    ) == original
+    assert projector.calculate("cash").locked_shares == Decimal("1000")
+
+
+def test_purchase_idempotency_normalizes_equivalent_decimal_request(services):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "3000")
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    original = transactions.record_purchase(
+        "fund",
+        Decimal("1000.00"),
+        TRADE_DATE,
+        "web:purchase-normalized",
+        source_cash_product_id="cash",
+        fee_rate=Decimal("0.0100"),
+    )
+
+    retry = transactions.record_purchase(
+        "fund",
+        Decimal("1E+3"),
+        TRADE_DATE,
+        "web:purchase-normalized",
+        source_cash_product_id="cash",
+        fee_rate=Decimal("0.01"),
+    )
+
+    assert retry == original
+    assert projector.calculate("cash").locked_shares == Decimal("1000")
+
+
 def test_purchase_source_must_be_cash_management(services):
     repository, transactions, _projector = services
     seed_product(repository, "fund", ProductType.PUBLIC_FUND)
@@ -284,6 +354,75 @@ def test_cash_redemption_with_destination_confirms_both_sides(services):
     assert projector.calculate("destination").total_shares == Decimal("35")
 
 
+def test_redemption_retry_is_idempotent_and_does_not_lock_twice(services):
+    repository, transactions, projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    seed_opening_position(repository, "fund", "100")
+    seed_cash(repository, "cash", "0")
+
+    original = transactions.record_redemption(
+        "fund",
+        Decimal("25.00"),
+        TRADE_DATE,
+        "web:redemption-retry",
+        destination_cash_product_id="cash",
+    )
+    retry = transactions.record_redemption(
+        "fund",
+        Decimal("25"),
+        TRADE_DATE,
+        "web:redemption-retry",
+        destination_cash_product_id="cash",
+    )
+
+    assert retry == original
+    assert len(repository.list_transactions()) == 4
+    assert projector.calculate("fund").locked_shares == Decimal("25")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("product_id", "other-fund"),
+        ("shares", Decimal("26")),
+        ("trade_date", date(2026, 7, 31)),
+        ("destination_cash_product_id", "other-cash"),
+        ("destination_cash_product_id", ""),
+        ("created_by", "api"),
+    ],
+)
+def test_redemption_idempotency_key_rejects_conflicting_request(
+    services, field, value
+):
+    repository, transactions, projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    seed_opening_position(repository, "fund", "100")
+    seed_product(repository, "other-fund", ProductType.PUBLIC_FUND, "009999")
+    seed_opening_position(repository, "other-fund", "100")
+    seed_cash(repository, "cash", "0")
+    seed_cash(repository, "other-cash", "0")
+    request = {
+        "product_id": "fund",
+        "shares": Decimal("25.00"),
+        "trade_date": TRADE_DATE,
+        "idempotency_key": "web:redemption-conflict",
+        "destination_cash_product_id": "cash",
+        "created_by": "web",
+    }
+    original = transactions.record_redemption(**request)
+    request[field] = value
+
+    with pytest.raises(
+        ValueError, match="idempotency key conflicts with existing request"
+    ):
+        transactions.record_redemption(**request)
+
+    assert repository.get_transaction_by_idempotency(
+        "web:redemption-conflict"
+    ) == original
+    assert projector.calculate("fund").locked_shares == Decimal("25")
+
+
 def test_redemption_destination_must_be_cash_management(services):
     repository, transactions, _projector = services
     seed_product(repository, "fund", ProductType.PUBLIC_FUND)
@@ -341,6 +480,56 @@ def test_confirm_pending_purchase_updates_linked_leg_once(services):
     assert linked_leg(repository, confirmed).status is TransactionStatus.CONFIRMED
     assert projector.calculate("cash").total_shares == Decimal("400")
     assert projector.calculate("cash").locked_shares == Decimal("0")
+    assert projector.calculate("fund").total_shares == Decimal("297")
+
+
+@pytest.mark.parametrize(
+    ("product_code", "quote_date", "unit_nav"),
+    [
+        ("WRONG", TRADE_DATE, Decimal("2")),
+        ("003103", date(2026, 7, 29), Decimal("2")),
+        ("003103", TRADE_DATE, Decimal("2.01")),
+        ("003103", TRADE_DATE, None),
+        ("003103", TRADE_DATE, Decimal("NaN")),
+    ],
+)
+def test_confirmed_transaction_rejects_conflicting_confirmation_quote(
+    services, product_code, quote_date, unit_nav
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    pending = transactions.record_purchase(
+        "fund",
+        Decimal("600"),
+        TRADE_DATE,
+        "web:confirmed-quote-conflict",
+        source_cash_product_id="cash",
+        fee_rate=Decimal("0.01"),
+    )
+    confirmed = transactions.confirm_pending(
+        pending.id,
+        MarketQuote(
+            fund.code,
+            TRADE_DATE,
+            "test",
+            "confirmed",
+            unit_nav=Decimal("2"),
+        ),
+    )
+    conflicting_quote = MarketQuote(
+        product_code,
+        quote_date,
+        "test",
+        "conflicting",
+        unit_nav=unit_nav,
+    )
+
+    with pytest.raises(ValueError, match="confirmation quote conflicts"):
+        transactions.confirm_pending(confirmed.id, conflicting_quote)
+
+    assert repository.get_transaction_by_id(confirmed.id) == confirmed
+    assert projector.calculate("cash").total_shares == Decimal("400")
     assert projector.calculate("fund").total_shares == Decimal("297")
 
 
@@ -454,6 +643,196 @@ def test_purchase_rolls_back_ledger_and_positions_when_rebuild_fails(
     assert len(repository.list_transactions()) == 2
     assert repository.get_position("cash") == before_cash
     assert repository.get_position("target") == before_target
+
+
+def test_concurrent_purchases_cannot_double_spend_one_cash_balance(services):
+    repository, _transactions, projector = services
+    seed_cash(repository, "source", "100")
+    seed_cash(repository, "target-a", "0")
+    seed_cash(repository, "target-b", "0")
+    database_path = repository.database.path
+    start = threading.Barrier(3)
+    results = []
+    errors = []
+
+    def purchase(target_id, idempotency_key):
+        database = PortfolioDatabase(database_path)
+        independent_repository = PortfolioRepository(database)
+        independent_projector = PositionProjector(independent_repository)
+        independent_service = PortfolioTransactionService(
+            independent_repository, independent_projector
+        )
+        start.wait()
+        try:
+            results.append(
+                independent_service.record_purchase(
+                    target_id,
+                    Decimal("80"),
+                    TRADE_DATE,
+                    idempotency_key,
+                    source_cash_product_id="source",
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(
+            target=purchase, args=("target-a", "web:concurrent-a")
+        ),
+        threading.Thread(
+            target=purchase, args=("target-b", "web:concurrent-b")
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert str(errors[0]) == "insufficient available shares"
+    assert projector.calculate("source").total_shares == Decimal("20")
+    assert sorted(
+        [
+            projector.calculate("target-a").total_shares,
+            projector.calculate("target-b").total_shares,
+        ]
+    ) == [Decimal("0"), Decimal("80")]
+
+
+def test_linked_row_insert_failure_rolls_back_primary_and_positions(
+    services, monkeypatch
+):
+    repository, transactions, _projector = services
+    seed_cash(repository, "source", "100")
+    seed_cash(repository, "target", "0")
+    before_source = repository.get_position("source")
+    before_target = repository.get_position("target")
+    original_create = repository.create_transaction
+
+    def fail_linked_insert(transaction, conn=None):
+        if transaction.transaction_type is TransactionType.CASH_TRANSFER_OUT:
+            raise RuntimeError("linked insert failed")
+        return original_create(transaction, conn)
+
+    monkeypatch.setattr(repository, "create_transaction", fail_linked_insert)
+
+    with pytest.raises(RuntimeError, match="linked insert failed"):
+        transactions.record_purchase(
+            "target",
+            Decimal("20"),
+            TRADE_DATE,
+            "web:linked-insert-failure",
+            source_cash_product_id="source",
+        )
+
+    assert len(repository.list_transactions()) == 2
+    assert repository.get_position("source") == before_source
+    assert repository.get_position("target") == before_target
+
+
+def test_reciprocal_link_update_failure_rolls_back_both_rows(
+    services, monkeypatch
+):
+    repository, transactions, _projector = services
+    seed_cash(repository, "source", "100")
+    seed_cash(repository, "target", "0")
+    before_source = repository.get_position("source")
+    before_target = repository.get_position("target")
+
+    def fail_primary_link_update(transaction, conn=None):
+        raise RuntimeError("primary link update failed")
+
+    monkeypatch.setattr(
+        repository, "update_pending_transaction", fail_primary_link_update
+    )
+
+    with pytest.raises(RuntimeError, match="primary link update failed"):
+        transactions.record_purchase(
+            "target",
+            Decimal("20"),
+            TRADE_DATE,
+            "web:link-update-failure",
+            source_cash_product_id="source",
+        )
+
+    assert len(repository.list_transactions()) == 2
+    assert repository.get_position("source") == before_source
+    assert repository.get_position("target") == before_target
+
+
+def test_confirm_linked_update_failure_rolls_back_confirmed_primary(
+    services, monkeypatch
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    pending = transactions.record_purchase(
+        "fund",
+        Decimal("600"),
+        TRADE_DATE,
+        "web:confirm-linked-failure",
+        source_cash_product_id="cash",
+    )
+    pending_leg = linked_leg(repository, pending)
+    original_update = repository.update_pending_transaction
+
+    def fail_linked_update(transaction, conn=None):
+        if transaction.id == pending_leg.id:
+            raise RuntimeError("linked confirmation failed")
+        return original_update(transaction, conn)
+
+    monkeypatch.setattr(
+        repository, "update_pending_transaction", fail_linked_update
+    )
+    quote = MarketQuote(
+        fund.code, TRADE_DATE, "test", "confirm-failure", unit_nav=Decimal("2")
+    )
+
+    with pytest.raises(RuntimeError, match="linked confirmation failed"):
+        transactions.confirm_pending(pending.id, quote)
+
+    assert repository.get_transaction_by_id(pending.id) == pending
+    assert repository.get_transaction_by_id(pending_leg.id) == pending_leg
+    assert projector.calculate("cash").locked_shares == Decimal("600")
+    assert projector.calculate("cash").total_shares == Decimal("1000")
+    assert projector.calculate("fund").total_shares == Decimal("0")
+
+
+def test_redemption_projector_failure_rolls_back_ledger_and_positions(
+    services, monkeypatch
+):
+    repository, transactions, projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    seed_opening_position(repository, "fund", "100")
+    seed_cash(repository, "cash", "0")
+    before_fund = repository.get_position("fund")
+    before_cash = repository.get_position("cash")
+    original_calculate = projector._calculate
+
+    def fail_destination_calculation(product_id, conn=None):
+        if product_id == "cash":
+            raise RuntimeError("destination projection failed")
+        return original_calculate(product_id, conn)
+
+    monkeypatch.setattr(projector, "_calculate", fail_destination_calculation)
+
+    with pytest.raises(RuntimeError, match="destination projection failed"):
+        transactions.record_redemption(
+            "fund",
+            Decimal("20"),
+            TRADE_DATE,
+            "web:redemption-projection-failure",
+            destination_cash_product_id="cash",
+        )
+
+    assert len(repository.list_transactions()) == 2
+    assert repository.get_position("fund") == before_fund
+    assert repository.get_position("cash") == before_cash
 
 
 def test_repository_get_quote_is_exact_date_and_connection_aware(services):

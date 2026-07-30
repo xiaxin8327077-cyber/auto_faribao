@@ -41,9 +41,16 @@ class PortfolioTransactionService:
                 idempotency_key, conn=conn
             )
             if existing is not None:
-                if existing.transaction_type is not TransactionType.MANUAL_PURCHASE:
-                    raise ValueError("idempotency key already used")
-                return existing
+                return self._require_matching_purchase_request(
+                    existing,
+                    product_id=product_id,
+                    amount=amount,
+                    trade_date=trade_date,
+                    source_cash_product_id=source_cash_product_id or "",
+                    fee_rate=fee_rate,
+                    created_by=created_by,
+                    conn=conn,
+                )
 
             product = self.repository.require_product(product_id, conn=conn)
             source = None
@@ -126,9 +133,17 @@ class PortfolioTransactionService:
                 idempotency_key, conn=conn
             )
             if existing is not None:
-                if existing.transaction_type is not TransactionType.MANUAL_REDEMPTION:
-                    raise ValueError("idempotency key already used")
-                return existing
+                return self._require_matching_redemption_request(
+                    existing,
+                    product_id=product_id,
+                    shares=shares,
+                    trade_date=trade_date,
+                    destination_cash_product_id=(
+                        destination_cash_product_id or ""
+                    ),
+                    created_by=created_by,
+                    conn=conn,
+                )
 
             product = self.repository.require_product(product_id, conn=conn)
             destination = None
@@ -194,10 +209,6 @@ class PortfolioTransactionService:
             )
             if transaction is None:
                 raise ValueError("transaction not found")
-            if transaction.status is TransactionStatus.CONFIRMED:
-                return transaction
-            if transaction.status not in _PENDING_STATUSES:
-                raise ValueError("transaction is not pending")
             if transaction.transaction_type not in {
                 TransactionType.MANUAL_PURCHASE,
                 TransactionType.MANUAL_REDEMPTION,
@@ -207,6 +218,13 @@ class PortfolioTransactionService:
             product = self.repository.require_product(
                 transaction.product_id, conn=conn
             )
+            if transaction.status is TransactionStatus.CONFIRMED:
+                self._require_matching_confirmation_quote(
+                    transaction, product, quote, conn
+                )
+                return transaction
+            if transaction.status not in _PENDING_STATUSES:
+                raise ValueError("transaction is not pending")
             if quote.product_code != product.code:
                 raise ValueError("quote product does not match")
             if quote.quote_date != transaction.trade_date:
@@ -260,6 +278,91 @@ class PortfolioTransactionService:
 
             self._rebuild_positions(affected_product_ids, conn)
             return confirmed
+
+    def _require_matching_purchase_request(
+        self,
+        existing,
+        *,
+        product_id,
+        amount,
+        trade_date,
+        source_cash_product_id,
+        fee_rate,
+        created_by,
+        conn,
+    ):
+        if (
+            existing.transaction_type is not TransactionType.MANUAL_PURCHASE
+            or existing.product_id != product_id
+            or existing.amount != amount
+            or existing.trade_date != trade_date
+            or (existing.fee_rate or ZERO) != fee_rate
+            or existing.created_by != created_by
+            or self._linked_product_id(existing, conn)
+            != source_cash_product_id
+        ):
+            raise ValueError(
+                "idempotency key conflicts with existing request"
+            )
+        return existing
+
+    def _require_matching_redemption_request(
+        self,
+        existing,
+        *,
+        product_id,
+        shares,
+        trade_date,
+        destination_cash_product_id,
+        created_by,
+        conn,
+    ):
+        if (
+            existing.transaction_type is not TransactionType.MANUAL_REDEMPTION
+            or existing.product_id != product_id
+            or existing.shares != shares
+            or existing.trade_date != trade_date
+            or existing.created_by != created_by
+            or self._linked_product_id(existing, conn)
+            != destination_cash_product_id
+        ):
+            raise ValueError(
+                "idempotency key conflicts with existing request"
+            )
+        return existing
+
+    def _linked_product_id(self, transaction, conn):
+        if not transaction.linked_transaction_id:
+            return ""
+        try:
+            linked = self._require_consistent_link(transaction, conn)
+        except ValueError as exc:
+            raise ValueError(
+                "idempotency key conflicts with existing request"
+            ) from exc
+        return linked.product_id
+
+    def _require_matching_confirmation_quote(
+        self, transaction, product, quote, conn
+    ):
+        try:
+            if quote.product_code != product.code:
+                raise ValueError("quote product does not match")
+            if quote.quote_date != transaction.trade_date:
+                raise ValueError("quote date does not match")
+            nav = self._quote_nav(quote)
+        except (AttributeError, ValueError) as exc:
+            raise ValueError(
+                "confirmation quote conflicts with original confirmation"
+            ) from exc
+        if (
+            transaction.confirmation_nav != nav
+            or transaction.confirmation_date != quote.quote_date
+        ):
+            raise ValueError(
+                "confirmation quote conflicts with original confirmation"
+            )
+        self._require_consistent_link(transaction, conn)
 
     def _status_and_nav(self, product, trade_date, conn):
         if product.product_type is ProductType.CASH_MANAGEMENT:
