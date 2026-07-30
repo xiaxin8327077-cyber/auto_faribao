@@ -63,13 +63,28 @@ class PortfolioRepository:
             raise ValueError("product already exists") from exc
         return product
 
-    def get_product(self, product_id: str) -> Product | None:
-        with self.database.connection() as conn:
-            row = conn.execute(
-                f"SELECT {_PRODUCT_COLUMNS} FROM products WHERE id = ?",
-                (product_id,),
-            ).fetchone()
+    def get_product(
+        self,
+        product_id: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> Product | None:
+        query = f"SELECT {_PRODUCT_COLUMNS} FROM products WHERE id = ?"
+        if conn is None:
+            with self.database.connection() as owned:
+                row = owned.execute(query, (product_id,)).fetchone()
+        else:
+            row = conn.execute(query, (product_id,)).fetchone()
         return self._product_from_row(row) if row else None
+
+    def require_product(
+        self,
+        product_id: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> Product:
+        product = self.get_product(product_id, conn=conn)
+        if product is None:
+            raise ValueError("product not found")
+        return product
 
     def get_product_by_provider_code(self, provider: str, code: str) -> Product | None:
         with self.database.connection() as conn:
@@ -139,16 +154,87 @@ class PortfolioRepository:
         )
         return tx
 
-    def get_transaction_by_idempotency(
-        self, idempotency_key: str
+    def get_transaction_by_id(
+        self,
+        transaction_id: str,
+        conn: sqlite3.Connection | None = None,
     ) -> Transaction | None:
-        with self.database.connection() as conn:
-            row = conn.execute(
-                f"""SELECT {_TRANSACTION_COLUMNS}
-                    FROM transactions WHERE idempotency_key = ?""",
-                (idempotency_key,),
-            ).fetchone()
+        query = (
+            f"SELECT {_TRANSACTION_COLUMNS} "
+            "FROM transactions WHERE id = ?"
+        )
+        if conn is None:
+            with self.database.connection() as owned:
+                row = owned.execute(query, (transaction_id,)).fetchone()
+        else:
+            row = conn.execute(query, (transaction_id,)).fetchone()
         return self._transaction_from_row(row) if row else None
+
+    def get_transaction_by_idempotency(
+        self,
+        idempotency_key: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> Transaction | None:
+        query = (
+            f"SELECT {_TRANSACTION_COLUMNS} "
+            "FROM transactions WHERE idempotency_key = ?"
+        )
+        if conn is None:
+            with self.database.connection() as owned:
+                row = owned.execute(query, (idempotency_key,)).fetchone()
+        else:
+            row = conn.execute(query, (idempotency_key,)).fetchone()
+        return self._transaction_from_row(row) if row else None
+
+    def update_pending_transaction(
+        self,
+        tx: Transaction,
+        conn: sqlite3.Connection | None = None,
+    ) -> Transaction:
+        if conn is None:
+            with self.database.transaction() as owned:
+                return self.update_pending_transaction(tx, owned)
+        current = self.get_transaction_by_id(tx.id, conn=conn)
+        if current is None:
+            raise ValueError("transaction not found")
+        if current.status not in {
+            TransactionStatus.PENDING_QUOTE,
+            TransactionStatus.PENDING_CONFIRMATION,
+        }:
+            raise ValueError("transaction is not pending")
+        conn.execute(
+            """UPDATE transactions
+               SET product_id = ?, transaction_type = ?, status = ?,
+                   trade_date = ?, confirmation_date = ?, amount = ?,
+                   shares = ?, fee_amount = ?, fee_rate = ?,
+                   confirmation_nav = ?, linked_transaction_id = ?,
+                   plan_id = ?, idempotency_key = ?, note = ?, created_by = ?,
+                   confirmed_at = CASE
+                       WHEN ? = 'confirmed' THEN CURRENT_TIMESTAMP
+                       ELSE confirmed_at
+                   END
+               WHERE id = ?""",
+            (
+                tx.product_id,
+                tx.transaction_type.value,
+                tx.status.value,
+                tx.trade_date.isoformat(),
+                tx.confirmation_date.isoformat() if tx.confirmation_date else None,
+                optional_decimal_text(tx.amount),
+                optional_decimal_text(tx.shares),
+                optional_decimal_text(tx.fee_amount),
+                optional_decimal_text(tx.fee_rate),
+                optional_decimal_text(tx.confirmation_nav),
+                tx.linked_transaction_id or None,
+                tx.plan_id or None,
+                tx.idempotency_key,
+                tx.note,
+                tx.created_by,
+                tx.status.value,
+                tx.id,
+            ),
+        )
+        return tx
 
     def list_transactions(
         self,
@@ -253,14 +339,23 @@ class PortfolioRepository:
             )
         return quote
 
-    def get_quote(self, product_id: str, quote_date: date) -> MarketQuote | None:
-        with self.database.connection() as conn:
-            row = conn.execute(
-                f"""SELECT {_QUOTE_COLUMNS} FROM quotes q
-                    JOIN products p ON p.id = q.product_id
-                    WHERE q.product_id = ? AND q.quote_date = ?""",
-                (product_id, quote_date.isoformat()),
-            ).fetchone()
+    def get_quote(
+        self,
+        product_id: str,
+        quote_date: date,
+        conn: sqlite3.Connection | None = None,
+    ) -> MarketQuote | None:
+        query = (
+            f"SELECT {_QUOTE_COLUMNS} FROM quotes q "
+            "JOIN products p ON p.id = q.product_id "
+            "WHERE q.product_id = ? AND q.quote_date = ?"
+        )
+        params = (product_id, quote_date.isoformat())
+        if conn is None:
+            with self.database.connection() as owned:
+                row = owned.execute(query, params).fetchone()
+        else:
+            row = conn.execute(query, params).fetchone()
         return self._quote_from_row(row) if row else None
 
     def latest_quote(
