@@ -371,7 +371,8 @@ class ChangshengFundProvider:
             raise
         except Exception as exc:
             raise ProviderError("长盛基金行情接口请求失败") from exc
-        if not isinstance(data, dict) or data.get("status") != 1:
+        status = data.get("status") if isinstance(data, dict) else None
+        if not (type(status) is int and status == 1):
             raise ProviderError("长盛基金行情接口状态异常")
 
         date_values = data.get("DateArray")

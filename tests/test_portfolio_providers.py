@@ -623,6 +623,100 @@ def test_changsheng_rejects_invalid_status_or_array_shapes(response):
         )
 
 
+@pytest.mark.parametrize("status", [True, 1.0, "1", 0, None])
+def test_changsheng_requires_status_to_be_exact_int_one(status):
+    from src.portfolio_providers import ChangshengFundProvider
+
+    provider = ChangshengFundProvider(
+        opener=lambda *_args, **_kwargs: {
+            "status": status,
+            "DateArray": [],
+            "DwjzArray": [],
+        }
+    )
+
+    with pytest.raises(ProviderError, match="接口状态异常"):
+        provider.fetch_quotes(
+            provider.resolve_product("003103"),
+            date(2026, 7, 29),
+            date(2026, 7, 30),
+        )
+
+
+def test_changsheng_range_filter_keeps_both_inclusive_boundaries():
+    from src.portfolio_providers import ChangshengFundProvider
+
+    provider = ChangshengFundProvider(
+        opener=lambda *_args, **_kwargs: {
+            "status": 1,
+            "DateArray": [
+                "2026.07.27",
+                "2026.07.28",
+                "2026.07.30",
+                "2026.07.31",
+            ],
+            "DwjzArray": ["1.0318", "1.0319", "1.0322", "1.0323"],
+        }
+    )
+
+    quotes = provider.fetch_quotes(
+        provider.resolve_product("003103"),
+        date(2026, 7, 28),
+        date(2026, 7, 30),
+    )
+
+    assert [quote.quote_date for quote in quotes] == [
+        date(2026, 7, 30),
+        date(2026, 7, 28),
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw_date",
+    ["2026-07-29", "2026.02.30", "", None],
+)
+def test_changsheng_rejects_invalid_quote_dates(raw_date):
+    from src.portfolio_providers import ChangshengFundProvider
+
+    provider = ChangshengFundProvider(
+        opener=lambda *_args, **_kwargs: {
+            "status": 1,
+            "DateArray": [raw_date],
+            "DwjzArray": ["1.0321"],
+        }
+    )
+
+    with pytest.raises(ProviderError, match="净值数据无效"):
+        provider.fetch_quotes(
+            provider.resolve_product("003103"),
+            date(2026, 7, 28),
+            date(2026, 7, 30),
+        )
+
+
+@pytest.mark.parametrize(
+    "raw_nav",
+    ["not-a-number", "NaN", "Infinity", "0", "-0.0001"],
+)
+def test_changsheng_rejects_invalid_nonfinite_or_nonpositive_nav(raw_nav):
+    from src.portfolio_providers import ChangshengFundProvider
+
+    provider = ChangshengFundProvider(
+        opener=lambda *_args, **_kwargs: {
+            "status": 1,
+            "DateArray": ["2026.07.29"],
+            "DwjzArray": [raw_nav],
+        }
+    )
+
+    with pytest.raises(ProviderError, match="净值数据无效"):
+        provider.fetch_quotes(
+            provider.resolve_product("003103"),
+            date(2026, 7, 28),
+            date(2026, 7, 30),
+        )
+
+
 def test_changsheng_raw_hash_depends_only_on_each_date_nav_pair():
     from src.portfolio_providers import ChangshengFundProvider
 
@@ -652,10 +746,17 @@ def test_changsheng_raw_hash_depends_only_on_each_date_nav_pair():
         date(2026, 7, 29),
         date(2026, 7, 29),
     )[0].raw_hash
-    second_hash = provider.fetch_quotes(
+    second_quotes = provider.fetch_quotes(
         product,
         date(2026, 7, 28),
         date(2026, 7, 29),
-    )[0].raw_hash
+    )
 
-    assert first_hash == second_hash
+    assert first_hash == second_quotes[0].raw_hash
+    assert first_hash == (
+        "046ad0f206c2b127278e73a4f70b05aa42d5643472a2b5239dc138e2537c988e"
+    )
+    assert second_quotes[1].raw_hash == (
+        "d70e03b09a8ce04535adda7bb2ddb2a4cd0839ffcdf10c058f3d732a3855f927"
+    )
+    assert first_hash != second_quotes[1].raw_hash
