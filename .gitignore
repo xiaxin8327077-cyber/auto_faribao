@@ -21,6 +21,10 @@ env/
 data/*.json
 !data/.gitkeep
 data/nav_dashboard_access_token
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/portfolio-backups/
 
 # Logs
 *.log
