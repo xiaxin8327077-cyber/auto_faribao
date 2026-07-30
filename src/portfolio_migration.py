@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from enum import Enum
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,13 @@ class MigrationReport:
     backup_dir: str
 
 
+class PortfolioTargetState(Enum):
+    LEGACY_OR_MISSING = "legacy_or_missing"
+    CURRENT = "current"
+    UPGRADEABLE_V1 = "upgradeable_v1"
+    UNSUPPORTED_PORTFOLIO = "unsupported_portfolio"
+
+
 LEGACY_PRODUCT_TYPE_OVERRIDES = {
     ("nanyin_wealth", "NYRR000007"): ProductType.CASH_MANAGEMENT,
     ("citic_wealth", "AM264381F"): ProductType.CASH_MANAGEMENT,
@@ -48,7 +56,15 @@ def migrate_legacy_portfolio(
     backup_root = Path(backup_root)
     products, expected_shares = _legacy_products(cfg)
 
-    if _contains_current_schema(target_path):
+    target_state = _inspect_target_schema(target_path)
+    if target_state is PortfolioTargetState.UNSUPPORTED_PORTFOLIO:
+        raise ValueError("unsupported portfolio schema version")
+    if target_state is PortfolioTargetState.UPGRADEABLE_V1:
+        PortfolioDatabase(target_path).initialize()
+        target_state = _inspect_target_schema(target_path)
+        if target_state is not PortfolioTargetState.CURRENT:
+            raise ValueError("portfolio schema upgrade did not reach current")
+    if target_state is PortfolioTargetState.CURRENT:
         _validate_candidate(target_path, len(products), expected_shares)
         counts = _database_counts(target_path)
         return MigrationReport(*counts, installed=False, backup_dir="")
@@ -216,19 +232,55 @@ def _source_json(value) -> str:
 
 
 def _contains_current_schema(path: Path) -> bool:
+    return _inspect_target_schema(path) is PortfolioTargetState.CURRENT
+
+
+def _inspect_target_schema(path: Path) -> PortfolioTargetState:
     if not path.is_file():
-        return False
+        return PortfolioTargetState.LEGACY_OR_MISSING
     try:
         with _read_only_connection(path) as conn:
-            versions = {
+            tables = {
                 row[0]
                 for row in conn.execute(
-                    "SELECT version FROM schema_migrations"
+                    """SELECT name FROM sqlite_master
+                       WHERE type = 'table'"""
                 )
             }
+            if "schema_migrations" not in tables:
+                portfolio_tables = {
+                    "products",
+                    "transactions",
+                    "positions",
+                    "quotes",
+                    "audit_logs",
+                    "legacy_profit_history",
+                }
+                if tables & portfolio_tables:
+                    return PortfolioTargetState.UNSUPPORTED_PORTFOLIO
+                return PortfolioTargetState.LEGACY_OR_MISSING
+            try:
+                versions = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT version FROM schema_migrations"
+                    )
+                }
+            except sqlite3.DatabaseError:
+                return PortfolioTargetState.UNSUPPORTED_PORTFOLIO
     except sqlite3.DatabaseError:
-        return False
-    return versions == {SCHEMA_VERSION}
+        try:
+            with path.open("rb") as source:
+                if source.read(16) == b"SQLite format 3\x00":
+                    return PortfolioTargetState.UNSUPPORTED_PORTFOLIO
+        except OSError:
+            pass
+        return PortfolioTargetState.LEGACY_OR_MISSING
+    if versions == {SCHEMA_VERSION}:
+        return PortfolioTargetState.CURRENT
+    if versions == {1}:
+        return PortfolioTargetState.UPGRADEABLE_V1
+    return PortfolioTargetState.UNSUPPORTED_PORTFOLIO
 
 
 def _validate_candidate(

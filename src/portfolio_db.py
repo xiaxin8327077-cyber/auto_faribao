@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import sqlite3
+from uuid import NAMESPACE_URL, uuid5
 
 
 BASE_SCHEMA_VERSION = 1
@@ -319,6 +320,57 @@ BEGIN
         'confirmed transaction reversal requires a valid child'
     );
 END;
+CREATE TRIGGER IF NOT EXISTS validate_transaction_idempotency_key_on_insert
+BEFORE INSERT ON transactions
+WHEN NEW.idempotency_key != TRIM(NEW.idempotency_key)
+    OR LENGTH(TRIM(NEW.idempotency_key)) = 0
+BEGIN
+    SELECT RAISE(ABORT, 'idempotency key must be normalized');
+END;
+CREATE TRIGGER IF NOT EXISTS validate_transaction_idempotency_key_on_update
+BEFORE UPDATE OF idempotency_key ON transactions
+WHEN NEW.idempotency_key != TRIM(NEW.idempotency_key)
+    OR LENGTH(TRIM(NEW.idempotency_key)) = 0
+BEGIN
+    SELECT RAISE(ABORT, 'idempotency key must be normalized');
+END;
+"""
+
+
+IMMUTABLE_TRANSACTION_TRIGGERS_SQL = """
+CREATE TRIGGER IF NOT EXISTS prevent_confirmed_transaction_mutation
+BEFORE UPDATE ON transactions
+WHEN OLD.status = 'confirmed' AND NOT (
+    NEW.status = 'reversed'
+    AND OLD.reversed_at IS NULL
+    AND NEW.reversed_at IS NOT NULL
+    AND NEW.id IS OLD.id
+    AND NEW.product_id IS OLD.product_id
+    AND NEW.transaction_type IS OLD.transaction_type
+    AND NEW.trade_date IS OLD.trade_date
+    AND NEW.confirmation_date IS OLD.confirmation_date
+    AND NEW.amount IS OLD.amount
+    AND NEW.shares IS OLD.shares
+    AND NEW.fee_amount IS OLD.fee_amount
+    AND NEW.fee_rate IS OLD.fee_rate
+    AND NEW.confirmation_nav IS OLD.confirmation_nav
+    AND NEW.linked_transaction_id IS OLD.linked_transaction_id
+    AND NEW.plan_id IS OLD.plan_id
+    AND NEW.idempotency_key IS OLD.idempotency_key
+    AND NEW.note IS OLD.note
+    AND NEW.created_by IS OLD.created_by
+    AND NEW.created_at IS OLD.created_at
+    AND NEW.confirmed_at IS OLD.confirmed_at
+)
+BEGIN
+    SELECT RAISE(ABORT, 'confirmed transaction is immutable except for reversal');
+END;
+CREATE TRIGGER IF NOT EXISTS prevent_reversed_transaction_mutation
+BEFORE UPDATE ON transactions
+WHEN OLD.status = 'reversed'
+BEGIN
+    SELECT RAISE(ABORT, 'reversed transaction is immutable');
+END;
 """
 
 
@@ -337,7 +389,7 @@ class PortfolioDatabase:
     def __init__(self, path=DEFAULT_DB_PATH):
         self.path = Path(path)
 
-    def _open(self) -> sqlite3.Connection:
+    def _open(self, *, set_journal_mode=True) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=15, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.create_function(
@@ -348,30 +400,40 @@ class PortfolioDatabase:
         )
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 15000")
-        conn.execute("PRAGMA journal_mode = WAL")
+        if set_journal_mode:
+            conn.execute("PRAGMA journal_mode = WAL")
         return conn
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.connection() as conn:
+        conn = self._open(set_journal_mode=False)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
             if not self._has_schema_migrations(conn):
                 self._create_current_schema(conn)
-                return
-            versions = {
-                row["version"]
-                for row in conn.execute(
-                    "SELECT version FROM schema_migrations"
-                )
-            }
-            if versions == {SCHEMA_VERSION}:
-                return
-            if versions != {BASE_SCHEMA_VERSION}:
-                raise ValueError(
-                    "unsupported portfolio schema version set: "
-                    f"{sorted(versions)}"
-                )
-            self._preflight_v2(conn)
-            self._upgrade_v1_to_v2(conn)
+            else:
+                versions = {
+                    row["version"]
+                    for row in conn.execute(
+                        "SELECT version FROM schema_migrations"
+                    )
+                }
+                if versions == {SCHEMA_VERSION}:
+                    pass
+                elif versions == {BASE_SCHEMA_VERSION}:
+                    self._upgrade_v1_to_v2(conn)
+                else:
+                    raise ValueError(
+                        "unsupported portfolio schema version set: "
+                        f"{sorted(versions)}"
+                    )
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+        finally:
+            conn.close()
 
     @staticmethod
     def _has_schema_migrations(conn) -> bool:
@@ -382,38 +444,55 @@ class PortfolioDatabase:
 
     @staticmethod
     def _create_current_schema(conn) -> None:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            _execute_sql_script(conn, BASE_SCHEMA_SQL)
-            _execute_sql_script(conn, V2_SCHEMA_SQL)
-            conn.execute(
-                "INSERT INTO schema_migrations(version) VALUES (?)",
-                (SCHEMA_VERSION,),
-            )
-        except BaseException:
-            conn.rollback()
-            raise
-        else:
-            conn.commit()
+        _execute_sql_script(conn, BASE_SCHEMA_SQL)
+        _execute_sql_script(conn, V2_SCHEMA_SQL)
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?)",
+            (SCHEMA_VERSION,),
+        )
 
     def _upgrade_v1_to_v2(self, conn) -> None:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            self._preflight_v2(conn)
-            _execute_sql_script(conn, V2_SCHEMA_SQL)
-            conn.execute("DELETE FROM schema_migrations")
-            conn.execute(
-                "INSERT INTO schema_migrations(version) VALUES (?)",
-                (SCHEMA_VERSION,),
-            )
-        except BaseException:
-            conn.rollback()
-            raise
-        else:
-            conn.commit()
+        self._preflight_v2(conn)
+        self._normalize_v1_idempotency_keys(conn)
+        _execute_sql_script(conn, V2_SCHEMA_SQL)
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?)",
+            (SCHEMA_VERSION,),
+        )
 
     @staticmethod
     def _preflight_v2(conn) -> None:
+        unsafe_key = conn.execute(
+            """SELECT 1
+               FROM transactions
+               GROUP BY TRIM(idempotency_key)
+               HAVING LENGTH(TRIM(idempotency_key)) = 0
+                   OR COUNT(*) > 1
+               LIMIT 1"""
+        ).fetchone()
+        if unsafe_key is not None:
+            raise ValueError(
+                "portfolio v2 migration blocked: unsafe idempotency keys"
+            )
+        audit_ids = {
+            row["id"] for row in conn.execute("SELECT id FROM audit_logs")
+        }
+        for row in conn.execute(
+            "SELECT idempotency_key FROM transactions"
+        ):
+            normalized_key = row["idempotency_key"].strip()
+            operation_id = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"portfolio-operation:{normalized_key}",
+                )
+            )
+            if operation_id in audit_ids:
+                raise ValueError(
+                    "portfolio v2 migration blocked: "
+                    "unsafe idempotency keys"
+                )
         duplicate_cash = conn.execute(
             """SELECT linked_transaction_id
                FROM transactions
@@ -452,6 +531,7 @@ class PortfolioDatabase:
                  AND child.status IN ('confirmed', 'reversed')
                  AND (
                      parent.id IS NULL
+                     OR parent.status != 'reversed'
                      OR child.product_id != parent.product_id
                      OR NOT decimal_negation(
                          child.shares, parent.shares
@@ -464,7 +544,36 @@ class PortfolioDatabase:
         ).fetchone()
         if invalid_reversal is not None:
             raise ValueError(
-                "portfolio v2 migration blocked: invalid reversal data"
+                "portfolio v2 migration blocked: invalid reversal graph"
+            )
+        applied_reversals = {
+            row["id"]: row["linked_transaction_id"]
+            for row in conn.execute(
+                """SELECT id, linked_transaction_id
+                   FROM transactions
+                   WHERE transaction_type = 'reversal'
+                     AND status IN ('confirmed', 'reversed')"""
+            )
+        }
+        visited = set()
+        active = set()
+
+        def visit(transaction_id):
+            if transaction_id in active:
+                return True
+            if transaction_id in visited:
+                return False
+            active.add(transaction_id)
+            parent_id = applied_reversals.get(transaction_id)
+            if parent_id in applied_reversals and visit(parent_id):
+                return True
+            active.remove(transaction_id)
+            visited.add(transaction_id)
+            return False
+
+        if any(visit(transaction_id) for transaction_id in applied_reversals):
+            raise ValueError(
+                "portfolio v2 migration blocked: invalid reversal graph"
             )
         unbacked_reversed = conn.execute(
             """SELECT parent.id
@@ -491,6 +600,21 @@ class PortfolioDatabase:
                 "portfolio v2 migration blocked: "
                 "unbacked reversed transactions"
             )
+
+    @staticmethod
+    def _normalize_v1_idempotency_keys(conn) -> None:
+        conn.execute(
+            "DROP TRIGGER IF EXISTS prevent_confirmed_transaction_mutation"
+        )
+        conn.execute(
+            "DROP TRIGGER IF EXISTS prevent_reversed_transaction_mutation"
+        )
+        conn.execute(
+            """UPDATE transactions
+               SET idempotency_key = TRIM(idempotency_key)
+               WHERE idempotency_key != TRIM(idempotency_key)"""
+        )
+        _execute_sql_script(conn, IMMUTABLE_TRANSACTION_TRIGGERS_SQL)
 
     @contextmanager
     def connection(self):

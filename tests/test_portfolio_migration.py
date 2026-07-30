@@ -82,6 +82,135 @@ def test_install_is_repeat_safe_and_preserves_original_inputs(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
 
 
+def test_install_upgrades_v1_target_in_place_and_preserves_portfolio_data(
+    tmp_path,
+    monkeypatch,
+):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    migrate_legacy_portfolio(
+        legacy_cfg(), state, target, tmp_path / "backups", install=True
+    )
+    with PortfolioDatabase(target).connection() as conn:
+        transaction_ids = {
+            row["id"] for row in conn.execute("SELECT id FROM transactions")
+        }
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute("INSERT INTO schema_migrations(version) VALUES (1)")
+
+    monkeypatch.setattr(
+        portfolio_migration.os,
+        "replace",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("v1 target must not be replaced")
+        ),
+    )
+
+    report = migrate_legacy_portfolio(
+        legacy_cfg(), state, target, tmp_path / "backups", install=True
+    )
+
+    assert report.installed is False
+    with PortfolioDatabase(target).connection() as conn:
+        assert {
+            row["version"]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            )
+        } == {2}
+        assert {
+            row["id"] for row in conn.execute("SELECT id FROM transactions")
+        } == transaction_ids
+
+
+@pytest.mark.parametrize("versions", [{3}, {1, 2}])
+def test_install_rejects_unsupported_portfolio_versions_without_changes(
+    tmp_path,
+    versions,
+):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    migrate_legacy_portfolio(
+        legacy_cfg(), state, target, tmp_path / "backups", install=True
+    )
+    with PortfolioDatabase(target).connection() as conn:
+        conn.execute("DELETE FROM schema_migrations")
+        for version in versions:
+            conn.execute(
+                "INSERT INTO schema_migrations(version) VALUES (?)",
+                (version,),
+            )
+    before_bytes = target.read_bytes()
+    with sqlite3.connect(target) as conn:
+        before_rows = conn.execute(
+            "SELECT id, idempotency_key FROM transactions ORDER BY id"
+        ).fetchall()
+
+    with pytest.raises(
+        ValueError,
+        match="unsupported portfolio schema version",
+    ):
+        migrate_legacy_portfolio(
+            legacy_cfg(),
+            state,
+            target,
+            tmp_path / "backups",
+            install=True,
+        )
+
+    assert target.read_bytes() == before_bytes
+    with sqlite3.connect(target) as conn:
+        assert conn.execute(
+            "SELECT id, idempotency_key FROM transactions ORDER BY id"
+        ).fetchall() == before_rows
+    assert not list(tmp_path.glob("portfolio.db.migrating-*"))
+
+
+def test_install_rejects_malformed_portfolio_migration_table_without_replace(
+    tmp_path,
+):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    with sqlite3.connect(target) as conn:
+        conn.execute(
+            "CREATE TABLE schema_migrations (unexpected_column INTEGER)"
+        )
+        conn.execute(
+            """CREATE TABLE products (
+                   id TEXT PRIMARY KEY,
+                   name TEXT NOT NULL
+               )"""
+        )
+        conn.execute(
+            "INSERT INTO schema_migrations VALUES (99)"
+        )
+        conn.execute(
+            "INSERT INTO products VALUES ('sentinel', 'keep')"
+        )
+    before_bytes = target.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match="unsupported portfolio schema version",
+    ):
+        migrate_legacy_portfolio(
+            legacy_cfg(),
+            state,
+            target,
+            tmp_path / "backups",
+            install=True,
+        )
+
+    assert target.read_bytes() == before_bytes
+    with sqlite3.connect(target) as conn:
+        assert conn.execute(
+            "SELECT * FROM products"
+        ).fetchall() == [("sentinel", "keep")]
+
+
 def test_failed_validation_never_replaces_target(tmp_path, monkeypatch):
     target = tmp_path / "portfolio.db"
     target.write_bytes(b"existing")

@@ -1,5 +1,7 @@
+from datetime import date
 from decimal import Decimal
 import sqlite3
+import threading
 
 import pytest
 
@@ -16,6 +18,9 @@ from src.portfolio_db import (
     V2_SCHEMA_SQL,
     PortfolioDatabase,
 )
+from src.portfolio_positions import PositionProjector
+from src.portfolio_repository import PortfolioRepository
+from src.portfolio_transactions import PortfolioTransactionService
 
 
 def initialize_v1_database(db):
@@ -131,6 +136,49 @@ def test_v1_with_already_installed_v2_objects_only_advances_version(tmp_path):
         } == {2}
 
 
+@pytest.mark.parametrize("initial_version", [None, 1])
+def test_concurrent_initializers_share_one_locked_schema_transition(
+    tmp_path,
+    initial_version,
+):
+    path = tmp_path / "portfolio.db"
+    if initial_version == 1:
+        initialize_v1_database(PortfolioDatabase(path))
+    barrier = threading.Barrier(8)
+    errors = []
+
+    def initialize():
+        try:
+            barrier.wait()
+            PortfolioDatabase(path).initialize()
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=initialize) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(20)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    with PortfolioDatabase(path).connection() as conn:
+        assert [
+            row["version"]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            )
+        ] == [2]
+        assert conn.execute(
+            """SELECT COUNT(*) FROM sqlite_master
+               WHERE name IN (
+                   'idx_one_cash_leg_per_transaction',
+                   'idx_one_reversal_child_per_transaction',
+                   'prevent_unbacked_confirmed_reversal'
+               )"""
+        ).fetchone()[0] == 3
+
+
 @pytest.mark.parametrize(
     "dirty_kind",
     ["cash", "reversal", "unbacked"],
@@ -231,6 +279,283 @@ def test_dirty_v1_upgrade_fails_without_version_object_or_data_changes(
                    'prevent_unbacked_confirmed_reversal'
                )"""
         ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "graph_kind",
+    ["confirmed_parent", "cancelled_parent", "cycle"],
+)
+def test_v1_upgrade_rejects_invalid_applied_reversal_graph_atomically(
+    tmp_path,
+    graph_kind,
+):
+    db = PortfolioDatabase(tmp_path / f"{graph_kind}.db")
+    initialize_v1_database(db)
+    with db.connection() as conn:
+        if graph_kind == "cycle":
+            conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('fund', 'test', 'fund', '基金', 'public_fund',
+                       'active')"""
+        )
+        if graph_kind == "cycle":
+            rows = [
+                (
+                    "a",
+                    "reversal",
+                    "reversed",
+                    "100",
+                    "50",
+                    "b",
+                    "a-key",
+                ),
+                (
+                    "b",
+                    "reversal",
+                    "reversed",
+                    "-100",
+                    "-50",
+                    "a",
+                    "b-key",
+                ),
+            ]
+        else:
+            parent_status = graph_kind.removesuffix("_parent")
+            rows = [
+                (
+                    "parent",
+                    "manual_purchase",
+                    parent_status,
+                    "100",
+                    "50",
+                    None,
+                    "parent-key",
+                ),
+                (
+                    "child",
+                    "reversal",
+                    "confirmed",
+                    "-100",
+                    "-50",
+                    "parent",
+                    "child-key",
+                ),
+            ]
+        conn.executemany(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date,
+                amount, shares, linked_transaction_id, idempotency_key,
+                created_by)
+               VALUES (?, 'fund', ?, ?, '2026-01-01', ?, ?, ?, ?, 'test')""",
+            rows,
+        )
+    before_objects = schema_object_names(db)
+    with db.connection() as conn:
+        before_rows = [
+            tuple(row)
+            for row in conn.execute(
+                """SELECT id, transaction_type, status, amount, shares,
+                          linked_transaction_id
+                   FROM transactions ORDER BY id"""
+            )
+        ]
+
+    with pytest.raises(
+        ValueError,
+        match="portfolio v2 migration blocked: invalid reversal graph",
+    ):
+        db.initialize()
+
+    assert schema_object_names(db) == before_objects
+    with db.connection() as conn:
+        assert [
+            row["version"]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            )
+        ] == [1]
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                """SELECT id, transaction_type, status, amount, shares,
+                          linked_transaction_id
+                   FROM transactions ORDER BY id"""
+            )
+        ] == before_rows
+
+
+def test_v1_upgrade_normalizes_key_and_equivalent_retry_reuses_old_row(
+    tmp_path,
+):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    initialize_v1_database(db)
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('cash', 'test', 'cash', '现金', 'cash_management',
+                       'active')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date,
+                amount, shares, fee_amount, fee_rate, confirmation_date,
+                confirmation_nav, idempotency_key, created_by)
+               VALUES ('old-purchase', 'cash', 'manual_purchase', 'confirmed',
+                       '2026-07-30', '10', '10', '0', '0', '2026-07-30',
+                       '1', ' old-key ', 'web')"""
+        )
+
+    db.initialize()
+    repository = PortfolioRepository(db)
+    service = PortfolioTransactionService(
+        repository,
+        PositionProjector(repository),
+    )
+    retried = service.record_purchase(
+        "cash",
+        Decimal("10"),
+        date(2026, 7, 30),
+        "old-key",
+    )
+
+    assert retried.id == "old-purchase"
+    assert retried.idempotency_key == "old-key"
+    assert len(repository.list_transactions(product_id="cash")) == 1
+
+
+@pytest.mark.parametrize(
+    "dirty_kind",
+    ["blank", "trim_collision", "operation_collision"],
+)
+def test_v1_upgrade_rejects_unsafe_idempotency_normalization_atomically(
+    tmp_path,
+    dirty_kind,
+):
+    db = PortfolioDatabase(tmp_path / f"{dirty_kind}.db")
+    initialize_v1_database(db)
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('cash', 'test', 'cash', '现金', 'cash_management',
+                       'active')"""
+        )
+        keys = {
+            "blank": ["   "],
+            "trim_collision": ["same-key", " same-key "],
+            "operation_collision": [" operation-key "],
+        }[dirty_kind]
+        for index, key in enumerate(keys):
+            conn.execute(
+                """INSERT INTO transactions
+                   (id, product_id, transaction_type, status, trade_date,
+                    amount, shares, idempotency_key, created_by)
+                   VALUES (?, 'cash', 'opening_position', 'confirmed',
+                           '2026-01-01', '1', '1', ?, 'test')""",
+                (f"row-{index}", key),
+            )
+        if dirty_kind == "operation_collision":
+            operation_id = (
+                PortfolioTransactionService._operation_audit_id(
+                    "operation-key"
+                )
+            )
+            conn.execute(
+                """INSERT INTO audit_logs
+                   (id, action, object_type, object_id, result, source)
+                   VALUES (?, 'cancel_pending', 'transaction', 'other',
+                           'success', 'test')""",
+                (operation_id,),
+            )
+    before_objects = schema_object_names(db)
+    with db.connection() as conn:
+        before_rows = [
+            tuple(row)
+            for row in conn.execute(
+                """SELECT id, idempotency_key FROM transactions
+                   ORDER BY id"""
+            )
+        ]
+
+    with pytest.raises(
+        ValueError,
+        match="portfolio v2 migration blocked: unsafe idempotency keys",
+    ):
+        db.initialize()
+
+    assert schema_object_names(db) == before_objects
+    with db.connection() as conn:
+        assert [
+            row["version"]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            )
+        ] == [1]
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                """SELECT id, idempotency_key FROM transactions
+                   ORDER BY id"""
+            )
+        ] == before_rows
+
+
+@pytest.mark.parametrize("bad_key", ["", "   ", " padded "])
+def test_v2_database_rejects_non_normalized_transaction_keys(
+    tmp_path,
+    bad_key,
+):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('cash', 'test', 'cash', '现金', 'cash_management',
+                       'active')"""
+        )
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="idempotency key",
+        ):
+            conn.execute(
+                """INSERT INTO transactions
+                   (id, product_id, transaction_type, status, trade_date,
+                    amount, shares, idempotency_key, created_by)
+                   VALUES ('bad', 'cash', 'opening_position', 'confirmed',
+                           '2026-01-01', '1', '1', ?, 'test')""",
+                (bad_key,),
+            )
+
+
+def test_v2_database_rejects_key_de_normalization_on_update(tmp_path):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('cash', 'test', 'cash', '现金', 'cash_management',
+                       'active')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date,
+                amount, shares, idempotency_key, created_by)
+               VALUES ('valid', 'cash', 'opening_position', 'pending_quote',
+                       '2026-01-01', '1', '1', 'valid-key', 'test')"""
+        )
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="idempotency key",
+        ):
+            conn.execute(
+                """UPDATE transactions SET idempotency_key = ' valid-key '
+                   WHERE id = 'valid'"""
+            )
 
 
 def test_v1_upgrade_ddl_failure_rolls_back_all_v2_objects_and_version(
