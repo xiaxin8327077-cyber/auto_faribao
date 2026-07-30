@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+import threading
 
 import pytest
 
@@ -407,6 +408,124 @@ def test_linked_reversal_restores_cost_after_a_full_outflow(repo):
     assert position.cost_basis == Decimal("1")
 
 
+def test_linked_reversal_replays_later_average_cost_outflow_without_original(repo):
+    repo.add_product(product("fund"))
+    events = [
+        tx(
+            "01-open",
+            "fund",
+            TransactionType.OPENING_POSITION,
+            TransactionStatus.CONFIRMED,
+            "100",
+            "100",
+            trade_date=date(2026, 7, 27),
+        ),
+        tx(
+            "02-purchase",
+            "fund",
+            TransactionType.MANUAL_PURCHASE,
+            TransactionStatus.REVERSED,
+            "100",
+            "1000",
+            trade_date=date(2026, 7, 28),
+        ),
+        tx(
+            "03-redeem",
+            "fund",
+            TransactionType.MANUAL_REDEMPTION,
+            TransactionStatus.CONFIRMED,
+            "50",
+            "999",
+            trade_date=date(2026, 7, 29),
+        ),
+        tx(
+            "04-reversal",
+            "fund",
+            TransactionType.REVERSAL,
+            TransactionStatus.CONFIRMED,
+            "-100",
+            "-1000",
+            trade_date=date(2026, 7, 30),
+            linked_transaction_id="02-purchase",
+        ),
+    ]
+    for event in events:
+        repo.create_transaction(event)
+
+    position = PositionProjector(repo).calculate("fund")
+
+    assert position.total_shares == Decimal("50")
+    assert position.cost_basis == Decimal("50")
+
+
+def test_linked_reversal_is_causal_when_same_timestamp_id_sorts_before_original(repo):
+    repo.add_product(product("fund"))
+    original_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    reversal_id = "11111111-1111-1111-1111-111111111111"
+    rows = [
+        tx(
+            "00000000-0000-0000-0000-000000000000",
+            "fund",
+            TransactionType.OPENING_POSITION,
+            TransactionStatus.PENDING_QUOTE,
+            "100",
+            "100",
+        ),
+        tx(
+            original_id,
+            "fund",
+            TransactionType.MANUAL_PURCHASE,
+            TransactionStatus.PENDING_QUOTE,
+            "100",
+            "1000",
+        ),
+        tx(
+            reversal_id,
+            "fund",
+            TransactionType.REVERSAL,
+            TransactionStatus.PENDING_QUOTE,
+            "-100",
+            "-1000",
+            linked_transaction_id=original_id,
+        ),
+    ]
+    for row in rows:
+        repo.create_transaction(row)
+    with repo.database.transaction() as conn:
+        conn.execute(
+            """UPDATE transactions
+               SET status = 'confirmed', created_at = '2026-07-30 00:00:00'
+               WHERE id = '00000000-0000-0000-0000-000000000000'"""
+        )
+        conn.execute(
+            """UPDATE transactions
+               SET status = 'reversed', created_at = '2026-07-30 01:00:00'
+               WHERE id = ?""",
+            (original_id,),
+        )
+        conn.execute(
+            """UPDATE transactions
+               SET status = 'confirmed', created_at = '2026-07-30 01:00:00'
+               WHERE id = ?""",
+            (reversal_id,),
+        )
+
+    assert [
+        event.id for event in repo.list_transactions(product_id="fund")
+    ] == [
+        "00000000-0000-0000-0000-000000000000",
+        reversal_id,
+        original_id,
+    ]
+    assert PositionProjector(repo).calculate("fund") == Position(
+        "fund",
+        available_shares=Decimal("100"),
+        locked_shares=Decimal("0"),
+        total_shares=Decimal("100"),
+        cost_basis=Decimal("100"),
+    )
+
+
 def test_full_average_cost_outflow_has_no_decimal_rounding_residue(repo):
     repo.add_product(product("fund"))
     repo.create_transaction(
@@ -549,3 +668,136 @@ def test_rebuild_all_is_deterministic_and_persists_only_after_all_calculations(r
         PositionProjector(repo).rebuild()
 
     assert repo.get_position("a-valid") == corrupt
+
+
+def test_rebuild_rolls_back_if_second_position_write_fails(repo, monkeypatch):
+    repo.add_product(product("a"))
+    repo.add_product(product("b"))
+    for product_id in ("a", "b"):
+        repo.create_transaction(
+            tx(
+                f"{product_id}-open",
+                product_id,
+                TransactionType.OPENING_POSITION,
+                TransactionStatus.CONFIRMED,
+                "10",
+                "20",
+            )
+        )
+        repo.replace_position(
+            Position(
+                product_id,
+                available_shares=Decimal("9"),
+                locked_shares=Decimal("0"),
+                total_shares=Decimal("9"),
+                cost_basis=Decimal("9"),
+            )
+        )
+
+    original_replace = repo.replace_position
+    writes = 0
+
+    def fail_second_write(position, conn=None):
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise RuntimeError("second position write failed")
+        return original_replace(position, conn)
+
+    monkeypatch.setattr(repo, "replace_position", fail_second_write)
+
+    with pytest.raises(RuntimeError, match="^second position write failed$"):
+        PositionProjector(repo).rebuild()
+
+    assert repo.get_position("a").total_shares == Decimal("9")
+    assert repo.get_position("b").total_shares == Decimal("9")
+
+
+def test_rebuild_reads_one_protected_snapshot_before_atomic_persistence(
+    repo, monkeypatch
+):
+    repo.add_product(product("a"))
+    repo.add_product(product("b"))
+    for product_id in ("a", "b"):
+        repo.create_transaction(
+            tx(
+                f"{product_id}-open",
+                product_id,
+                TransactionType.OPENING_POSITION,
+                TransactionStatus.CONFIRMED,
+                "10",
+                "10",
+            )
+        )
+
+    first_product_read = threading.Event()
+    release_rebuild = threading.Event()
+    writer_started = threading.Event()
+    writer_done = threading.Event()
+    thread_errors = []
+    original_list_transactions = repo.list_transactions
+
+    def pause_after_first_product_read(
+        product_id=None,
+        statuses=None,
+        conn=None,
+    ):
+        if conn is None:
+            transactions = original_list_transactions(product_id, statuses)
+        else:
+            transactions = original_list_transactions(
+                product_id, statuses, conn=conn
+            )
+        if product_id == "a" and not first_product_read.is_set():
+            first_product_read.set()
+            if not release_rebuild.wait(5):
+                raise RuntimeError("timed out waiting to release rebuild")
+        return transactions
+
+    monkeypatch.setattr(
+        repo, "list_transactions", pause_after_first_product_read
+    )
+
+    def rebuild_positions():
+        try:
+            PositionProjector(repo).rebuild()
+        except BaseException as exc:
+            thread_errors.append(exc)
+
+    def append_concurrent_transaction():
+        writer_started.set()
+        try:
+            repo.create_transaction(
+                tx(
+                    "b-concurrent",
+                    "b",
+                    TransactionType.MANUAL_PURCHASE,
+                    TransactionStatus.CONFIRMED,
+                    "1",
+                    "1",
+                )
+            )
+        except BaseException as exc:
+            thread_errors.append(exc)
+        finally:
+            writer_done.set()
+
+    rebuild_thread = threading.Thread(target=rebuild_positions)
+    rebuild_thread.start()
+    assert first_product_read.wait(5)
+
+    writer_thread = threading.Thread(target=append_concurrent_transaction)
+    writer_thread.start()
+    assert writer_started.wait(5)
+    writer_done.wait(0.5)
+    release_rebuild.set()
+
+    rebuild_thread.join(5)
+    writer_thread.join(5)
+
+    assert not rebuild_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert thread_errors == []
+    assert repo.get_position("a").total_shares == Decimal("10")
+    assert repo.get_position("b").total_shares == Decimal("10")
+    assert PositionProjector(repo).calculate("b").total_shares == Decimal("11")

@@ -51,12 +51,21 @@ class PositionProjector:
         self.repository = repository
 
     def calculate(self, product_id: str) -> Position:
+        return self._calculate(product_id)
+
+    def _calculate(self, product_id: str, conn=None) -> Position:
         total_shares = ZERO
         locked_shares = ZERO
         cost_basis = ZERO
-        cost_effects = {}
+        transactions = self.repository.list_transactions(
+            product_id=product_id,
+            conn=conn,
+        )
+        neutralized_event_ids = self._linked_reversal_pair_ids(transactions)
 
-        for transaction in self.repository.list_transactions(product_id=product_id):
+        for transaction in transactions:
+            if transaction.id in neutralized_event_ids:
+                continue
             shares = transaction.shares or ZERO
             if (
                 transaction.status in _PENDING_STATUSES
@@ -78,7 +87,6 @@ class PositionProjector:
                 raise ValueError("negative portfolio shares")
 
             amount = transaction.amount or ZERO
-            cost_before = cost_basis
             if transaction.transaction_type in _COST_ADDITION_TYPES:
                 cost_basis += amount
             elif transaction.transaction_type in _AVERAGE_COST_OUTFLOW_TYPES:
@@ -95,17 +103,10 @@ class PositionProjector:
                         cost_basis, total_shares, -share_delta
                     )
             elif transaction.transaction_type is TransactionType.REVERSAL:
-                linked_cost_effect = cost_effects.get(
-                    transaction.linked_transaction_id
+                cost_basis = self._apply_signed_average_cost_change(
+                    cost_basis, total_shares, share_delta
                 )
-                if linked_cost_effect is not None:
-                    cost_basis -= linked_cost_effect
-                else:
-                    cost_basis = self._apply_signed_average_cost_change(
-                        cost_basis, total_shares, share_delta
-                    )
 
-            cost_effects[transaction.id] = cost_basis - cost_before
             total_shares = next_total
 
         if locked_shares > total_shares:
@@ -119,19 +120,42 @@ class PositionProjector:
         )
 
     def rebuild(self, product_id: str | None = None) -> list[Position]:
-        product_ids = (
-            [product_id]
-            if product_id is not None
-            else [product.id for product in self.repository.list_products()]
-        )
-        positions = [
-            self.calculate(requested_product_id)
-            for requested_product_id in product_ids
-        ]
         with self.repository.database.transaction() as conn:
+            product_ids = (
+                [product_id]
+                if product_id is not None
+                else [
+                    product.id
+                    for product in self.repository.list_products(conn=conn)
+                ]
+            )
+            positions = [
+                self._calculate(requested_product_id, conn)
+                for requested_product_id in product_ids
+            ]
             for position in positions:
                 self.repository.replace_position(position, conn)
         return positions
+
+    @staticmethod
+    def _linked_reversal_pair_ids(transactions) -> set[str]:
+        transactions_by_id = {
+            transaction.id: transaction for transaction in transactions
+        }
+        neutralized_event_ids = set()
+        for transaction in transactions:
+            if (
+                transaction.transaction_type is not TransactionType.REVERSAL
+                or transaction.status not in _APPLIED_STATUSES
+                or not transaction.linked_transaction_id
+            ):
+                continue
+            original = transactions_by_id.get(transaction.linked_transaction_id)
+            if original is None or original.status not in _APPLIED_STATUSES:
+                continue
+            neutralized_event_ids.add(original.id)
+            neutralized_event_ids.add(transaction.id)
+        return neutralized_event_ids
 
     @staticmethod
     def _reduce_average_cost(

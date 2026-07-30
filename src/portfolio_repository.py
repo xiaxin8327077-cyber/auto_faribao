@@ -80,14 +80,21 @@ class PortfolioRepository:
             ).fetchone()
         return self._product_from_row(row) if row else None
 
-    def list_products(self, active_only: bool = False) -> list[Product]:
+    def list_products(
+        self,
+        active_only: bool = False,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[Product]:
         query = f"SELECT {_PRODUCT_COLUMNS} FROM products"
         params: tuple[str, ...] = ()
         if active_only:
             query += " WHERE status = ?"
             params = (ProductStatus.ACTIVE.value,)
         query += " ORDER BY id"
-        with self.database.connection() as conn:
+        if conn is None:
+            with self.database.connection() as owned:
+                rows = owned.execute(query, params).fetchall()
+        else:
             rows = conn.execute(query, params).fetchall()
         return [self._product_from_row(row) for row in rows]
 
@@ -147,6 +154,7 @@ class PortfolioRepository:
         self,
         product_id: str | None = None,
         statuses=None,
+        conn: sqlite3.Connection | None = None,
     ) -> list[Transaction]:
         query = f"SELECT {_TRANSACTION_COLUMNS} FROM transactions"
         conditions = []
@@ -167,7 +175,10 @@ class PortfolioRepository:
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY trade_date, created_at, id"
-        with self.database.connection() as conn:
+        if conn is None:
+            with self.database.connection() as owned:
+                rows = owned.execute(query, tuple(params)).fetchall()
+        else:
             rows = conn.execute(query, tuple(params)).fetchall()
         return [self._transaction_from_row(row) for row in rows]
 
