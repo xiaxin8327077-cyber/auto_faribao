@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
+import json
 import threading
 
 import pytest
@@ -90,6 +91,649 @@ def linked_leg(repository, transaction):
 def disable_confirmed_transaction_guard(repository):
     with repository.database.connection() as conn:
         conn.execute("DROP TRIGGER prevent_confirmed_transaction_mutation")
+
+
+def test_cancelling_pending_purchase_releases_linked_cash_lock(services):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "3000")
+    seed_product(
+        repository,
+        "fund",
+        ProductType.PUBLIC_FUND,
+        "003103",
+    )
+    purchase = transactions.record_purchase(
+        "fund",
+        Decimal("2000"),
+        TRADE_DATE,
+        "web:p",
+        source_cash_product_id="cash",
+    )
+
+    cancelled = transactions.cancel_pending(
+        purchase.id,
+        "web:cancel-p",
+    )
+
+    assert cancelled.status is TransactionStatus.CANCELLED
+    assert linked_leg(repository, purchase).status is TransactionStatus.CANCELLED
+    assert projector.calculate("cash").locked_shares == Decimal("0")
+
+
+def test_confirmed_transaction_requires_reversal_not_cancel(services):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+    purchase = transactions.record_purchase(
+        "cash",
+        Decimal("100"),
+        TRADE_DATE,
+        "web:confirmed",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="confirmed transaction cannot be cancelled",
+    ):
+        transactions.cancel_pending(purchase.id, "web:bad-cancel")
+
+    reversal = transactions.reverse_confirmed(
+        purchase.id,
+        "录入错误",
+        "web:reverse",
+    )
+
+    assert reversal.transaction_type is TransactionType.REVERSAL
+    assert projector.calculate("cash").total_shares == Decimal("1000")
+
+
+def test_holding_adjustment_records_only_the_difference(services):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+
+    adjustment = transactions.adjust_holding(
+        "cash",
+        Decimal("998.50"),
+        TRADE_DATE,
+        "平台份额校准",
+        "web:adjust",
+    )
+
+    assert adjustment.shares == Decimal("-1.50")
+    assert projector.calculate("cash").total_shares == Decimal("998.50")
+
+
+def test_cancel_pending_is_idempotent_and_audited_once(services):
+    repository, transactions, _ = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    purchase = transactions.record_purchase(
+        "fund",
+        Decimal("100"),
+        TRADE_DATE,
+        "web:pending-for-cancel",
+    )
+
+    first = transactions.cancel_pending(
+        purchase.id,
+        "web:cancel-idempotent",
+        actor="operator",
+    )
+    retried = transactions.cancel_pending(
+        purchase.id,
+        "web:cancel-idempotent",
+        actor="operator",
+    )
+
+    assert retried == first
+    with repository.database.connection() as conn:
+        audits = conn.execute(
+            """SELECT action, object_type, object_id, result, source,
+                      before_json, after_json
+               FROM audit_logs"""
+        ).fetchall()
+    assert len(audits) == 1
+    assert tuple(audits[0][:5]) == (
+        "cancel_pending",
+        "transaction",
+        purchase.id,
+        "success",
+        "operator",
+    )
+    assert json.loads(audits[0]["before_json"])["status"] == "pending_quote"
+    assert json.loads(audits[0]["after_json"])["status"] == "cancelled"
+
+
+def test_cancel_pending_idempotency_key_rejects_conflicting_request(services):
+    repository, transactions, _ = services
+    seed_product(repository, "fund-a", ProductType.PUBLIC_FUND)
+    seed_product(repository, "fund-b", ProductType.PUBLIC_FUND)
+    purchase_a = transactions.record_purchase(
+        "fund-a", Decimal("100"), TRADE_DATE, "web:pending-a"
+    )
+    purchase_b = transactions.record_purchase(
+        "fund-b", Decimal("100"), TRADE_DATE, "web:pending-b"
+    )
+    transactions.cancel_pending(
+        purchase_a.id,
+        "web:cancel-conflict",
+        actor="operator",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="idempotency key conflicts with existing request",
+    ):
+        transactions.cancel_pending(
+            purchase_b.id,
+            "web:cancel-conflict",
+            actor="operator",
+        )
+    with pytest.raises(
+        ValueError,
+        match="idempotency key conflicts with existing request",
+    ):
+        transactions.cancel_pending(
+            purchase_a.id,
+            "web:cancel-conflict",
+            actor="other-operator",
+        )
+
+    assert (
+        repository.get_transaction_by_id(purchase_b.id).status
+        is TransactionStatus.PENDING_QUOTE
+    )
+
+
+def test_cancel_pending_rejects_inconsistent_link_without_partial_update(
+    services,
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "3000")
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    purchase = transactions.record_purchase(
+        "fund",
+        Decimal("1000"),
+        TRADE_DATE,
+        "web:pending-corrupt-link",
+        source_cash_product_id="cash",
+    )
+    cash_leg = linked_leg(repository, purchase)
+    with repository.database.transaction() as conn:
+        conn.execute(
+            "UPDATE transactions SET shares = '999' WHERE id = ?",
+            (cash_leg.id,),
+        )
+
+    with pytest.raises(ValueError, match="inconsistent linked transaction"):
+        transactions.cancel_pending(
+            purchase.id,
+            "web:cancel-corrupt-link",
+        )
+
+    assert (
+        repository.get_transaction_by_id(purchase.id).status
+        is TransactionStatus.PENDING_QUOTE
+    )
+    assert projector.calculate("cash").locked_shares == Decimal("999")
+
+
+def test_cancel_pending_rolls_back_rows_and_position_when_audit_fails(
+    services,
+    monkeypatch,
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "3000")
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    purchase = transactions.record_purchase(
+        "fund",
+        Decimal("1000"),
+        TRADE_DATE,
+        "web:pending-cancel-rollback",
+        source_cash_product_id="cash",
+    )
+    cash_leg = linked_leg(repository, purchase)
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("audit failed")
+
+    monkeypatch.setattr(repository, "append_audit", fail_audit)
+
+    with pytest.raises(RuntimeError, match="audit failed"):
+        transactions.cancel_pending(
+            purchase.id,
+            "web:cancel-rollback",
+        )
+
+    assert (
+        repository.get_transaction_by_id(purchase.id).status
+        is TransactionStatus.PENDING_QUOTE
+    )
+    assert (
+        repository.get_transaction_by_id(cash_leg.id).status
+        is TransactionStatus.PENDING_QUOTE
+    )
+    assert projector.calculate("cash").locked_shares == Decimal("1000")
+
+
+def test_reverse_confirmed_negates_complete_values_and_linked_cash_leg(
+    services,
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "3000")
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_quote(repository, fund, TRADE_DATE, Decimal("2"))
+    purchase = transactions.record_purchase(
+        "fund",
+        Decimal("2000"),
+        TRADE_DATE,
+        "web:confirmed-linked",
+        source_cash_product_id="cash",
+    )
+    cash_leg = linked_leg(repository, purchase)
+
+    reversal = transactions.reverse_confirmed(
+        purchase.id,
+        "录入错误",
+        "web:reverse-linked",
+        actor="operator",
+    )
+
+    assert reversal.product_id == purchase.product_id
+    assert reversal.linked_transaction_id == purchase.id
+    assert reversal.shares == -purchase.shares
+    assert reversal.amount == -purchase.amount
+    assert (
+        repository.get_transaction_by_id(purchase.id).status
+        is TransactionStatus.REVERSED
+    )
+    assert (
+        repository.get_transaction_by_id(cash_leg.id).status
+        is TransactionStatus.REVERSED
+    )
+    cash_reversals = [
+        row
+        for row in repository.list_transactions(product_id="cash")
+        if row.transaction_type is TransactionType.REVERSAL
+    ]
+    assert len(cash_reversals) == 1
+    assert cash_reversals[0].linked_transaction_id == cash_leg.id
+    assert cash_reversals[0].shares == -cash_leg.shares
+    assert cash_reversals[0].amount == -cash_leg.amount
+    assert projector.calculate("fund").total_shares == Decimal("0")
+    assert projector.calculate("cash").total_shares == Decimal("3000")
+
+
+def test_reverse_confirmed_is_idempotent_and_rejects_conflicts(services):
+    repository, transactions, _ = services
+    seed_cash(repository, "cash", "1000")
+    purchase = transactions.record_purchase(
+        "cash", Decimal("100"), TRADE_DATE, "web:confirmed-idempotent"
+    )
+
+    first = transactions.reverse_confirmed(
+        purchase.id,
+        "录入错误",
+        "web:reverse-idempotent",
+        actor="operator",
+    )
+    retried = transactions.reverse_confirmed(
+        purchase.id,
+        "录入错误",
+        "web:reverse-idempotent",
+        actor="operator",
+    )
+
+    assert retried == first
+    with pytest.raises(
+        ValueError,
+        match="idempotency key conflicts with existing request",
+    ):
+        transactions.reverse_confirmed(
+            purchase.id,
+            "不同原因",
+            "web:reverse-idempotent",
+            actor="operator",
+        )
+    with repository.database.connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action = 'reverse_confirmed'"
+        ).fetchone()[0] == 1
+    assert len(
+        [
+            row
+            for row in repository.list_transactions(product_id="cash")
+            if row.transaction_type is TransactionType.REVERSAL
+        ]
+    ) == 1
+
+
+def test_reverse_confirmed_supports_reversal_chain(services):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+    purchase = transactions.record_purchase(
+        "cash", Decimal("100"), TRADE_DATE, "web:chain-root"
+    )
+    first_reversal = transactions.reverse_confirmed(
+        purchase.id,
+        "撤销购买",
+        "web:chain-r1",
+    )
+
+    second_reversal = transactions.reverse_confirmed(
+        first_reversal.id,
+        "恢复购买",
+        "web:chain-r2",
+    )
+
+    assert second_reversal.shares == -first_reversal.shares
+    assert second_reversal.amount == -first_reversal.amount
+    assert (
+        repository.get_transaction_by_id(first_reversal.id).status
+        is TransactionStatus.REVERSED
+    )
+    assert projector.calculate("cash").total_shares == Decimal("1100")
+
+
+def test_reverse_confirmed_rolls_back_original_reversal_and_position_on_audit_failure(
+    services,
+    monkeypatch,
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+    purchase = transactions.record_purchase(
+        "cash", Decimal("100"), TRADE_DATE, "web:reverse-rollback-root"
+    )
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("audit failed")
+
+    monkeypatch.setattr(repository, "append_audit", fail_audit)
+
+    with pytest.raises(RuntimeError, match="audit failed"):
+        transactions.reverse_confirmed(
+            purchase.id,
+            "录入错误",
+            "web:reverse-rollback",
+        )
+
+    assert (
+        repository.get_transaction_by_id(purchase.id).status
+        is TransactionStatus.CONFIRMED
+    )
+    assert repository.get_transaction_by_idempotency(
+        "web:reverse-rollback"
+    ) is None
+    assert projector.calculate("cash").total_shares == Decimal("1100")
+
+
+def test_concurrent_reversal_retries_create_one_reversal_and_one_audit(
+    services,
+):
+    repository, transactions, _ = services
+    seed_cash(repository, "cash", "1000")
+    purchase = transactions.record_purchase(
+        "cash", Decimal("100"), TRADE_DATE, "web:concurrent-reverse-root"
+    )
+    second_service = PortfolioTransactionService(
+        repository,
+        PositionProjector(repository),
+    )
+    barrier = threading.Barrier(2)
+    results = []
+    errors = []
+
+    def reverse(service):
+        try:
+            barrier.wait()
+            results.append(
+                service.reverse_confirmed(
+                    purchase.id,
+                    "录入错误",
+                    "web:concurrent-reverse",
+                    actor="operator",
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=reverse, args=(transactions,)),
+        threading.Thread(target=reverse, args=(second_service,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert len(results) == 2
+    assert results[0] == results[1]
+    with repository.database.connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action = 'reverse_confirmed'"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "actual_shares",
+    [
+        Decimal("-0.01"),
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        "not-a-number",
+    ],
+)
+def test_adjust_holding_rejects_invalid_actual_shares(
+    services,
+    actual_shares,
+):
+    repository, transactions, _ = services
+    seed_cash(repository, "cash", "1000")
+
+    with pytest.raises(
+        ValueError,
+        match="actual_shares must be non-negative and finite",
+    ):
+        transactions.adjust_holding(
+            "cash",
+            actual_shares,
+            TRADE_DATE,
+            "平台份额校准",
+            f"web:invalid-adjust:{actual_shares}",
+        )
+
+
+def test_adjust_holding_records_positive_and_zero_differences(services):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+
+    increase = transactions.adjust_holding(
+        "cash",
+        Decimal("1002.5"),
+        TRADE_DATE,
+        "平台份额校准",
+        "web:adjust-up",
+    )
+    no_change = transactions.adjust_holding(
+        "cash",
+        Decimal("1002.5"),
+        TRADE_DATE,
+        "平台份额复核",
+        "web:adjust-zero",
+    )
+
+    assert increase.shares == Decimal("2.5")
+    assert no_change.shares == Decimal("0")
+    assert no_change.amount == Decimal("0")
+    assert projector.calculate("cash").total_shares == Decimal("1002.5")
+
+
+def test_adjust_holding_is_idempotent_against_original_actual_request(
+    services,
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+
+    first = transactions.adjust_holding(
+        "cash",
+        Decimal("998.5"),
+        TRADE_DATE,
+        "平台份额校准",
+        "web:adjust-idempotent",
+        actor="operator",
+    )
+    retried = transactions.adjust_holding(
+        "cash",
+        Decimal("998.50"),
+        TRADE_DATE,
+        "平台份额校准",
+        "web:adjust-idempotent",
+        actor="operator",
+    )
+
+    assert retried == first
+    assert projector.calculate("cash").total_shares == Decimal("998.5")
+    with pytest.raises(
+        ValueError,
+        match="idempotency key conflicts with existing request",
+    ):
+        transactions.adjust_holding(
+            "cash",
+            Decimal("997"),
+            TRADE_DATE,
+            "平台份额校准",
+            "web:adjust-idempotent",
+            actor="operator",
+        )
+    with repository.database.connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action = 'adjust_holding'"
+        ).fetchone()[0] == 1
+
+
+def test_adjust_holding_rolls_back_ledger_and_position_when_audit_fails(
+    services,
+    monkeypatch,
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("audit failed")
+
+    monkeypatch.setattr(repository, "append_audit", fail_audit)
+
+    with pytest.raises(RuntimeError, match="audit failed"):
+        transactions.adjust_holding(
+            "cash",
+            Decimal("900"),
+            TRADE_DATE,
+            "平台份额校准",
+            "web:adjust-rollback",
+        )
+
+    assert repository.get_transaction_by_idempotency(
+        "web:adjust-rollback"
+    ) is None
+    assert projector.calculate("cash").total_shares == Decimal("1000")
+    assert repository.get_position("cash").total_shares == Decimal("1000")
+
+
+def test_concurrent_holding_adjustments_serialize_without_negative_holding(
+    services,
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+    second_service = PortfolioTransactionService(
+        repository,
+        PositionProjector(repository),
+    )
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def adjust(service, actual, key):
+        try:
+            barrier.wait()
+            service.adjust_holding(
+                "cash",
+                actual,
+                TRADE_DATE,
+                "并发平台校准",
+                key,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(
+            target=adjust,
+            args=(transactions, Decimal("900"), "web:adjust-concurrent-a"),
+        ),
+        threading.Thread(
+            target=adjust,
+            args=(second_service, Decimal("800"), "web:adjust-concurrent-b"),
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert projector.calculate("cash").total_shares in {
+        Decimal("800"),
+        Decimal("900"),
+    }
+    assert len(
+        [
+            row
+            for row in repository.list_transactions(product_id="cash")
+            if row.transaction_type is TransactionType.HOLDING_ADJUSTMENT
+        ]
+    ) == 2
+
+
+@pytest.mark.parametrize(
+    ("method_name", "reason", "actor", "expected_message"),
+    [
+        ("reverse", " ", "web", "reason must not be empty"),
+        ("reverse", "录入错误", " ", "actor must not be empty"),
+        ("adjust", " ", "web", "reason must not be empty"),
+        ("adjust", "平台份额校准", " ", "actor must not be empty"),
+    ],
+)
+def test_reason_and_actor_must_be_nonempty(
+    services,
+    method_name,
+    reason,
+    actor,
+    expected_message,
+):
+    repository, transactions, _ = services
+    seed_cash(repository, "cash", "1000")
+    if method_name == "reverse":
+        transaction = transactions.record_purchase(
+            "cash", Decimal("1"), TRADE_DATE, f"web:validate:{reason}:{actor}"
+        )
+        call = lambda: transactions.reverse_confirmed(
+            transaction.id,
+            reason,
+            f"web:reverse-validate:{reason}:{actor}",
+            actor=actor,
+        )
+    else:
+        call = lambda: transactions.adjust_holding(
+            "cash",
+            Decimal("1000"),
+            TRADE_DATE,
+            reason,
+            f"web:adjust-validate:{reason}:{actor}",
+            actor=actor,
+        )
+
+    with pytest.raises(ValueError, match=expected_message):
+        call()
 
 
 def test_fund_purchase_waits_for_exact_quote_and_locks_source(services):

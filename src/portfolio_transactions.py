@@ -1,6 +1,7 @@
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
-from uuid import uuid4
+import json
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from src.portfolio_models import (
     ProductType,
@@ -278,6 +279,495 @@ class PortfolioTransactionService:
 
             self._rebuild_positions(affected_product_ids, conn)
             return confirmed
+
+    def cancel_pending(
+        self,
+        transaction_id,
+        idempotency_key,
+        actor="web",
+    ) -> Transaction:
+        idempotency_key = self._nonempty_text(
+            idempotency_key, "idempotency_key"
+        )
+        actor = self._nonempty_text(actor, "actor")
+        request = {
+            "actor": actor,
+            "transaction_id": transaction_id,
+        }
+        with self.repository.database.transaction() as conn:
+            retry = self._operation_retry(
+                idempotency_key,
+                "cancel_pending",
+                "transaction",
+                transaction_id,
+                request,
+                conn,
+            )
+            if retry is not None:
+                transaction = self.repository.get_transaction_by_id(
+                    transaction_id, conn=conn
+                )
+                if (
+                    transaction is None
+                    or transaction.status is not TransactionStatus.CANCELLED
+                ):
+                    raise ValueError(
+                        "idempotency key conflicts with existing request"
+                    )
+                return transaction
+            self._reject_transaction_idempotency_collision(
+                idempotency_key, conn
+            )
+
+            transaction = self.repository.get_transaction_by_id(
+                transaction_id, conn=conn
+            )
+            if transaction is None:
+                raise ValueError("transaction not found")
+            if transaction.status not in _PENDING_STATUSES:
+                raise ValueError("confirmed transaction cannot be cancelled")
+
+            linked = self._require_consistent_link(transaction, conn)
+            before = self._transaction_audit_state(transaction, linked)
+            cancelled = replace(
+                transaction,
+                status=TransactionStatus.CANCELLED,
+            )
+            self.repository.update_pending_transaction(cancelled, conn)
+            affected_product_ids = {cancelled.product_id}
+            if linked is not None:
+                self.repository.update_pending_transaction(
+                    replace(linked, status=TransactionStatus.CANCELLED),
+                    conn,
+                )
+                affected_product_ids.add(linked.product_id)
+
+            self._rebuild_positions(affected_product_ids, conn)
+            after = {
+                **request,
+                "status": TransactionStatus.CANCELLED.value,
+                "linked_transaction_id": linked.id if linked else "",
+            }
+            self._append_operation_audit(
+                idempotency_key,
+                "cancel_pending",
+                "transaction",
+                transaction.id,
+                before,
+                after,
+                actor,
+                conn,
+            )
+            return cancelled
+
+    def reverse_confirmed(
+        self,
+        transaction_id,
+        reason,
+        idempotency_key,
+        actor="web",
+    ) -> Transaction:
+        reason = self._nonempty_text(reason, "reason")
+        idempotency_key = self._nonempty_text(
+            idempotency_key, "idempotency_key"
+        )
+        actor = self._nonempty_text(actor, "actor")
+        request = {
+            "actor": actor,
+            "reason": reason,
+            "transaction_id": transaction_id,
+        }
+        with self.repository.database.transaction() as conn:
+            retry = self._operation_retry(
+                idempotency_key,
+                "reverse_confirmed",
+                "transaction",
+                transaction_id,
+                request,
+                conn,
+            )
+            if retry is not None:
+                reversal = self.repository.get_transaction_by_idempotency(
+                    idempotency_key, conn=conn
+                )
+                if not self._matching_reversal_retry(
+                    reversal,
+                    retry,
+                    transaction_id,
+                    reason,
+                    actor,
+                    conn,
+                ):
+                    raise ValueError(
+                        "idempotency key conflicts with existing request"
+                    )
+                return reversal
+            self._reject_transaction_idempotency_collision(
+                idempotency_key, conn
+            )
+
+            transaction = self.repository.get_transaction_by_id(
+                transaction_id, conn=conn
+            )
+            if transaction is None:
+                raise ValueError("transaction not found")
+            if transaction.status is not TransactionStatus.CONFIRMED:
+                raise ValueError("transaction is not confirmed")
+            if self._reversal_for(transaction.id, conn) is not None:
+                raise ValueError("transaction already has a reversal")
+            if transaction.shares is None or transaction.amount is None:
+                raise ValueError(
+                    "transaction cannot be reversed without shares and amount"
+                )
+
+            linked = (
+                self._require_consistent_link(transaction, conn)
+                if transaction.transaction_type
+                in {
+                    TransactionType.MANUAL_PURCHASE,
+                    TransactionType.MANUAL_REDEMPTION,
+                }
+                else None
+            )
+            before = self._transaction_audit_state(transaction, linked)
+            reversal = Transaction(
+                id=str(uuid4()),
+                product_id=transaction.product_id,
+                transaction_type=TransactionType.REVERSAL,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=transaction.trade_date,
+                idempotency_key=idempotency_key,
+                amount=-transaction.amount,
+                shares=-transaction.shares,
+                confirmation_nav=transaction.confirmation_nav,
+                confirmation_date=transaction.confirmation_date,
+                linked_transaction_id=transaction.id,
+                note=reason,
+                created_by=actor,
+            )
+            self._mark_reversed(transaction.id, conn)
+            self.repository.create_transaction(reversal, conn)
+            affected_product_ids = {transaction.product_id}
+            linked_reversal = None
+            if linked is not None:
+                if linked.shares is None or linked.amount is None:
+                    raise ValueError(
+                        "transaction cannot be reversed without shares and amount"
+                    )
+                if self._reversal_for(linked.id, conn) is not None:
+                    raise ValueError("transaction already has a reversal")
+                linked_reversal = Transaction(
+                    id=str(uuid4()),
+                    product_id=linked.product_id,
+                    transaction_type=TransactionType.REVERSAL,
+                    status=TransactionStatus.CONFIRMED,
+                    trade_date=linked.trade_date,
+                    idempotency_key=f"linked:{reversal.id}",
+                    amount=-linked.amount,
+                    shares=-linked.shares,
+                    confirmation_nav=linked.confirmation_nav,
+                    confirmation_date=linked.confirmation_date,
+                    linked_transaction_id=linked.id,
+                    note=reason,
+                    created_by=actor,
+                )
+                self._mark_reversed(linked.id, conn)
+                self.repository.create_transaction(linked_reversal, conn)
+                affected_product_ids.add(linked.product_id)
+
+            self._rebuild_positions(affected_product_ids, conn)
+            after = {
+                **request,
+                "linked_reversal_id": (
+                    linked_reversal.id if linked_reversal else ""
+                ),
+                "reversal_id": reversal.id,
+                "status": TransactionStatus.REVERSED.value,
+            }
+            self._append_operation_audit(
+                idempotency_key,
+                "reverse_confirmed",
+                "transaction",
+                transaction.id,
+                before,
+                after,
+                actor,
+                conn,
+            )
+            return reversal
+
+    def adjust_holding(
+        self,
+        product_id,
+        actual_shares,
+        effective_date,
+        reason,
+        idempotency_key,
+        actor="web",
+    ) -> Transaction:
+        try:
+            actual_shares = Decimal(str(actual_shares))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError(
+                "actual_shares must be non-negative and finite"
+            ) from exc
+        if not actual_shares.is_finite() or actual_shares < ZERO:
+            raise ValueError("actual_shares must be non-negative and finite")
+        reason = self._nonempty_text(reason, "reason")
+        idempotency_key = self._nonempty_text(
+            idempotency_key, "idempotency_key"
+        )
+        actor = self._nonempty_text(actor, "actor")
+        request = {
+            "actor": actor,
+            "actual_shares": self._decimal_audit_text(actual_shares),
+            "effective_date": effective_date.isoformat(),
+            "product_id": product_id,
+            "reason": reason,
+        }
+
+        with self.repository.database.transaction() as conn:
+            retry = self._operation_retry(
+                idempotency_key,
+                "adjust_holding",
+                "product",
+                product_id,
+                request,
+                conn,
+            )
+            if retry is not None:
+                adjustment = self.repository.get_transaction_by_idempotency(
+                    idempotency_key, conn=conn
+                )
+                if not self._matching_adjustment_retry(
+                    adjustment,
+                    retry,
+                    product_id,
+                    effective_date,
+                    reason,
+                    actor,
+                ):
+                    raise ValueError(
+                        "idempotency key conflicts with existing request"
+                    )
+                return adjustment
+            self._reject_transaction_idempotency_collision(
+                idempotency_key, conn
+            )
+
+            self.repository.require_product(product_id, conn=conn)
+            current = self.projector._calculate(product_id, conn)
+            adjustment = Transaction(
+                id=str(uuid4()),
+                product_id=product_id,
+                transaction_type=TransactionType.HOLDING_ADJUSTMENT,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=effective_date,
+                idempotency_key=idempotency_key,
+                amount=ZERO,
+                shares=actual_shares - current.total_shares,
+                confirmation_date=effective_date,
+                note=reason,
+                created_by=actor,
+            )
+            self.repository.create_transaction(adjustment, conn)
+            self._rebuild_positions({product_id}, conn)
+            self._append_operation_audit(
+                idempotency_key,
+                "adjust_holding",
+                "product",
+                product_id,
+                {
+                    "product_id": product_id,
+                    "total_shares": self._decimal_audit_text(
+                        current.total_shares
+                    ),
+                },
+                {
+                    **request,
+                    "adjustment_id": adjustment.id,
+                    "difference": self._decimal_audit_text(
+                        adjustment.shares
+                    ),
+                },
+                actor,
+                conn,
+            )
+            return adjustment
+
+    @staticmethod
+    def _nonempty_text(value, name):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must not be empty")
+        return value.strip()
+
+    @staticmethod
+    def _decimal_audit_text(value):
+        return format(value.normalize(), "f")
+
+    @staticmethod
+    def _operation_audit_id(idempotency_key):
+        return str(
+            uuid5(
+                NAMESPACE_URL,
+                f"portfolio-operation:{idempotency_key}",
+            )
+        )
+
+    def _operation_retry(
+        self,
+        idempotency_key,
+        action,
+        object_type,
+        object_id,
+        request,
+        conn,
+    ):
+        row = conn.execute(
+            """SELECT action, object_type, object_id, after_json, source
+               FROM audit_logs WHERE id = ?""",
+            (self._operation_audit_id(idempotency_key),),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row["after_json"])
+        except (TypeError, ValueError):
+            payload = None
+        if (
+            row["action"] != action
+            or row["object_type"] != object_type
+            or row["object_id"] != object_id
+            or row["source"] != request["actor"]
+            or not isinstance(payload, dict)
+            or any(payload.get(key) != value for key, value in request.items())
+        ):
+            raise ValueError(
+                "idempotency key conflicts with existing request"
+            )
+        return payload
+
+    def _reject_transaction_idempotency_collision(
+        self, idempotency_key, conn
+    ):
+        if self.repository.get_transaction_by_idempotency(
+            idempotency_key, conn=conn
+        ) is not None:
+            raise ValueError(
+                "idempotency key conflicts with existing request"
+            )
+
+    def _append_operation_audit(
+        self,
+        idempotency_key,
+        action,
+        object_type,
+        object_id,
+        before,
+        after,
+        actor,
+        conn,
+    ):
+        self.repository.append_audit(
+            self._operation_audit_id(idempotency_key),
+            action,
+            object_type,
+            object_id,
+            before_json=json.dumps(
+                before,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            after_json=json.dumps(
+                after,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            result="success",
+            source=actor,
+            conn=conn,
+        )
+
+    @staticmethod
+    def _transaction_audit_state(transaction, linked):
+        return {
+            "linked_status": linked.status.value if linked else "",
+            "linked_transaction_id": linked.id if linked else "",
+            "status": transaction.status.value,
+            "transaction_id": transaction.id,
+        }
+
+    @staticmethod
+    def _mark_reversed(transaction_id, conn):
+        conn.execute(
+            """UPDATE transactions
+               SET status = 'reversed', reversed_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (transaction_id,),
+        )
+
+    def _reversal_for(self, transaction_id, conn):
+        return next(
+            (
+                candidate
+                for candidate in self.repository.list_transactions(conn=conn)
+                if (
+                    candidate.transaction_type is TransactionType.REVERSAL
+                    and candidate.linked_transaction_id == transaction_id
+                )
+            ),
+            None,
+        )
+
+    def _matching_reversal_retry(
+        self,
+        reversal,
+        audit_payload,
+        transaction_id,
+        reason,
+        actor,
+        conn,
+    ):
+        original = self.repository.get_transaction_by_id(
+            transaction_id, conn=conn
+        )
+        return (
+            reversal is not None
+            and reversal.id == audit_payload.get("reversal_id")
+            and reversal.transaction_type is TransactionType.REVERSAL
+            and reversal.linked_transaction_id == transaction_id
+            and reversal.note == reason
+            and reversal.created_by == actor
+            and original is not None
+            and original.status is TransactionStatus.REVERSED
+            and original.shares is not None
+            and original.amount is not None
+            and reversal.shares == -original.shares
+            and reversal.amount == -original.amount
+        )
+
+    @staticmethod
+    def _matching_adjustment_retry(
+        adjustment,
+        audit_payload,
+        product_id,
+        effective_date,
+        reason,
+        actor,
+    ):
+        return (
+            adjustment is not None
+            and adjustment.id == audit_payload.get("adjustment_id")
+            and adjustment.transaction_type
+            is TransactionType.HOLDING_ADJUSTMENT
+            and adjustment.status is TransactionStatus.CONFIRMED
+            and adjustment.product_id == product_id
+            and adjustment.trade_date == effective_date
+            and adjustment.note == reason
+            and adjustment.created_by == actor
+        )
 
     def _require_matching_purchase_request(
         self,
