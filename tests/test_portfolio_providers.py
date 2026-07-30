@@ -151,6 +151,31 @@ def test_citic_cash_uses_only_configured_income_field():
     assert quote.income_per_10k == Decimal("0.4400")
 
 
+@pytest.mark.parametrize("income_field", ["nav", "totalNav", "unexpected"])
+def test_citic_cash_rejects_unverified_income_field(income_field):
+    provider = CiticPortfolioProvider(client=None)
+    product = MarketProduct(
+        "citic_wealth",
+        "AM264381F",
+        "信银理财日盈象天天利618号-F",
+        ProductType.CASH_MANAGEMENT,
+        metadata={"income_field": income_field},
+    )
+
+    with pytest.raises(ProviderError, match="^无法可靠识别产品类型$"):
+        provider.quote_from_item(
+            {
+                "prodCode": "AM264381F",
+                "navDate": "2026-07-30",
+                "nav": "1.0",
+                "totalNav": "1.0",
+                "tenThousandIncomeAmt": "0.4420",
+                "sevenDaysIncomeRate": "0.0162150",
+            },
+            product,
+        )
+
+
 @pytest.mark.parametrize(
     ("provider", "product"),
     [
@@ -265,6 +290,35 @@ def test_citic_rejects_cash_signature_with_invalid_quote_values():
             }
 
     with pytest.raises(ProviderError, match="无法可靠识别产品类型"):
+        CiticPortfolioProvider(FakeCiticClient()).resolve_product("AM999999A")
+
+
+@pytest.mark.parametrize(
+    "annualized_rate",
+    ["not-a-number", "NaN", "Infinity"],
+)
+def test_citic_rejects_unknown_cash_product_with_invalid_annualized_rate(
+    annualized_rate,
+):
+    class FakeCiticClient:
+        def get_json(self, _path, _params):
+            return {
+                "code": "0000",
+                "data": {
+                    "productNavPic": [
+                        {
+                            "prodCode": "AM999999A",
+                            "prodNameShort": "invalid official quote",
+                            "registCode": "Z7002600000001",
+                            "navDate": "2026-07-30",
+                            "tenThousandIncomeAmt": "0.4100",
+                            "sevenDaysIncomeRate": annualized_rate,
+                        }
+                    ]
+                },
+            }
+
+    with pytest.raises(ProviderError, match="^无法可靠识别产品类型$"):
         CiticPortfolioProvider(FakeCiticClient()).resolve_product("AM999999A")
 
 
@@ -414,4 +468,23 @@ def test_market_provider_factory_returns_bank_adapters_and_rejects_unknown():
         .resolve_verified_identity("AM264381F")
         .product_type
         is ProductType.CASH_MANAGEMENT
+    )
+
+
+def test_market_provider_factory_constructs_changsheng_seam(monkeypatch):
+    import src.portfolio_providers as providers
+
+    class PlaceholderChangshengProvider:
+        pass
+
+    monkeypatch.setattr(
+        providers,
+        "ChangshengFundProvider",
+        PlaceholderChangshengProvider,
+        raising=False,
+    )
+
+    assert isinstance(
+        providers.get_market_provider("changsheng_fund"),
+        PlaceholderChangshengProvider,
     )

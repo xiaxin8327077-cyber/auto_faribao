@@ -27,6 +27,9 @@ VERIFIED_CASH_PRODUCTS = {
         "Z7002626001878",
     ),
 }
+CITIC_CASH_INCOME_FIELDS = frozenset(
+    ("tenThousandIncomeAmt", "outTenThousandIncomeAmt")
+)
 
 
 def _raw_hash(item: dict) -> str:
@@ -56,6 +59,18 @@ def _require_item_code(item_code, product: MarketProduct) -> str:
     if actual.upper() != product.code.upper():
         raise ProviderError("产品代码不匹配")
     return actual
+
+
+def _citic_cash_income_field(product: MarketProduct) -> str:
+    income_field = str(
+        (product.metadata or {}).get(
+            "income_field",
+            "tenThousandIncomeAmt",
+        )
+    )
+    if income_field not in CITIC_CASH_INCOME_FIELDS:
+        raise ProviderError("无法可靠识别产品类型")
+    return income_field
 
 
 class CiticPortfolioProvider:
@@ -106,6 +121,12 @@ class CiticPortfolioProvider:
             "",
         )
         if not income_field or item.get("sevenDaysIncomeRate") in (None, ""):
+            raise ProviderError("无法可靠识别产品类型")
+        try:
+            annualized_rate = _parse_decimal(item.get("sevenDaysIncomeRate"))
+        except Exception as exc:
+            raise ProviderError("无法可靠识别产品类型") from exc
+        if not annualized_rate.is_finite():
             raise ProviderError("无法可靠识别产品类型")
 
         name = str(
@@ -172,12 +193,7 @@ class CiticPortfolioProvider:
         _require_product(self.provider, product)
         product_code = _require_item_code(item.get("prodCode"), product)
         if product.product_type is ProductType.CASH_MANAGEMENT:
-            income_field = str(
-                (product.metadata or {}).get(
-                    "income_field",
-                    "tenThousandIncomeAmt",
-                )
-            )
+            income_field = _citic_cash_income_field(product)
             return MarketQuote(
                 product_code=product_code,
                 quote_date=_parse_nav_date(
