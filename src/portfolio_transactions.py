@@ -34,6 +34,8 @@ class PortfolioTransactionService:
         source_cash_product_id="",
         fee_rate=Decimal("0"),
         created_by="web",
+        note="",
+        audit_id=None,
     ) -> Transaction:
         idempotency_key = self._nonempty_text(
             idempotency_key, "idempotency_key"
@@ -57,6 +59,7 @@ class PortfolioTransactionService:
                     source_cash_product_id=source_cash_product_id or "",
                     fee_rate=fee_rate,
                     created_by=created_by,
+                    note=note,
                     conn=conn,
                 )
 
@@ -96,6 +99,7 @@ class PortfolioTransactionService:
                 fee_rate=fee_rate,
                 confirmation_nav=nav,
                 confirmation_date=trade_date if nav is not None else None,
+                note=note,
                 created_by=created_by,
             )
             affected_product_ids = {product.id}
@@ -123,6 +127,32 @@ class PortfolioTransactionService:
                 self.repository.create_transaction(purchase, conn)
 
             self._rebuild_positions(affected_product_ids, conn)
+            if audit_id:
+                self.repository.append_audit(
+                    audit_id,
+                    "portfolio_transaction_create",
+                    "transaction",
+                    purchase.id,
+                    after_json=json.dumps(
+                        self._transaction_audit_state(
+                            purchase,
+                            (
+                                self.repository.get_transaction_by_id(
+                                    purchase.linked_transaction_id,
+                                    conn=conn,
+                                )
+                                if purchase.linked_transaction_id
+                                else None
+                            ),
+                        ),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    result="success",
+                    source=created_by,
+                    conn=conn,
+                )
             return purchase
 
     def record_redemption(
@@ -133,6 +163,8 @@ class PortfolioTransactionService:
         idempotency_key,
         destination_cash_product_id="",
         created_by="web",
+        note="",
+        audit_id=None,
     ) -> Transaction:
         idempotency_key = self._nonempty_text(
             idempotency_key, "idempotency_key"
@@ -156,6 +188,7 @@ class PortfolioTransactionService:
                         destination_cash_product_id or ""
                     ),
                     created_by=created_by,
+                    note=note,
                     conn=conn,
                 )
 
@@ -187,6 +220,7 @@ class PortfolioTransactionService:
                 shares=shares,
                 confirmation_nav=nav,
                 confirmation_date=trade_date if nav is not None else None,
+                note=note,
                 created_by=created_by,
             )
             affected_product_ids = {product.id}
@@ -214,6 +248,32 @@ class PortfolioTransactionService:
                 self.repository.create_transaction(redemption, conn)
 
             self._rebuild_positions(affected_product_ids, conn)
+            if audit_id:
+                self.repository.append_audit(
+                    audit_id,
+                    "portfolio_transaction_create",
+                    "transaction",
+                    redemption.id,
+                    after_json=json.dumps(
+                        self._transaction_audit_state(
+                            redemption,
+                            (
+                                self.repository.get_transaction_by_id(
+                                    redemption.linked_transaction_id,
+                                    conn=conn,
+                                )
+                                if redemption.linked_transaction_id
+                                else None
+                            ),
+                        ),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    result="success",
+                    source=created_by,
+                    conn=conn,
+                )
             return redemption
 
     def confirm_pending(self, transaction_id, quote) -> Transaction:
@@ -1291,6 +1351,7 @@ class PortfolioTransactionService:
         source_cash_product_id,
         fee_rate,
         created_by,
+        note,
         conn,
     ):
         if (
@@ -1300,6 +1361,7 @@ class PortfolioTransactionService:
             or existing.trade_date != trade_date
             or (existing.fee_rate or ZERO) != fee_rate
             or existing.created_by != created_by
+            or existing.note != note
             or self._linked_product_id(existing, conn)
             != source_cash_product_id
         ):
@@ -1317,6 +1379,7 @@ class PortfolioTransactionService:
         trade_date,
         destination_cash_product_id,
         created_by,
+        note,
         conn,
     ):
         if (
@@ -1325,6 +1388,7 @@ class PortfolioTransactionService:
             or existing.shares != shares
             or existing.trade_date != trade_date
             or existing.created_by != created_by
+            or existing.note != note
             or self._linked_product_id(existing, conn)
             != destination_cash_product_id
         ):
