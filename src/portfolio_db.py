@@ -4,7 +4,8 @@ from pathlib import Path
 import sqlite3
 
 
-SCHEMA_VERSION = 1
+BASE_SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "portfolio.db"
 
 
@@ -37,7 +38,7 @@ def _is_decimal_negation(left, right) -> int:
     )
 
 
-SCHEMA_SQL = """
+BASE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -149,14 +150,6 @@ CREATE INDEX IF NOT EXISTS idx_transactions_product_date
     ON transactions(product_id, trade_date, created_at);
 CREATE INDEX IF NOT EXISTS idx_transactions_status
     ON transactions(status, trade_date);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_one_cash_leg_per_transaction
-    ON transactions(linked_transaction_id)
-    WHERE linked_transaction_id IS NOT NULL
-      AND transaction_type IN ('cash_transfer_out', 'cash_transfer_in');
-CREATE UNIQUE INDEX IF NOT EXISTS idx_one_reversal_child_per_transaction
-    ON transactions(linked_transaction_id)
-    WHERE linked_transaction_id IS NOT NULL
-      AND transaction_type = 'reversal';
 CREATE TRIGGER IF NOT EXISTS validate_quote_decimals_on_insert
 BEFORE INSERT ON quotes
 WHEN NOT (
@@ -282,6 +275,30 @@ WHEN OLD.status = 'confirmed' AND NOT (
 BEGIN
     SELECT RAISE(ABORT, 'confirmed transaction is immutable except for reversal');
 END;
+CREATE TRIGGER IF NOT EXISTS prevent_reversed_transaction_mutation
+BEFORE UPDATE ON transactions
+WHEN OLD.status = 'reversed'
+BEGIN
+    SELECT RAISE(ABORT, 'reversed transaction is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS prevent_final_transaction_delete
+BEFORE DELETE ON transactions
+WHEN OLD.status IN ('confirmed', 'reversed')
+BEGIN
+    SELECT RAISE(ABORT, 'confirmed and reversed transactions cannot be deleted');
+END;
+"""
+
+
+V2_SCHEMA_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_cash_leg_per_transaction
+    ON transactions(linked_transaction_id)
+    WHERE linked_transaction_id IS NOT NULL
+      AND transaction_type IN ('cash_transfer_out', 'cash_transfer_in');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_reversal_child_per_transaction
+    ON transactions(linked_transaction_id)
+    WHERE linked_transaction_id IS NOT NULL
+      AND transaction_type = 'reversal';
 CREATE TRIGGER IF NOT EXISTS prevent_unbacked_confirmed_reversal
 BEFORE UPDATE ON transactions
 WHEN OLD.status = 'confirmed'
@@ -302,19 +319,18 @@ BEGIN
         'confirmed transaction reversal requires a valid child'
     );
 END;
-CREATE TRIGGER IF NOT EXISTS prevent_reversed_transaction_mutation
-BEFORE UPDATE ON transactions
-WHEN OLD.status = 'reversed'
-BEGIN
-    SELECT RAISE(ABORT, 'reversed transaction is immutable');
-END;
-CREATE TRIGGER IF NOT EXISTS prevent_final_transaction_delete
-BEFORE DELETE ON transactions
-WHEN OLD.status IN ('confirmed', 'reversed')
-BEGIN
-    SELECT RAISE(ABORT, 'confirmed and reversed transactions cannot be deleted');
-END;
 """
+
+
+def _execute_sql_script(conn: sqlite3.Connection, script: str) -> None:
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise sqlite3.OperationalError("incomplete schema statement")
 
 
 class PortfolioDatabase:
@@ -338,10 +354,142 @@ class PortfolioDatabase:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as conn:
-            conn.executescript(SCHEMA_SQL)
+            if not self._has_schema_migrations(conn):
+                self._create_current_schema(conn)
+                return
+            versions = {
+                row["version"]
+                for row in conn.execute(
+                    "SELECT version FROM schema_migrations"
+                )
+            }
+            if versions == {SCHEMA_VERSION}:
+                return
+            if versions != {BASE_SCHEMA_VERSION}:
+                raise ValueError(
+                    "unsupported portfolio schema version set: "
+                    f"{sorted(versions)}"
+                )
+            self._preflight_v2(conn)
+            self._upgrade_v1_to_v2(conn)
+
+    @staticmethod
+    def _has_schema_migrations(conn) -> bool:
+        return conn.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'schema_migrations'"""
+        ).fetchone() is not None
+
+    @staticmethod
+    def _create_current_schema(conn) -> None:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _execute_sql_script(conn, BASE_SCHEMA_SQL)
+            _execute_sql_script(conn, V2_SCHEMA_SQL)
             conn.execute(
-                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+                "INSERT INTO schema_migrations(version) VALUES (?)",
                 (SCHEMA_VERSION,),
+            )
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+
+    def _upgrade_v1_to_v2(self, conn) -> None:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._preflight_v2(conn)
+            _execute_sql_script(conn, V2_SCHEMA_SQL)
+            conn.execute("DELETE FROM schema_migrations")
+            conn.execute(
+                "INSERT INTO schema_migrations(version) VALUES (?)",
+                (SCHEMA_VERSION,),
+            )
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+
+    @staticmethod
+    def _preflight_v2(conn) -> None:
+        duplicate_cash = conn.execute(
+            """SELECT linked_transaction_id
+               FROM transactions
+               WHERE linked_transaction_id IS NOT NULL
+                 AND transaction_type IN (
+                     'cash_transfer_out', 'cash_transfer_in'
+                 )
+               GROUP BY linked_transaction_id
+               HAVING COUNT(*) > 1
+               LIMIT 1"""
+        ).fetchone()
+        if duplicate_cash is not None:
+            raise ValueError(
+                "portfolio v2 migration blocked: duplicate cash links"
+            )
+        duplicate_reversal = conn.execute(
+            """SELECT linked_transaction_id
+               FROM transactions
+               WHERE linked_transaction_id IS NOT NULL
+                 AND transaction_type = 'reversal'
+               GROUP BY linked_transaction_id
+               HAVING COUNT(*) > 1
+               LIMIT 1"""
+        ).fetchone()
+        if duplicate_reversal is not None:
+            raise ValueError(
+                "portfolio v2 migration blocked: "
+                "duplicate reversal children"
+            )
+        invalid_reversal = conn.execute(
+            """SELECT child.id
+               FROM transactions AS child
+               LEFT JOIN transactions AS parent
+                 ON parent.id = child.linked_transaction_id
+               WHERE child.transaction_type = 'reversal'
+                 AND child.status IN ('confirmed', 'reversed')
+                 AND (
+                     parent.id IS NULL
+                     OR child.product_id != parent.product_id
+                     OR NOT decimal_negation(
+                         child.shares, parent.shares
+                     )
+                     OR NOT decimal_negation(
+                         child.amount, parent.amount
+                     )
+                 )
+               LIMIT 1"""
+        ).fetchone()
+        if invalid_reversal is not None:
+            raise ValueError(
+                "portfolio v2 migration blocked: invalid reversal data"
+            )
+        unbacked_reversed = conn.execute(
+            """SELECT parent.id
+               FROM transactions AS parent
+               WHERE parent.status = 'reversed'
+                 AND NOT EXISTS (
+                     SELECT 1
+                     FROM transactions AS child
+                     WHERE child.transaction_type = 'reversal'
+                       AND child.status IN ('confirmed', 'reversed')
+                       AND child.linked_transaction_id = parent.id
+                       AND child.product_id = parent.product_id
+                       AND decimal_negation(
+                           child.shares, parent.shares
+                       )
+                       AND decimal_negation(
+                           child.amount, parent.amount
+                       )
+                 )
+               LIMIT 1"""
+        ).fetchone()
+        if unbacked_reversed is not None:
+            raise ValueError(
+                "portfolio v2 migration blocked: "
+                "unbacked reversed transactions"
             )
 
     @contextmanager

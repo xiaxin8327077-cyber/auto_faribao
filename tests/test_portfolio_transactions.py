@@ -246,6 +246,55 @@ def test_cancel_retry_rejects_corrupt_linked_final_status(services):
         )
 
 
+@pytest.mark.parametrize(
+    ("row_side", "field", "value"),
+    [
+        ("target", "amount", "999"),
+        ("target", "trade_date", "2026-07-29"),
+        ("target", "created_by", "other"),
+        ("target", "confirmation_nav", "1"),
+        ("linked", "amount", "999"),
+        ("linked", "shares", "999"),
+        ("linked", "trade_date", "2026-07-29"),
+        ("linked", "created_by", "other"),
+        ("linked", "confirmation_nav", "1"),
+        ("linked", "transaction_type", "cash_transfer_in"),
+        ("linked", "product_id", "fund"),
+    ],
+)
+def test_cancel_retry_rejects_any_corrupt_persisted_group_semantics(
+    services,
+    row_side,
+    field,
+    value,
+):
+    repository, transactions, _ = services
+    seed_cash(repository, "cash", "3000")
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    purchase = transactions.record_purchase(
+        "fund",
+        Decimal("1000"),
+        TRADE_DATE,
+        f"web:cancel-semantic-root:{row_side}:{field}",
+        source_cash_product_id="cash",
+    )
+    cash_leg = linked_leg(repository, purchase)
+    operation_key = f"web:cancel-semantic:{row_side}:{field}"
+    transactions.cancel_pending(purchase.id, operation_key)
+    row_id = purchase.id if row_side == "target" else cash_leg.id
+    with repository.database.connection() as conn:
+        conn.execute(
+            f"UPDATE transactions SET {field} = ? WHERE id = ?",
+            (value, row_id),
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="idempotency key conflicts with existing request",
+    ):
+        transactions.cancel_pending(purchase.id, operation_key)
+
+
 def test_cancel_pending_idempotency_key_rejects_conflicting_request(services):
     repository, transactions, _ = services
     seed_product(repository, "fund-a", ProductType.PUBLIC_FUND)
@@ -329,6 +378,58 @@ def test_record_trade_rejects_idempotency_key_already_used_by_operation_audit(
         if row.idempotency_key == operation_key
     ]
     assert rows_with_key == []
+
+
+def test_whitespace_variant_cannot_cross_record_and_operation_namespaces(
+    services,
+):
+    repository, transactions, _ = services
+    seed_product(repository, "pending-a", ProductType.PUBLIC_FUND)
+    pending_a = transactions.record_purchase(
+        "pending-a",
+        Decimal("100"),
+        TRADE_DATE,
+        "web:pending-a-for-normalized-global",
+    )
+    transactions.cancel_pending(
+        pending_a.id,
+        " normalized-global-key ",
+    )
+    seed_cash(repository, "cash", "1000")
+
+    with pytest.raises(
+        ValueError,
+        match="idempotency key conflicts with existing request",
+    ):
+        transactions.record_purchase(
+            "cash",
+            Decimal("10"),
+            TRADE_DATE,
+            "normalized-global-key",
+        )
+
+    seed_product(repository, "pending-b", ProductType.PUBLIC_FUND)
+    pending_b = transactions.record_purchase(
+        "pending-b",
+        Decimal("100"),
+        TRADE_DATE,
+        "web:pending-b-for-normalized-global",
+    )
+    transactions.record_redemption(
+        "cash",
+        Decimal("10"),
+        TRADE_DATE,
+        "record-first-normalized-key",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="idempotency key conflicts with existing request",
+    ):
+        transactions.cancel_pending(
+            pending_b.id,
+            " record-first-normalized-key ",
+        )
 
 
 def test_operation_rejects_idempotency_key_already_used_by_record_trade(
@@ -1244,6 +1345,104 @@ def test_adjust_holding_retry_rejects_corrupt_cost_payload(services):
         )
 
 
+@pytest.mark.parametrize(
+    (
+        "product_type",
+        "opening_shares",
+        "opening_amount",
+        "actual_shares",
+        "quote_nav",
+        "corrupt_rule",
+    ),
+    [
+        (
+            ProductType.CASH_MANAGEMENT,
+            "1000",
+            "1000",
+            "1002.5",
+            None,
+            "preserve_average_cost",
+        ),
+        (
+            ProductType.PUBLIC_FUND,
+            "100",
+            "250",
+            "110",
+            None,
+            "exact_quote",
+        ),
+        (
+            ProductType.PUBLIC_FUND,
+            None,
+            None,
+            "10",
+            "2.5",
+            "preserve_average_cost",
+        ),
+    ],
+)
+def test_adjust_holding_retry_rejects_cost_rule_inconsistent_with_context(
+    services,
+    product_type,
+    opening_shares,
+    opening_amount,
+    actual_shares,
+    quote_nav,
+    corrupt_rule,
+):
+    repository, transactions, _ = services
+    product = seed_product(repository, "product", product_type)
+    if opening_shares is not None:
+        seed_opening_position(
+            repository,
+            product.id,
+            opening_shares,
+            amount=opening_amount,
+        )
+    if quote_nav is not None:
+        seed_quote(repository, product, TRADE_DATE, Decimal(quote_nav))
+
+    key = f"web:adjust-corrupt-rule:{product_type.value}:{actual_shares}"
+    transactions.adjust_holding(
+        product.id,
+        Decimal(actual_shares),
+        TRADE_DATE,
+        "平台份额校准",
+        key,
+    )
+    with repository.database.connection() as conn:
+        row = conn.execute(
+            """SELECT id, after_json FROM audit_logs
+               WHERE action = 'adjust_holding'"""
+        ).fetchone()
+        after = json.loads(row["after_json"])
+        after["cost_basis_rule"] = corrupt_rule
+        conn.execute(
+            "UPDATE audit_logs SET after_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    after,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                row["id"],
+            ),
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="idempotency key conflicts with existing request",
+    ):
+        transactions.adjust_holding(
+            product.id,
+            Decimal(actual_shares),
+            TRADE_DATE,
+            "平台份额校准",
+            key,
+        )
+
+
 def test_adjust_holding_rolls_back_ledger_and_position_when_audit_fails(
     services,
     monkeypatch,
@@ -1527,6 +1726,89 @@ def test_purchase_idempotency_normalizes_equivalent_decimal_request(services):
 
     assert retry == original
     assert projector.calculate("cash").locked_shares == Decimal("1000")
+
+
+@pytest.mark.parametrize(
+    ("record_kind", "first_key", "retry_key"),
+    [
+        ("purchase", " normalized-record-key ", "normalized-record-key"),
+        ("purchase", "normalized-record-key", " normalized-record-key "),
+        ("redemption", " normalized-record-key ", "normalized-record-key"),
+        ("redemption", "normalized-record-key", " normalized-record-key "),
+    ],
+)
+def test_record_trade_normalizes_idempotency_key_before_lookup_and_insert(
+    services,
+    record_kind,
+    first_key,
+    retry_key,
+):
+    repository, transactions, _ = services
+    seed_cash(repository, "cash", "1000")
+
+    if record_kind == "purchase":
+        first = transactions.record_purchase(
+            "cash",
+            Decimal("10"),
+            TRADE_DATE,
+            first_key,
+        )
+        retried = transactions.record_purchase(
+            "cash",
+            Decimal("10"),
+            TRADE_DATE,
+            retry_key,
+        )
+    else:
+        first = transactions.record_redemption(
+            "cash",
+            Decimal("10"),
+            TRADE_DATE,
+            first_key,
+        )
+        retried = transactions.record_redemption(
+            "cash",
+            Decimal("10"),
+            TRADE_DATE,
+            retry_key,
+        )
+
+    assert retried == first
+    assert first.idempotency_key == "normalized-record-key"
+    assert repository.get_transaction_by_idempotency(
+        "normalized-record-key"
+    ) == first
+    assert repository.get_transaction_by_idempotency(
+        " normalized-record-key "
+    ) is None
+
+
+@pytest.mark.parametrize("record_kind", ["purchase", "redemption"])
+def test_record_trade_rejects_blank_idempotency_key(
+    services,
+    record_kind,
+):
+    repository, transactions, _ = services
+    seed_cash(repository, "cash", "1000")
+
+    with pytest.raises(
+        ValueError,
+        match="idempotency_key must not be empty",
+    ):
+        if record_kind == "purchase":
+            transactions.record_purchase(
+                "cash",
+                Decimal("10"),
+                TRADE_DATE,
+                "   ",
+            )
+        else:
+            transactions.record_redemption(
+                "cash",
+                Decimal("10"),
+                TRADE_DATE,
+                "   ",
+            )
 
 
 @pytest.mark.parametrize("field", ["amount", "shares"])

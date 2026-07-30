@@ -258,6 +258,20 @@ def test_existing_schema_validation_does_not_construct_portfolio_database(
     assert report.installed is False
 
 
+def test_current_schema_detection_requires_exact_version_set(tmp_path):
+    target = tmp_path / "portfolio.db"
+    database = PortfolioDatabase(target)
+    database.initialize()
+    assert portfolio_migration._contains_current_schema(target) is True
+
+    with database.connection() as conn:
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (1)"
+        )
+
+    assert portfolio_migration._contains_current_schema(target) is False
+
+
 def test_failed_existing_schema_validation_preserves_database_and_sidecars(
     tmp_path
 ):

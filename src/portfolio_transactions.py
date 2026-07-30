@@ -34,6 +34,9 @@ class PortfolioTransactionService:
         fee_rate=Decimal("0"),
         created_by="web",
     ) -> Transaction:
+        idempotency_key = self._nonempty_text(
+            idempotency_key, "idempotency_key"
+        )
         amount = self._positive_decimal(amount, "amount")
         fee_rate = self._fee_rate(fee_rate)
 
@@ -130,6 +133,9 @@ class PortfolioTransactionService:
         destination_cash_product_id="",
         created_by="web",
     ) -> Transaction:
+        idempotency_key = self._nonempty_text(
+            idempotency_key, "idempotency_key"
+        )
         shares = self._positive_decimal(shares, "shares")
 
         with self.repository.database.transaction() as conn:
@@ -551,18 +557,22 @@ class PortfolioTransactionService:
                 product_id,
                 request,
                 conn,
+                include_before=True,
             )
             if retry is not None:
+                before_retry, after_retry = retry
                 adjustment = self.repository.get_transaction_by_idempotency(
                     idempotency_key, conn=conn
                 )
                 if not self._matching_adjustment_retry(
                     adjustment,
-                    retry,
+                    before_retry,
+                    after_retry,
                     product_id,
                     effective_date,
                     reason,
                     actor,
+                    conn,
                 ):
                     raise ValueError(
                         "idempotency key conflicts with existing request"
@@ -703,9 +713,12 @@ class PortfolioTransactionService:
         object_id,
         request,
         conn,
+        *,
+        include_before=False,
     ):
         row = conn.execute(
-            """SELECT action, object_type, object_id, after_json, source
+            """SELECT action, object_type, object_id,
+                      before_json, after_json, source
                FROM audit_logs WHERE id = ?""",
             (self._operation_audit_id(idempotency_key),),
         ).fetchone()
@@ -726,6 +739,16 @@ class PortfolioTransactionService:
             raise ValueError(
                 "idempotency key conflicts with existing request"
             )
+        if include_before:
+            try:
+                before_payload = json.loads(row["before_json"])
+            except (TypeError, ValueError):
+                before_payload = None
+            if not isinstance(before_payload, dict):
+                raise ValueError(
+                    "idempotency key conflicts with existing request"
+                )
+            return before_payload, payload
         return payload
 
     def _reject_transaction_idempotency_collision(
@@ -1023,31 +1046,36 @@ class PortfolioTransactionService:
             != TransactionStatus.CANCELLED.value
         ):
             return False
+        try:
+            linked = self._require_consistent_link(transaction, conn)
+        except ValueError:
+            return False
         linked_id = audit_payload.get("linked_transaction_id", "")
-        if not linked_id:
-            return audit_payload.get("linked_status", "") == ""
-        linked = self.repository.get_transaction_by_id(
-            linked_id, conn=conn
-        )
+        if linked is None:
+            return (
+                not transaction.linked_transaction_id
+                and linked_id == ""
+                and audit_payload.get("linked_status", "") == ""
+            )
         return (
-            transaction.linked_transaction_id == linked_id
-            and linked is not None
+            linked.id == linked_id
             and linked.status is TransactionStatus.CANCELLED
-            and linked.linked_transaction_id == transaction.id
             and audit_payload.get("linked_status")
             == TransactionStatus.CANCELLED.value
         )
 
-    @staticmethod
     def _matching_adjustment_retry(
+        self,
         adjustment,
+        before_payload,
         audit_payload,
         product_id,
         effective_date,
         reason,
         actor,
+        conn,
     ):
-        return (
+        base_matches = (
             adjustment is not None
             and adjustment.id == audit_payload.get("adjustment_id")
             and adjustment.transaction_type
@@ -1085,6 +1113,74 @@ class PortfolioTransactionService:
                 )
             )
         )
+        if not base_matches:
+            return False
+        try:
+            difference = Decimal(audit_payload["difference"])
+            amount = Decimal(audit_payload["amount"])
+            actual_shares = Decimal(audit_payload["actual_shares"])
+            before_shares = Decimal(before_payload["total_shares"])
+            unit_cost = (
+                None
+                if audit_payload.get("unit_cost", "") == ""
+                else Decimal(audit_payload["unit_cost"])
+            )
+        except (InvalidOperation, KeyError, TypeError, ValueError):
+            return False
+        numbers = [difference, amount, actual_shares, before_shares]
+        if unit_cost is not None:
+            numbers.append(unit_cost)
+        if (
+            any(not number.is_finite() for number in numbers)
+            or actual_shares < ZERO
+            or before_shares < ZERO
+            or actual_shares - before_shares != difference
+        ):
+            return False
+        try:
+            product = self.repository.require_product(product_id, conn=conn)
+        except ValueError:
+            return False
+        rule = audit_payload.get("cost_basis_rule")
+        if difference == ZERO:
+            return (
+                rule == "zero_difference"
+                and amount == ZERO
+                and unit_cost is None
+            )
+        if difference < ZERO:
+            return (
+                rule == "average_cost_reduction"
+                and amount == ZERO
+                and unit_cost is None
+            )
+        if product.product_type is ProductType.CASH_MANAGEMENT:
+            return (
+                rule == "cash_unit_price"
+                and amount == difference
+                and unit_cost == ONE
+            )
+        if (
+            unit_cost is None
+            or unit_cost <= ZERO
+            or amount != difference * unit_cost
+        ):
+            return False
+        if before_shares > ZERO:
+            return rule == "preserve_average_cost"
+        if rule != "exact_quote":
+            return False
+        quote = self.repository.get_quote(
+            product_id,
+            effective_date,
+            conn=conn,
+        )
+        if quote is None or quote.unit_nav is None:
+            return False
+        try:
+            return self._quote_nav(quote) == unit_cost
+        except ValueError:
+            return False
 
     def _require_matching_purchase_request(
         self,
@@ -1264,7 +1360,10 @@ class PortfolioTransactionService:
             or linked.shares != transaction.amount
         ):
             return False
-        if transaction.status in _PENDING_STATUSES:
+        if transaction.status in {
+            *_PENDING_STATUSES,
+            TransactionStatus.CANCELLED,
+        }:
             return (
                 product.product_type is not ProductType.CASH_MANAGEMENT
                 and transaction.shares is None
@@ -1312,7 +1411,10 @@ class PortfolioTransactionService:
             or transaction.fee_rate is not None
         ):
             return False
-        if transaction.status in _PENDING_STATUSES:
+        if transaction.status in {
+            *_PENDING_STATUSES,
+            TransactionStatus.CANCELLED,
+        }:
             return (
                 product.product_type is not ProductType.CASH_MANAGEMENT
                 and transaction.amount is None

@@ -220,13 +220,15 @@ def _contains_current_schema(path: Path) -> bool:
         return False
     try:
         with _read_only_connection(path) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM schema_migrations WHERE version = ?",
-                (SCHEMA_VERSION,),
-            ).fetchone()
+            versions = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT version FROM schema_migrations"
+                )
+            }
     except sqlite3.DatabaseError:
         return False
-    return row is not None
+    return versions == {SCHEMA_VERSION}
 
 
 def _validate_candidate(

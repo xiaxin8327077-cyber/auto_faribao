@@ -11,7 +11,30 @@ from src.portfolio_models import (
     optional_decimal_text,
 )
 
-from src.portfolio_db import PortfolioDatabase
+from src.portfolio_db import (
+    BASE_SCHEMA_SQL,
+    V2_SCHEMA_SQL,
+    PortfolioDatabase,
+)
+
+
+def initialize_v1_database(db):
+    with db.connection() as conn:
+        conn.executescript(BASE_SCHEMA_SQL)
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (1)"
+        )
+
+
+def schema_object_names(db):
+    with db.connection() as conn:
+        return {
+            row["name"]
+            for row in conn.execute(
+                """SELECT name FROM sqlite_master
+                   WHERE type IN ('table', 'index', 'trigger')"""
+            )
+        }
 
 
 def test_portfolio_enums_use_stable_database_values():
@@ -44,6 +67,212 @@ def test_database_initializes_versioned_schema_with_wal_and_foreign_keys(tmp_pat
         } <= tables
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+
+def test_clean_populated_v1_upgrades_to_v2_atomically_and_repeat_safely(
+    tmp_path,
+):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    initialize_v1_database(db)
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('cash', 'test', 'cash', '现金', 'cash_management',
+                       'active')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, idempotency_key, created_by)
+               VALUES ('opening', 'cash', 'opening_position', 'confirmed',
+                       '2026-01-01', '100', '100', 'opening-key', 'test')"""
+        )
+
+    db.initialize()
+    first_objects = schema_object_names(db)
+    db.initialize()
+
+    with db.connection() as conn:
+        assert {
+            row["version"]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            )
+        } == {2}
+        assert tuple(
+            conn.execute(
+                """SELECT amount, shares FROM transactions
+                   WHERE id = 'opening'"""
+            ).fetchone()
+        ) == ("100", "100")
+    assert schema_object_names(db) == first_objects
+    assert {
+        "idx_one_cash_leg_per_transaction",
+        "idx_one_reversal_child_per_transaction",
+        "prevent_unbacked_confirmed_reversal",
+    } <= first_objects
+
+
+def test_v1_with_already_installed_v2_objects_only_advances_version(tmp_path):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    initialize_v1_database(db)
+    with db.connection() as conn:
+        conn.executescript(V2_SCHEMA_SQL)
+
+    db.initialize()
+
+    with db.connection() as conn:
+        assert {
+            row["version"]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            )
+        } == {2}
+
+
+@pytest.mark.parametrize(
+    "dirty_kind",
+    ["cash", "reversal", "unbacked"],
+)
+def test_dirty_v1_upgrade_fails_without_version_object_or_data_changes(
+    tmp_path,
+    dirty_kind,
+):
+    db = PortfolioDatabase(tmp_path / f"{dirty_kind}.db")
+    initialize_v1_database(db)
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('fund', 'test', 'fund', '基金', 'public_fund',
+                       'active')"""
+        )
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('cash', 'test', 'cash', '现金', 'cash_management',
+                       'active')"""
+        )
+        original_status = (
+            "reversed" if dirty_kind == "unbacked" else "confirmed"
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, idempotency_key, created_by)
+               VALUES ('main', 'fund', 'manual_purchase', ?, '2026-01-01',
+                       '100', '50', 'main-key', 'test')""",
+            (original_status,),
+        )
+        if dirty_kind == "cash":
+            for suffix in ("a", "b"):
+                conn.execute(
+                    """INSERT INTO transactions
+                       (id, product_id, transaction_type, status, trade_date,
+                        amount, shares, linked_transaction_id,
+                        idempotency_key, created_by)
+                       VALUES (?, 'cash', 'cash_transfer_out', 'confirmed',
+                               '2026-01-01', '100', '100', 'main', ?,
+                               'test')""",
+                    (f"cash-{suffix}", f"cash-{suffix}-key"),
+                )
+        elif dirty_kind == "reversal":
+            for suffix in ("a", "b"):
+                conn.execute(
+                    """INSERT INTO transactions
+                       (id, product_id, transaction_type, status, trade_date,
+                        amount, shares, linked_transaction_id,
+                        idempotency_key, created_by)
+                       VALUES (?, 'fund', 'reversal', 'confirmed',
+                               '2026-01-01', '-100', '-50', 'main', ?,
+                               'test')""",
+                    (
+                        f"reversal-{suffix}",
+                        f"reversal-{suffix}-key",
+                    ),
+                )
+    before_objects = schema_object_names(db)
+    with db.connection() as conn:
+        before_rows = [
+            tuple(row)
+            for row in conn.execute(
+                """SELECT id, status, amount, shares, linked_transaction_id
+                   FROM transactions ORDER BY id"""
+            )
+        ]
+
+    with pytest.raises(
+        ValueError,
+        match=f"portfolio v2 migration blocked: .*{dirty_kind}",
+    ):
+        db.initialize()
+
+    assert schema_object_names(db) == before_objects
+    with db.connection() as conn:
+        assert {
+            row["version"]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            )
+        } == {1}
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                """SELECT id, status, amount, shares, linked_transaction_id
+                   FROM transactions ORDER BY id"""
+            )
+        ] == before_rows
+        assert conn.execute(
+            """SELECT COUNT(*) FROM sqlite_master
+               WHERE name IN (
+                   'idx_one_cash_leg_per_transaction',
+                   'idx_one_reversal_child_per_transaction',
+                   'prevent_unbacked_confirmed_reversal'
+               )"""
+        ).fetchone()[0] == 0
+
+
+def test_v1_upgrade_ddl_failure_rolls_back_all_v2_objects_and_version(
+    tmp_path,
+):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    initialize_v1_database(db)
+    with db.connection() as conn:
+        conn.execute(
+            """CREATE TABLE idx_one_reversal_child_per_transaction (
+                   sentinel TEXT
+               )"""
+        )
+        conn.execute(
+            """INSERT INTO idx_one_reversal_child_per_transaction
+               VALUES ('keep')"""
+        )
+    before_objects = schema_object_names(db)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        db.initialize()
+
+    assert schema_object_names(db) == before_objects
+    with db.connection() as conn:
+        assert {
+            row["version"]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            )
+        } == {1}
+        assert conn.execute(
+            """SELECT sentinel
+               FROM idx_one_reversal_child_per_transaction"""
+        ).fetchone()[0] == "keep"
+        assert conn.execute(
+            """SELECT COUNT(*) FROM sqlite_master
+               WHERE name = 'idx_one_cash_leg_per_transaction'"""
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """SELECT COUNT(*) FROM sqlite_master
+               WHERE name = 'prevent_unbacked_confirmed_reversal'"""
+        ).fetchone()[0] == 0
 
 
 def test_transaction_rolls_back_every_write_on_error(tmp_path):
