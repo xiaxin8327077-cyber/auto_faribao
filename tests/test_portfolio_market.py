@@ -89,3 +89,81 @@ def test_market_product_metadata_is_an_immutable_snapshot():
     assert product.metadata == {"region": "CN"}
     with pytest.raises(TypeError):
         product.metadata["region"] = "US"
+
+
+def test_quote_sync_fetches_outside_transaction_and_upserts_once(tmp_path):
+    from src.portfolio_db import PortfolioDatabase
+    from src.portfolio_models import Product, ProductStatus
+    from src.portfolio_repository import PortfolioRepository
+    from src.portfolio_market import QuoteSyncService
+
+    class Provider:
+        provider = "changsheng_fund"
+        calls = 0
+
+        def fetch_quotes(self, product, start_date, end_date):
+            self.calls += 1
+            return [MarketQuote(
+                product_code=product.code,
+                quote_date=date(2026, 7, 29),
+                unit_nav=Decimal("1.0321"),
+                source=self.provider,
+                raw_hash="same",
+            )]
+
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+    repo = PortfolioRepository(db)
+    repo.add_product(Product(
+        "p1", "changsheng_fund", "003103", "长盛盛裕纯债C",
+        ProductType.PUBLIC_FUND, ProductStatus.ACTIVE,
+    ))
+    provider = Provider()
+    service = QuoteSyncService(repo, lambda _name: provider)
+    market_product = MarketProduct(
+        "changsheng_fund", "003103", "长盛盛裕纯债C",
+        ProductType.PUBLIC_FUND,
+    )
+
+    service.sync_product(market_product, date(2026, 7, 29), date(2026, 7, 29))
+    service.sync_product(market_product, date(2026, 7, 29), date(2026, 7, 29))
+
+    assert provider.calls == 2
+    with db.connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM quotes").fetchone()[0] == 1
+
+
+def test_quote_repository_round_trips_and_returns_latest_quote(tmp_path):
+    from src.portfolio_db import PortfolioDatabase
+    from src.portfolio_models import Product
+    from src.portfolio_repository import PortfolioRepository
+
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+    repo = PortfolioRepository(db)
+    repo.add_product(Product(
+        "p1", "changsheng_fund", "003103", "长盛盛裕纯债C",
+        ProductType.PUBLIC_FUND,
+    ))
+    first = MarketQuote(
+        product_code="003103",
+        quote_date=date(2026, 7, 28),
+        unit_nav=Decimal("1.0310"),
+        source="changsheng_fund",
+        raw_hash="first",
+    )
+    second = MarketQuote(
+        product_code="003103",
+        quote_date=date(2026, 7, 29),
+        unit_nav=Decimal("1.0321"),
+        source="changsheng_fund",
+        raw_hash="second",
+    )
+
+    assert repo.upsert_quote("p1", first, "2026-07-30T09:00:00+08:00") == first
+    assert repo.upsert_quote("p1", second, "2026-07-30T09:01:00+08:00") == second
+
+    assert repo.get_quote("p1", date(2026, 7, 28)) == first
+    assert repo.get_quote("p1", date(2026, 7, 27)) is None
+    assert repo.latest_quote("p1") == second
+    assert repo.latest_quote("p1", date(2026, 7, 28)) == first

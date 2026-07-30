@@ -1,8 +1,10 @@
 from datetime import date
 from decimal import Decimal
 import sqlite3
+from uuid import NAMESPACE_URL, uuid5
 
 from src.portfolio_models import (
+    MarketQuote,
     Position,
     Product,
     ProductStatus,
@@ -25,6 +27,11 @@ _TRANSACTION_COLUMNS = """
 """
 _POSITION_COLUMNS = """
     product_id, available_shares, locked_shares, total_shares, cost_basis
+"""
+_QUOTE_COLUMNS = """
+    p.code AS product_code, q.quote_date, q.unit_nav, q.cumulative_nav,
+    q.income_per_10k, q.seven_day_annualized_rate, q.source,
+    q.source_timestamp, q.raw_hash
 """
 
 
@@ -61,6 +68,15 @@ class PortfolioRepository:
             row = conn.execute(
                 f"SELECT {_PRODUCT_COLUMNS} FROM products WHERE id = ?",
                 (product_id,),
+            ).fetchone()
+        return self._product_from_row(row) if row else None
+
+    def get_product_by_provider_code(self, provider: str, code: str) -> Product | None:
+        with self.database.connection() as conn:
+            row = conn.execute(
+                f"""SELECT {_PRODUCT_COLUMNS} FROM products
+                    WHERE provider = ? AND code = ?""",
+                (provider, code),
             ).fetchone()
         return self._product_from_row(row) if row else None
 
@@ -162,6 +178,68 @@ class PortfolioRepository:
             return self._position_from_row(row)
         return Position(product_id, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"))
 
+    def upsert_quote(
+        self, product_id: str, quote: MarketQuote, fetched_at: str
+    ) -> MarketQuote:
+        quote_id = str(uuid5(NAMESPACE_URL, f"{product_id}:{quote.quote_date.isoformat()}"))
+        with self.database.transaction() as conn:
+            conn.execute(
+                """INSERT INTO quotes (
+                       id, product_id, quote_date, unit_nav, cumulative_nav,
+                       income_per_10k, seven_day_annualized_rate, source,
+                       source_timestamp, raw_hash, fetched_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(product_id, quote_date) DO UPDATE SET
+                       unit_nav = excluded.unit_nav,
+                       cumulative_nav = excluded.cumulative_nav,
+                       income_per_10k = excluded.income_per_10k,
+                       seven_day_annualized_rate = excluded.seven_day_annualized_rate,
+                       source = excluded.source,
+                       source_timestamp = excluded.source_timestamp,
+                       raw_hash = excluded.raw_hash,
+                       fetched_at = excluded.fetched_at""",
+                (
+                    quote_id,
+                    product_id,
+                    quote.quote_date.isoformat(),
+                    optional_decimal_text(quote.unit_nav),
+                    optional_decimal_text(quote.cumulative_nav),
+                    optional_decimal_text(quote.income_per_10k),
+                    optional_decimal_text(quote.seven_day_annualized_rate),
+                    quote.source,
+                    quote.source_timestamp or None,
+                    quote.raw_hash,
+                    fetched_at,
+                ),
+            )
+        return quote
+
+    def get_quote(self, product_id: str, quote_date: date) -> MarketQuote | None:
+        with self.database.connection() as conn:
+            row = conn.execute(
+                f"""SELECT {_QUOTE_COLUMNS} FROM quotes q
+                    JOIN products p ON p.id = q.product_id
+                    WHERE q.product_id = ? AND q.quote_date = ?""",
+                (product_id, quote_date.isoformat()),
+            ).fetchone()
+        return self._quote_from_row(row) if row else None
+
+    def latest_quote(
+        self, product_id: str, on_or_before: date | None = None
+    ) -> MarketQuote | None:
+        query = (
+            f"SELECT {_QUOTE_COLUMNS} FROM quotes q "
+            "JOIN products p ON p.id = q.product_id WHERE q.product_id = ?"
+        )
+        params: tuple[str, ...] = (product_id,)
+        if on_or_before is not None:
+            query += " AND q.quote_date <= ?"
+            params += (on_or_before.isoformat(),)
+        query += " ORDER BY q.quote_date DESC LIMIT 1"
+        with self.database.connection() as conn:
+            row = conn.execute(query, params).fetchone()
+        return self._quote_from_row(row) if row else None
+
     def append_audit(
         self,
         audit_id: str,
@@ -253,4 +331,30 @@ class PortfolioRepository:
             locked_shares=Decimal(row["locked_shares"]),
             total_shares=Decimal(row["total_shares"]),
             cost_basis=Decimal(row["cost_basis"]),
+        )
+
+    @staticmethod
+    def _quote_from_row(row) -> MarketQuote:
+        return MarketQuote(
+            product_code=row["product_code"],
+            quote_date=date.fromisoformat(row["quote_date"]),
+            unit_nav=Decimal(row["unit_nav"]) if row["unit_nav"] is not None else None,
+            cumulative_nav=(
+                Decimal(row["cumulative_nav"])
+                if row["cumulative_nav"] is not None
+                else None
+            ),
+            income_per_10k=(
+                Decimal(row["income_per_10k"])
+                if row["income_per_10k"] is not None
+                else None
+            ),
+            seven_day_annualized_rate=(
+                Decimal(row["seven_day_annualized_rate"])
+                if row["seven_day_annualized_rate"] is not None
+                else None
+            ),
+            source=row["source"],
+            source_timestamp=row["source_timestamp"] or "",
+            raw_hash=row["raw_hash"],
         )
