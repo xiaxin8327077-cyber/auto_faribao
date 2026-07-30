@@ -1652,6 +1652,8 @@ class CiticWealthProvider(WealthProvider):
         return self._candidate_from_item(data) if data else None
 
     def _record_from_item(self, item: dict, product: NavProduct) -> NavRecord:
+        # Legacy NavRecord parsing stays unchanged. New portfolio code must use
+        # CiticPortfolioProvider for product-type-aware cash-management fields.
         return NavRecord(
             provider=self.provider,
             code=str(item.get("prodCode") or product.code),
@@ -1743,6 +1745,8 @@ class NanyinWealthProvider(WealthProvider):
             return ProductCandidate(**{**candidate.__dict__, "nav_error": str(exc)[:120]})
 
     def _record_from_item(self, item: dict, product: NavProduct) -> NavRecord:
+        # Legacy NavRecord parsing stays unchanged. New portfolio code must use
+        # NanyinPortfolioProvider for product-type-aware cash-management fields.
         return NavRecord(
             provider=self.provider,
             code=str(item.get("productCode") or product.code),
