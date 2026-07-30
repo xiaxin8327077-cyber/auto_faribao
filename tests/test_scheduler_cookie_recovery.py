@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 
@@ -101,3 +102,28 @@ def test_scheduled_auth_error_still_starts_qr(monkeypatch):
 
     assert len(renewals) == 1
     assert renewals[0][0] is cfg
+
+
+def test_portfolio_due_true_on_slot_change_false_within_slot():
+    import src.scheduler as scheduler
+
+    # 18:15 属于 18:00 slot，与 last_slot 相同 → 不触发
+    assert scheduler._portfolio_due("2026-07-30T18:00", datetime(2026, 7, 30, 18, 15)) is False
+    # 18:30 属于 18:30 slot，与 last_slot 18:00 不同 → 触发
+    assert scheduler._portfolio_due("2026-07-30T18:00", datetime(2026, 7, 30, 18, 30)) is True
+    # 18:45 属于 18:30 slot，与 last_slot 相同 → 不触发
+    assert scheduler._portfolio_due("2026-07-30T18:30", datetime(2026, 7, 30, 18, 45)) is False
+
+
+def test_run_portfolio_cycle_noop_when_runtime_read_only(monkeypatch):
+    import src.portfolio_jobs as jobs
+
+    built = []
+    monkeypatch.setattr(jobs, "build_portfolio_jobs", lambda _runtime: built.append(True) or None)
+
+    from src.portfolio_jobs import run_portfolio_cycle
+
+    result = run_portfolio_cycle(SimpleNamespace(write_enabled=False), datetime(2026, 7, 30, 18, 0))
+
+    assert built == []
+    assert result == jobs.PortfolioCycleResult(0, 0, 0, 0)

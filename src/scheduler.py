@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 _scheduler_lock = threading.Lock()
 _runtime_cfg = None
+_portfolio_runtime = None
 
 
 def _get_times(cfg):
@@ -21,9 +22,10 @@ def _get_times(cfg):
     )
 
 
-def start(cfg):
-    global _runtime_cfg
+def start(cfg, portfolio_runtime=None):
+    global _runtime_cfg, _portfolio_runtime
     _runtime_cfg = cfg
+    _portfolio_runtime = portfolio_runtime
     thread = threading.Thread(
         target=_run, args=(cfg,), daemon=True, name="scheduler"
     )
@@ -38,6 +40,12 @@ def start(cfg):
         f"nav evening check at {cfg.nav_monitor.evening_push_hour:02d}:{cfg.nav_monitor.evening_push_minute:02d} on weekdays, "
         f"nav estimate at {cfg.nav_monitor.estimate_hour:02d}:{cfg.nav_monitor.estimate_minute:02d} on weekdays"
     )
+
+
+def update_portfolio_runtime(portfolio_runtime):
+    global _portfolio_runtime
+    with _scheduler_lock:
+        _portfolio_runtime = portfolio_runtime
 
 
 def update_runtime_config(cfg):
@@ -65,6 +73,7 @@ def _run(cfg):
     last_nav_evening_push_date = None
     last_nav_estimate_date = None
     last_calendar_update_year = None
+    last_portfolio_slot = None
 
     while True:
         with _scheduler_lock:
@@ -130,7 +139,24 @@ def _run(cfg):
             last_calendar_update_year = now.year
             _run_calendar_update(current_cfg)
 
+        # 组合行情同步、定投意图、pending结算、现金收益计提
+        # 每个30分钟slot只执行一次；业务写入通过数据库唯一键保证幂等
+        if _portfolio_due(last_portfolio_slot, now):
+            last_portfolio_slot = _portfolio_slot(now)
+            with _scheduler_lock:
+                runtime = _portfolio_runtime
+            if runtime is not None and getattr(runtime, "write_enabled", False):
+                _run_portfolio_cycle(runtime, now)
+
         time.sleep(30)
+
+
+def _portfolio_slot(now):
+    return now.strftime("%Y-%m-%dT%H:") + ("00" if now.minute < 30 else "30")
+
+
+def _portfolio_due(last_portfolio_slot, now):
+    return _portfolio_slot(now) != last_portfolio_slot
 
 
 def _is_workday(day):
@@ -567,6 +593,16 @@ def _run_cache_cleanup(cfg):
             _send_wechat_text(cfg.wechat, f"❌ 定时缓存清理失败\n{e}", getattr(cfg.wechat, "to_user", None))
         except Exception:
             pass
+
+
+def _run_portfolio_cycle(runtime, now):
+    """运行组合周期任务：行情同步 → 定投意图 → 结算 → 收益计提。"""
+    from src.portfolio_jobs import run_portfolio_cycle
+
+    try:
+        run_portfolio_cycle(runtime, now)
+    except Exception:
+        logger.error("Scheduler portfolio cycle failed", exc_info=True)
 
 
 def _run_calendar_update(cfg):
