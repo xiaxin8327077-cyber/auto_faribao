@@ -1,10 +1,26 @@
 from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import sqlite3
 
 
 SCHEMA_VERSION = 1
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "portfolio.db"
+
+
+def _is_canonical_decimal(value) -> int:
+    if value is None:
+        return 1
+    if not isinstance(value, str):
+        return 0
+    try:
+        decimal_value = Decimal(value)
+    except (InvalidOperation, ValueError, TypeError):
+        return 0
+    if not decimal_value.is_finite():
+        return 0
+    return int(format(decimal_value.normalize(), "f") == value)
+
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -118,6 +134,143 @@ CREATE INDEX IF NOT EXISTS idx_transactions_product_date
     ON transactions(product_id, trade_date, created_at);
 CREATE INDEX IF NOT EXISTS idx_transactions_status
     ON transactions(status, trade_date);
+CREATE TRIGGER IF NOT EXISTS validate_quote_decimals_on_insert
+BEFORE INSERT ON quotes
+WHEN NOT (
+    canonical_decimal(NEW.unit_nav)
+    AND canonical_decimal(NEW.cumulative_nav)
+    AND canonical_decimal(NEW.income_per_10k)
+    AND canonical_decimal(NEW.seven_day_annualized_rate)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'accounting decimals must be canonical finite text');
+END;
+CREATE TRIGGER IF NOT EXISTS validate_quote_decimals_on_update
+BEFORE UPDATE ON quotes
+WHEN NOT (
+    canonical_decimal(NEW.unit_nav)
+    AND canonical_decimal(NEW.cumulative_nav)
+    AND canonical_decimal(NEW.income_per_10k)
+    AND canonical_decimal(NEW.seven_day_annualized_rate)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'accounting decimals must be canonical finite text');
+END;
+CREATE TRIGGER IF NOT EXISTS validate_transaction_decimals_on_insert
+BEFORE INSERT ON transactions
+WHEN NOT (
+    canonical_decimal(NEW.amount)
+    AND canonical_decimal(NEW.shares)
+    AND canonical_decimal(NEW.fee_amount)
+    AND canonical_decimal(NEW.fee_rate)
+    AND canonical_decimal(NEW.confirmation_nav)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'accounting decimals must be canonical finite text');
+END;
+CREATE TRIGGER IF NOT EXISTS validate_transaction_decimals_on_update
+BEFORE UPDATE ON transactions
+WHEN NOT (
+    canonical_decimal(NEW.amount)
+    AND canonical_decimal(NEW.shares)
+    AND canonical_decimal(NEW.fee_amount)
+    AND canonical_decimal(NEW.fee_rate)
+    AND canonical_decimal(NEW.confirmation_nav)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'accounting decimals must be canonical finite text');
+END;
+CREATE TRIGGER IF NOT EXISTS validate_sip_plan_decimals_on_insert
+BEFORE INSERT ON sip_plans
+WHEN NOT (
+    canonical_decimal(NEW.daily_amount)
+    AND canonical_decimal(NEW.purchase_fee_rate)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'accounting decimals must be canonical finite text');
+END;
+CREATE TRIGGER IF NOT EXISTS validate_sip_plan_decimals_on_update
+BEFORE UPDATE ON sip_plans
+WHEN NOT (
+    canonical_decimal(NEW.daily_amount)
+    AND canonical_decimal(NEW.purchase_fee_rate)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'accounting decimals must be canonical finite text');
+END;
+CREATE TRIGGER IF NOT EXISTS validate_position_decimals_on_insert
+BEFORE INSERT ON positions
+WHEN NOT (
+    canonical_decimal(NEW.available_shares)
+    AND canonical_decimal(NEW.locked_shares)
+    AND canonical_decimal(NEW.total_shares)
+    AND canonical_decimal(NEW.cost_basis)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'accounting decimals must be canonical finite text');
+END;
+CREATE TRIGGER IF NOT EXISTS validate_position_decimals_on_update
+BEFORE UPDATE ON positions
+WHEN NOT (
+    canonical_decimal(NEW.available_shares)
+    AND canonical_decimal(NEW.locked_shares)
+    AND canonical_decimal(NEW.total_shares)
+    AND canonical_decimal(NEW.cost_basis)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'accounting decimals must be canonical finite text');
+END;
+CREATE TRIGGER IF NOT EXISTS validate_legacy_profit_decimal_on_insert
+BEFORE INSERT ON legacy_profit_history
+WHEN NOT canonical_decimal(NEW.amount)
+BEGIN
+    SELECT RAISE(ABORT, 'accounting decimals must be canonical finite text');
+END;
+CREATE TRIGGER IF NOT EXISTS validate_legacy_profit_decimal_on_update
+BEFORE UPDATE ON legacy_profit_history
+WHEN NOT canonical_decimal(NEW.amount)
+BEGIN
+    SELECT RAISE(ABORT, 'accounting decimals must be canonical finite text');
+END;
+CREATE TRIGGER IF NOT EXISTS prevent_confirmed_transaction_mutation
+BEFORE UPDATE ON transactions
+WHEN OLD.status = 'confirmed' AND NOT (
+    NEW.status = 'reversed'
+    AND OLD.reversed_at IS NULL
+    AND NEW.reversed_at IS NOT NULL
+    AND NEW.id IS OLD.id
+    AND NEW.product_id IS OLD.product_id
+    AND NEW.transaction_type IS OLD.transaction_type
+    AND NEW.trade_date IS OLD.trade_date
+    AND NEW.confirmation_date IS OLD.confirmation_date
+    AND NEW.amount IS OLD.amount
+    AND NEW.shares IS OLD.shares
+    AND NEW.fee_amount IS OLD.fee_amount
+    AND NEW.fee_rate IS OLD.fee_rate
+    AND NEW.confirmation_nav IS OLD.confirmation_nav
+    AND NEW.linked_transaction_id IS OLD.linked_transaction_id
+    AND NEW.plan_id IS OLD.plan_id
+    AND NEW.idempotency_key IS OLD.idempotency_key
+    AND NEW.note IS OLD.note
+    AND NEW.created_by IS OLD.created_by
+    AND NEW.created_at IS OLD.created_at
+    AND NEW.confirmed_at IS OLD.confirmed_at
+)
+BEGIN
+    SELECT RAISE(ABORT, 'confirmed transaction is immutable except for reversal');
+END;
+CREATE TRIGGER IF NOT EXISTS prevent_reversed_transaction_mutation
+BEFORE UPDATE ON transactions
+WHEN OLD.status = 'reversed'
+BEGIN
+    SELECT RAISE(ABORT, 'reversed transaction is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS prevent_final_transaction_delete
+BEFORE DELETE ON transactions
+WHEN OLD.status IN ('confirmed', 'reversed')
+BEGIN
+    SELECT RAISE(ABORT, 'confirmed and reversed transactions cannot be deleted');
+END;
 """
 
 
@@ -128,14 +281,17 @@ class PortfolioDatabase:
     def _open(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=15, isolation_level=None)
         conn.row_factory = sqlite3.Row
+        conn.create_function(
+            "canonical_decimal", 1, _is_canonical_decimal, deterministic=True
+        )
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 15000")
+        conn.execute("PRAGMA journal_mode = WAL")
         return conn
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._open() as conn:
-            conn.execute("PRAGMA journal_mode = WAL")
+        with self.connection() as conn:
             conn.executescript(SCHEMA_SQL)
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
