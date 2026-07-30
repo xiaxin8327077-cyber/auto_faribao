@@ -48,26 +48,35 @@ class PortfolioRepository:
     def __init__(self, database):
         self.database = database
 
-    def add_product(self, product: Product) -> Product:
+    def add_product(
+        self,
+        product: Product,
+        conn: sqlite3.Connection | None = None,
+    ) -> Product:
+        if conn is None:
+            try:
+                with self.database.transaction() as owned:
+                    return self.add_product(product, owned)
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("product already exists") from exc
         try:
-            with self.database.transaction() as conn:
-                conn.execute(
-                    """INSERT INTO products
-                       (id, provider, code, name, product_type, status,
-                        registration_code, currency, metadata_json)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        product.id,
-                        product.provider,
-                        product.code,
-                        product.name,
-                        product.product_type.value,
-                        product.status.value,
-                        product.registration_code,
-                        product.currency,
-                        product.metadata_json,
-                    ),
-                )
+            conn.execute(
+                """INSERT INTO products
+                   (id, provider, code, name, product_type, status,
+                    registration_code, currency, metadata_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    product.id,
+                    product.provider,
+                    product.code,
+                    product.name,
+                    product.product_type.value,
+                    product.status.value,
+                    product.registration_code,
+                    product.currency,
+                    product.metadata_json,
+                ),
+            )
         except sqlite3.IntegrityError as exc:
             raise ValueError("product already exists") from exc
         return product
@@ -95,13 +104,21 @@ class PortfolioRepository:
             raise ValueError("product not found")
         return product
 
-    def get_product_by_provider_code(self, provider: str, code: str) -> Product | None:
-        with self.database.connection() as conn:
-            row = conn.execute(
-                f"""SELECT {_PRODUCT_COLUMNS} FROM products
-                    WHERE provider = ? AND code = ?""",
-                (provider, code),
-            ).fetchone()
+    def get_product_by_provider_code(
+        self,
+        provider: str,
+        code: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> Product | None:
+        query = (
+            f"SELECT {_PRODUCT_COLUMNS} FROM products "
+            "WHERE provider = ? AND code = ?"
+        )
+        if conn is None:
+            with self.database.connection() as owned:
+                row = owned.execute(query, (provider, code)).fetchone()
+        else:
+            row = conn.execute(query, (provider, code)).fetchone()
         return self._product_from_row(row) if row else None
 
     def list_products(
@@ -313,39 +330,47 @@ class PortfolioRepository:
         return Position(product_id, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"))
 
     def upsert_quote(
-        self, product_id: str, quote: MarketQuote, fetched_at: str
+        self,
+        product_id: str,
+        quote: MarketQuote,
+        fetched_at: str,
+        conn: sqlite3.Connection | None = None,
     ) -> MarketQuote:
         quote_id = str(uuid5(NAMESPACE_URL, f"{product_id}:{quote.quote_date.isoformat()}"))
-        with self.database.transaction() as conn:
-            conn.execute(
-                """INSERT INTO quotes (
-                       id, product_id, quote_date, unit_nav, cumulative_nav,
-                       income_per_10k, seven_day_annualized_rate, source,
-                       source_timestamp, raw_hash, fetched_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(product_id, quote_date) DO UPDATE SET
-                       unit_nav = excluded.unit_nav,
-                       cumulative_nav = excluded.cumulative_nav,
-                       income_per_10k = excluded.income_per_10k,
-                       seven_day_annualized_rate = excluded.seven_day_annualized_rate,
-                       source = excluded.source,
-                       source_timestamp = excluded.source_timestamp,
-                       raw_hash = excluded.raw_hash,
-                       fetched_at = excluded.fetched_at""",
-                (
-                    quote_id,
-                    product_id,
-                    quote.quote_date.isoformat(),
-                    optional_decimal_text(quote.unit_nav),
-                    optional_decimal_text(quote.cumulative_nav),
-                    optional_decimal_text(quote.income_per_10k),
-                    optional_decimal_text(quote.seven_day_annualized_rate),
-                    quote.source,
-                    quote.source_timestamp or None,
-                    quote.raw_hash,
-                    fetched_at,
-                ),
-            )
+        if conn is None:
+            with self.database.transaction() as owned:
+                return self.upsert_quote(
+                    product_id, quote, fetched_at, conn=owned
+                )
+        conn.execute(
+            """INSERT INTO quotes (
+                   id, product_id, quote_date, unit_nav, cumulative_nav,
+                   income_per_10k, seven_day_annualized_rate, source,
+                   source_timestamp, raw_hash, fetched_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(product_id, quote_date) DO UPDATE SET
+                   unit_nav = excluded.unit_nav,
+                   cumulative_nav = excluded.cumulative_nav,
+                   income_per_10k = excluded.income_per_10k,
+                   seven_day_annualized_rate = excluded.seven_day_annualized_rate,
+                   source = excluded.source,
+                   source_timestamp = excluded.source_timestamp,
+                   raw_hash = excluded.raw_hash,
+                   fetched_at = excluded.fetched_at""",
+            (
+                quote_id,
+                product_id,
+                quote.quote_date.isoformat(),
+                optional_decimal_text(quote.unit_nav),
+                optional_decimal_text(quote.cumulative_nav),
+                optional_decimal_text(quote.income_per_10k),
+                optional_decimal_text(quote.seven_day_annualized_rate),
+                quote.source,
+                quote.source_timestamp or None,
+                quote.raw_hash,
+                fetched_at,
+            ),
+        )
         return quote
 
     def get_quote(
