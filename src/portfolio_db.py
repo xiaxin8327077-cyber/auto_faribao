@@ -22,6 +22,21 @@ def _is_canonical_decimal(value) -> int:
     return int(format(decimal_value.normalize(), "f") == value)
 
 
+def _is_decimal_negation(left, right) -> int:
+    if left is None or right is None:
+        return 0
+    try:
+        left_value = Decimal(left)
+        right_value = Decimal(right)
+    except (InvalidOperation, ValueError, TypeError):
+        return 0
+    return int(
+        left_value.is_finite()
+        and right_value.is_finite()
+        and left_value == -right_value
+    )
+
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -134,6 +149,14 @@ CREATE INDEX IF NOT EXISTS idx_transactions_product_date
     ON transactions(product_id, trade_date, created_at);
 CREATE INDEX IF NOT EXISTS idx_transactions_status
     ON transactions(status, trade_date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_cash_leg_per_transaction
+    ON transactions(linked_transaction_id)
+    WHERE linked_transaction_id IS NOT NULL
+      AND transaction_type IN ('cash_transfer_out', 'cash_transfer_in');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_reversal_child_per_transaction
+    ON transactions(linked_transaction_id)
+    WHERE linked_transaction_id IS NOT NULL
+      AND transaction_type = 'reversal';
 CREATE TRIGGER IF NOT EXISTS validate_quote_decimals_on_insert
 BEFORE INSERT ON quotes
 WHEN NOT (
@@ -259,6 +282,26 @@ WHEN OLD.status = 'confirmed' AND NOT (
 BEGIN
     SELECT RAISE(ABORT, 'confirmed transaction is immutable except for reversal');
 END;
+CREATE TRIGGER IF NOT EXISTS prevent_unbacked_confirmed_reversal
+BEFORE UPDATE ON transactions
+WHEN OLD.status = 'confirmed'
+    AND NEW.status = 'reversed'
+    AND NOT EXISTS (
+        SELECT 1
+        FROM transactions AS child
+        WHERE child.transaction_type = 'reversal'
+          AND child.status = 'confirmed'
+          AND child.linked_transaction_id = OLD.id
+          AND child.product_id = OLD.product_id
+          AND decimal_negation(child.shares, OLD.shares)
+          AND decimal_negation(child.amount, OLD.amount)
+    )
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'confirmed transaction reversal requires a valid child'
+    );
+END;
 CREATE TRIGGER IF NOT EXISTS prevent_reversed_transaction_mutation
 BEFORE UPDATE ON transactions
 WHEN OLD.status = 'reversed'
@@ -283,6 +326,9 @@ class PortfolioDatabase:
         conn.row_factory = sqlite3.Row
         conn.create_function(
             "canonical_decimal", 1, _is_canonical_decimal, deterministic=True
+        )
+        conn.create_function(
+            "decimal_negation", 2, _is_decimal_negation, deterministic=True
         )
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 15000")

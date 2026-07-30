@@ -156,9 +156,10 @@ def test_confirmed_transaction_is_immutable_except_for_controlled_reversal(tmp_p
         conn.execute(
             """INSERT INTO transactions
                (id, product_id, transaction_type, status, trade_date, amount,
-                idempotency_key, note, created_by, confirmed_at)
+                shares, idempotency_key, note, created_by, confirmed_at)
                VALUES ('t1', 'p1', 'manual_purchase', 'confirmed', '2026-01-01',
-                       '2', 'tx-1', 'original', 'test', '2026-01-02T00:00:00')"""
+                       '2', '2', 'tx-1', 'original', 'test',
+                       '2026-01-02T00:00:00')"""
         )
 
         with pytest.raises(sqlite3.IntegrityError):
@@ -166,6 +167,24 @@ def test_confirmed_transaction_is_immutable_except_for_controlled_reversal(tmp_p
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("DELETE FROM transactions WHERE id = 't1'")
 
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="confirmed transaction reversal requires a valid child",
+        ):
+            conn.execute(
+                """UPDATE transactions
+                   SET status = 'reversed',
+                       reversed_at = '2026-01-03T00:00:00'
+                   WHERE id = 't1'"""
+            )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, linked_transaction_id, idempotency_key, note,
+                created_by)
+               VALUES ('r1', 'p1', 'reversal', 'confirmed', '2026-01-01',
+                       '-2', '-2', 't1', 'reverse-1', 'correction', 'test')"""
+        )
         conn.execute(
             """UPDATE transactions
                SET status = 'reversed', reversed_at = '2026-01-03T00:00:00'
@@ -182,3 +201,167 @@ def test_confirmed_transaction_is_immutable_except_for_controlled_reversal(tmp_p
             conn.execute("UPDATE transactions SET note = 'changed' WHERE id = 't1'")
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("DELETE FROM transactions WHERE id = 't1'")
+
+
+def test_database_rejects_second_cash_leg_but_allows_reversal_child(tmp_path):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('fund', 'test', '001', '基金', 'public_fund', 'active')"""
+        )
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('cash', 'test', 'cash', '现金', 'cash_management',
+                       'active')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, idempotency_key, created_by)
+               VALUES ('main', 'fund', 'manual_purchase', 'confirmed',
+                       '2026-01-01', '100', '50', 'main-key', 'test')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, linked_transaction_id, idempotency_key, created_by)
+               VALUES ('cash-1', 'cash', 'cash_transfer_out', 'confirmed',
+                       '2026-01-01', '100', '100', 'main', 'cash-1-key',
+                       'test')"""
+        )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO transactions
+                   (id, product_id, transaction_type, status, trade_date,
+                    amount, shares, linked_transaction_id, idempotency_key,
+                    created_by)
+                   VALUES ('cash-2', 'cash', 'cash_transfer_out', 'confirmed',
+                           '2026-01-01', '100', '100', 'main', 'cash-2-key',
+                           'test')"""
+            )
+
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, linked_transaction_id, idempotency_key, created_by)
+               VALUES ('reversal-1', 'fund', 'reversal', 'confirmed',
+                       '2026-01-01', '-100', '-50', 'main', 'reverse-1-key',
+                       'test')"""
+        )
+
+
+def test_database_rejects_second_reversal_child_but_allows_cash_leg(tmp_path):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('fund', 'test', '001', '基金', 'public_fund', 'active')"""
+        )
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('cash', 'test', 'cash', '现金', 'cash_management',
+                       'active')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, idempotency_key, created_by)
+               VALUES ('main', 'fund', 'manual_purchase', 'confirmed',
+                       '2026-01-01', '100', '50', 'main-key', 'test')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, linked_transaction_id, idempotency_key, created_by)
+               VALUES ('cash-1', 'cash', 'cash_transfer_out', 'confirmed',
+                       '2026-01-01', '100', '100', 'main', 'cash-1-key',
+                       'test')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, linked_transaction_id, idempotency_key, created_by)
+               VALUES ('reversal-1', 'fund', 'reversal', 'confirmed',
+                       '2026-01-01', '-100', '-50', 'main', 'reverse-1-key',
+                       'test')"""
+        )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO transactions
+                   (id, product_id, transaction_type, status, trade_date,
+                    amount, shares, linked_transaction_id, idempotency_key,
+                    created_by)
+                   VALUES ('reversal-2', 'fund', 'reversal', 'confirmed',
+                           '2026-01-01', '-100', '-50', 'main',
+                           'reverse-2-key', 'test')"""
+            )
+
+
+@pytest.mark.parametrize(
+    ("child_product", "child_amount", "child_shares", "child_status"),
+    [
+        ("other", "-100", "-50", "confirmed"),
+        ("fund", "-99", "-50", "confirmed"),
+        ("fund", "-100", "-49", "confirmed"),
+        ("fund", "-100", "-50", "cancelled"),
+    ],
+)
+def test_database_rejects_reversed_status_without_exact_confirmed_child(
+    tmp_path,
+    child_product,
+    child_amount,
+    child_shares,
+    child_status,
+):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+
+    with db.connection() as conn:
+        for product_id in ("fund", "other"):
+            conn.execute(
+                """INSERT INTO products
+                   (id, provider, code, name, product_type, status)
+                   VALUES (?, 'test', ?, ?, 'public_fund', 'active')""",
+                (product_id, product_id, product_id),
+            )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, idempotency_key, created_by)
+               VALUES ('main', 'fund', 'manual_purchase', 'confirmed',
+                       '2026-01-01', '100', '50', 'main-key', 'test')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date, amount,
+                shares, linked_transaction_id, idempotency_key, created_by)
+               VALUES ('child', ?, 'reversal', ?, '2026-01-01', ?, ?, 'main',
+                       'child-key', 'test')""",
+            (
+                child_product,
+                child_status,
+                child_amount,
+                child_shares,
+            ),
+        )
+
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="confirmed transaction reversal requires a valid child",
+        ):
+            conn.execute(
+                """UPDATE transactions
+                   SET status = 'reversed', reversed_at = CURRENT_TIMESTAMP
+                   WHERE id = 'main'"""
+            )

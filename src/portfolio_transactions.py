@@ -38,6 +38,9 @@ class PortfolioTransactionService:
         fee_rate = self._fee_rate(fee_rate)
 
         with self.repository.database.transaction() as conn:
+            self._reject_operation_audit_collision(
+                idempotency_key, conn
+            )
             existing = self.repository.get_transaction_by_idempotency(
                 idempotency_key, conn=conn
             )
@@ -130,6 +133,9 @@ class PortfolioTransactionService:
         shares = self._positive_decimal(shares, "shares")
 
         with self.repository.database.transaction() as conn:
+            self._reject_operation_audit_collision(
+                idempotency_key, conn
+            )
             existing = self.repository.get_transaction_by_idempotency(
                 idempotency_key, conn=conn
             )
@@ -307,9 +313,10 @@ class PortfolioTransactionService:
                 transaction = self.repository.get_transaction_by_id(
                     transaction_id, conn=conn
                 )
-                if (
-                    transaction is None
-                    or transaction.status is not TransactionStatus.CANCELLED
+                if not self._matching_cancel_retry(
+                    transaction,
+                    retry,
+                    conn,
                 ):
                     raise ValueError(
                         "idempotency key conflicts with existing request"
@@ -345,7 +352,11 @@ class PortfolioTransactionService:
             self._rebuild_positions(affected_product_ids, conn)
             after = {
                 **request,
+                "linked_status": (
+                    TransactionStatus.CANCELLED.value if linked else ""
+                ),
                 "status": TransactionStatus.CANCELLED.value,
+                "target_status": TransactionStatus.CANCELLED.value,
                 "linked_transaction_id": linked.id if linked else "",
             }
             self._append_operation_audit(
@@ -411,78 +422,84 @@ class PortfolioTransactionService:
             )
             if transaction is None:
                 raise ValueError("transaction not found")
-            if transaction.status is not TransactionStatus.CONFIRMED:
-                raise ValueError("transaction is not confirmed")
-            if self._reversal_for(transaction.id, conn) is not None:
-                raise ValueError("transaction already has a reversal")
-            if transaction.shares is None or transaction.amount is None:
-                raise ValueError(
-                    "transaction cannot be reversed without shares and amount"
-                )
-
-            linked = (
-                self._require_consistent_link(transaction, conn)
-                if transaction.transaction_type
-                in {
-                    TransactionType.MANUAL_PURCHASE,
-                    TransactionType.MANUAL_REDEMPTION,
-                }
-                else None
-            )
-            before = self._transaction_audit_state(transaction, linked)
-            reversal = Transaction(
-                id=str(uuid4()),
-                product_id=transaction.product_id,
-                transaction_type=TransactionType.REVERSAL,
-                status=TransactionStatus.CONFIRMED,
-                trade_date=transaction.trade_date,
-                idempotency_key=idempotency_key,
-                amount=-transaction.amount,
-                shares=-transaction.shares,
-                confirmation_nav=transaction.confirmation_nav,
-                confirmation_date=transaction.confirmation_date,
-                linked_transaction_id=transaction.id,
-                note=reason,
-                created_by=actor,
-            )
-            self._mark_reversed(transaction.id, conn)
-            self.repository.create_transaction(reversal, conn)
-            affected_product_ids = {transaction.product_id}
-            linked_reversal = None
-            if linked is not None:
-                if linked.shares is None or linked.amount is None:
+            group = self._reversal_business_group(transaction, conn)
+            for member in group:
+                if member.status is not TransactionStatus.CONFIRMED:
+                    raise ValueError("transaction is not confirmed")
+                if member.shares is None or member.amount is None:
                     raise ValueError(
                         "transaction cannot be reversed without shares and amount"
                     )
-                if self._reversal_for(linked.id, conn) is not None:
+                if self._reversal_children(member.id, conn):
                     raise ValueError("transaction already has a reversal")
-                linked_reversal = Transaction(
+
+            before = {
+                "targets": [
+                    self._reversal_target_state(member, conn)
+                    for member in group
+                ]
+            }
+            reversals = []
+            for index, member in enumerate(group):
+                reversal = Transaction(
                     id=str(uuid4()),
-                    product_id=linked.product_id,
+                    product_id=member.product_id,
                     transaction_type=TransactionType.REVERSAL,
                     status=TransactionStatus.CONFIRMED,
-                    trade_date=linked.trade_date,
-                    idempotency_key=f"linked:{reversal.id}",
-                    amount=-linked.amount,
-                    shares=-linked.shares,
-                    confirmation_nav=linked.confirmation_nav,
-                    confirmation_date=linked.confirmation_date,
-                    linked_transaction_id=linked.id,
+                    trade_date=member.trade_date,
+                    idempotency_key=(
+                        idempotency_key
+                        if index == 0
+                        else f"linked:{reversals[0].id}"
+                    ),
+                    amount=-member.amount,
+                    shares=-member.shares,
+                    confirmation_nav=member.confirmation_nav,
+                    confirmation_date=member.confirmation_date,
+                    linked_transaction_id=member.id,
                     note=reason,
                     created_by=actor,
                 )
-                self._mark_reversed(linked.id, conn)
-                self.repository.create_transaction(linked_reversal, conn)
-                affected_product_ids.add(linked.product_id)
+                self.repository.create_transaction(reversal, conn)
+                reversals.append(reversal)
+            for member in group:
+                self._mark_reversed(member.id, conn)
 
+            affected_product_ids = {
+                member.product_id for member in group
+            }
             self._rebuild_positions(affected_product_ids, conn)
+            target_states = [
+                self._reversal_target_state(member, conn)
+                for member in group
+            ]
             after = {
                 **request,
-                "linked_reversal_id": (
-                    linked_reversal.id if linked_reversal else ""
+                "linked_reversed_at": (
+                    target_states[1]["reversed_at"]
+                    if len(target_states) == 2
+                    else ""
                 ),
-                "reversal_id": reversal.id,
+                "linked_reversal_id": (
+                    reversals[1].id if len(reversals) == 2 else ""
+                ),
+                "linked_status": (
+                    target_states[1]["status"]
+                    if len(target_states) == 2
+                    else ""
+                ),
+                "linked_transaction_id": (
+                    group[1].id if len(group) == 2 else ""
+                ),
+                "reversal_id": reversals[0].id,
+                "reversals": [
+                    self._reversal_audit_state(reversal)
+                    for reversal in reversals
+                ],
                 "status": TransactionStatus.REVERSED.value,
+                "target_reversed_at": target_states[0]["reversed_at"],
+                "target_status": target_states[0]["status"],
+                "targets": target_states,
             }
             self._append_operation_audit(
                 idempotency_key,
@@ -494,7 +511,7 @@ class PortfolioTransactionService:
                 actor,
                 conn,
             )
-            return reversal
+            return reversals[0]
 
     def adjust_holding(
         self,
@@ -555,8 +572,16 @@ class PortfolioTransactionService:
                 idempotency_key, conn
             )
 
-            self.repository.require_product(product_id, conn=conn)
+            product = self.repository.require_product(product_id, conn=conn)
             current = self.projector._calculate(product_id, conn)
+            difference = actual_shares - current.total_shares
+            amount, cost_rule, unit_cost = self._adjustment_cost(
+                product,
+                current,
+                difference,
+                effective_date,
+                conn,
+            )
             adjustment = Transaction(
                 id=str(uuid4()),
                 product_id=product_id,
@@ -564,9 +589,10 @@ class PortfolioTransactionService:
                 status=TransactionStatus.CONFIRMED,
                 trade_date=effective_date,
                 idempotency_key=idempotency_key,
-                amount=ZERO,
-                shares=actual_shares - current.total_shares,
+                amount=amount,
+                shares=difference,
                 confirmation_date=effective_date,
+                confirmation_nav=unit_cost,
                 note=reason,
                 created_by=actor,
             )
@@ -586,14 +612,69 @@ class PortfolioTransactionService:
                 {
                     **request,
                     "adjustment_id": adjustment.id,
+                    "amount": self._decimal_audit_text(adjustment.amount),
+                    "cost_basis_rule": cost_rule,
                     "difference": self._decimal_audit_text(
                         adjustment.shares
+                    ),
+                    "unit_cost": (
+                        self._decimal_audit_text(unit_cost)
+                        if unit_cost is not None
+                        else ""
                     ),
                 },
                 actor,
                 conn,
             )
             return adjustment
+
+    def _adjustment_cost(
+        self,
+        product,
+        current,
+        difference,
+        effective_date,
+        conn,
+    ):
+        if difference <= ZERO:
+            return (
+                ZERO,
+                (
+                    "zero_difference"
+                    if difference == ZERO
+                    else "average_cost_reduction"
+                ),
+                None,
+            )
+        if product.product_type is ProductType.CASH_MANAGEMENT:
+            return difference, "cash_unit_price", ONE
+        if current.total_shares > ZERO:
+            if current.cost_basis <= ZERO:
+                raise ValueError(
+                    "positive adjustment requires a positive average cost"
+                )
+            unit_cost = current.cost_basis / current.total_shares
+            return (
+                difference * unit_cost,
+                "preserve_average_cost",
+                unit_cost,
+            )
+        quote = self.repository.get_quote(
+            product.id,
+            effective_date,
+            conn=conn,
+        )
+        if quote is None or quote.unit_nav is None:
+            raise ValueError(
+                "positive adjustment from zero requires an exact quote"
+            )
+        try:
+            unit_cost = self._quote_nav(quote)
+        except ValueError as exc:
+            raise ValueError(
+                "positive adjustment from zero requires an exact quote"
+            ) from exc
+        return difference * unit_cost, "exact_quote", unit_cost
 
     @staticmethod
     def _nonempty_text(value, name):
@@ -657,6 +738,15 @@ class PortfolioTransactionService:
                 "idempotency key conflicts with existing request"
             )
 
+    def _reject_operation_audit_collision(self, idempotency_key, conn):
+        if conn.execute(
+            "SELECT 1 FROM audit_logs WHERE id = ?",
+            (self._operation_audit_id(idempotency_key),),
+        ).fetchone():
+            raise ValueError(
+                "idempotency key conflicts with existing request"
+            )
+
     def _append_operation_audit(
         self,
         idempotency_key,
@@ -708,18 +798,159 @@ class PortfolioTransactionService:
             (transaction_id,),
         )
 
-    def _reversal_for(self, transaction_id, conn):
-        return next(
-            (
-                candidate
-                for candidate in self.repository.list_transactions(conn=conn)
+    def _reversal_children(self, transaction_id, conn):
+        return [
+            candidate
+            for candidate in self.repository.list_transactions(conn=conn)
+            if (
+                candidate.transaction_type is TransactionType.REVERSAL
+                and candidate.linked_transaction_id == transaction_id
+            )
+        ]
+
+    def _reversal_business_group(self, transaction, conn):
+        if transaction.transaction_type in {
+            TransactionType.MANUAL_PURCHASE,
+            TransactionType.MANUAL_REDEMPTION,
+        }:
+            linked = self._require_consistent_link(transaction, conn)
+            return [transaction, linked] if linked is not None else [transaction]
+        if transaction.transaction_type in {
+            TransactionType.CASH_TRANSFER_OUT,
+            TransactionType.CASH_TRANSFER_IN,
+        }:
+            return [
+                transaction,
+                self._manual_sibling_for_cash(transaction, conn),
+            ]
+        if transaction.transaction_type is not TransactionType.REVERSAL:
+            return [transaction]
+        try:
+            chain = self._validated_reversal_chain(transaction, conn)
+            sibling_root = self._business_sibling_for_root(chain[0], conn)
+            if sibling_root is None:
+                return [transaction]
+            sibling = sibling_root
+            for target_node in chain[1:]:
+                children = self._reversal_children(sibling.id, conn)
+                if len(children) != 1:
+                    raise ValueError("inconsistent reversal group")
+                sibling_child = children[0]
+                self._require_exact_reversal_edge(sibling_child, sibling)
                 if (
-                    candidate.transaction_type is TransactionType.REVERSAL
-                    and candidate.linked_transaction_id == transaction_id
-                )
-            ),
-            None,
+                    sibling_child.status is not target_node.status
+                    or sibling_child.note != target_node.note
+                    or sibling_child.created_by != target_node.created_by
+                ):
+                    raise ValueError("inconsistent reversal group")
+                sibling = sibling_child
+            return [transaction, sibling]
+        except ValueError as exc:
+            if str(exc) == "inconsistent reversal group":
+                raise
+            raise ValueError("inconsistent reversal group") from exc
+
+    def _validated_reversal_chain(self, transaction, conn):
+        chain = [transaction]
+        current = transaction
+        seen = set()
+        while current.transaction_type is TransactionType.REVERSAL:
+            if current.id in seen or not current.linked_transaction_id:
+                raise ValueError("inconsistent reversal group")
+            seen.add(current.id)
+            parent = self.repository.get_transaction_by_id(
+                current.linked_transaction_id, conn=conn
+            )
+            if parent is None:
+                raise ValueError("inconsistent reversal group")
+            children = self._reversal_children(parent.id, conn)
+            if len(children) != 1 or children[0].id != current.id:
+                raise ValueError("inconsistent reversal group")
+            self._require_exact_reversal_edge(current, parent)
+            if parent.status is not TransactionStatus.REVERSED:
+                raise ValueError("inconsistent reversal group")
+            chain.append(parent)
+            current = parent
+        chain.reverse()
+        return chain
+
+    @staticmethod
+    def _require_exact_reversal_edge(child, parent):
+        if (
+            child.product_id != parent.product_id
+            or child.shares is None
+            or parent.shares is None
+            or child.amount is None
+            or parent.amount is None
+            or child.shares != -parent.shares
+            or child.amount != -parent.amount
+        ):
+            raise ValueError("inconsistent reversal group")
+
+    def _business_sibling_for_root(self, root, conn):
+        if root.transaction_type in {
+            TransactionType.MANUAL_PURCHASE,
+            TransactionType.MANUAL_REDEMPTION,
+        }:
+            return self._require_consistent_link(root, conn)
+        if root.transaction_type in {
+            TransactionType.CASH_TRANSFER_OUT,
+            TransactionType.CASH_TRANSFER_IN,
+        }:
+            return self._manual_sibling_for_cash(root, conn)
+        return None
+
+    def _manual_sibling_for_cash(self, cash_transaction, conn):
+        if not cash_transaction.linked_transaction_id:
+            raise ValueError("inconsistent reversal group")
+        manual = self.repository.get_transaction_by_id(
+            cash_transaction.linked_transaction_id, conn=conn
         )
+        if (
+            manual is None
+            or manual.transaction_type
+            not in {
+                TransactionType.MANUAL_PURCHASE,
+                TransactionType.MANUAL_REDEMPTION,
+            }
+        ):
+            raise ValueError("inconsistent reversal group")
+        try:
+            linked = self._require_consistent_link(manual, conn)
+        except ValueError as exc:
+            raise ValueError("inconsistent reversal group") from exc
+        if linked is None or linked.id != cash_transaction.id:
+            raise ValueError("inconsistent reversal group")
+        return manual
+
+    @staticmethod
+    def _reversal_audit_state(reversal):
+        return {
+            "amount": PortfolioTransactionService._decimal_audit_text(
+                reversal.amount
+            ),
+            "id": reversal.id,
+            "original_id": reversal.linked_transaction_id,
+            "product_id": reversal.product_id,
+            "shares": PortfolioTransactionService._decimal_audit_text(
+                reversal.shares
+            ),
+            "status": reversal.status.value,
+        }
+
+    @staticmethod
+    def _reversal_target_state(transaction, conn):
+        row = conn.execute(
+            """SELECT status, reversed_at
+               FROM transactions WHERE id = ?""",
+            (transaction.id,),
+        ).fetchone()
+        return {
+            "id": transaction.id,
+            "product_id": transaction.product_id,
+            "reversed_at": row["reversed_at"] or "",
+            "status": row["status"],
+        }
 
     def _matching_reversal_retry(
         self,
@@ -733,19 +964,78 @@ class PortfolioTransactionService:
         original = self.repository.get_transaction_by_id(
             transaction_id, conn=conn
         )
+        audit_reversals = audit_payload.get("reversals")
+        if (
+            reversal is None
+            or reversal.id != audit_payload.get("reversal_id")
+            or original is None
+            or original.status is not TransactionStatus.REVERSED
+            or not isinstance(audit_reversals, list)
+            or not audit_reversals
+        ):
+            return False
+        try:
+            parent_group = self._reversal_business_group(original, conn)
+        except ValueError:
+            return False
+        if {
+            member.id for member in parent_group
+        } != {
+            entry.get("original_id") for entry in audit_reversals
+        }:
+            return False
+        for entry in audit_reversals:
+            candidate = self.repository.get_transaction_by_id(
+                entry.get("id", ""), conn=conn
+            )
+            parent = self.repository.get_transaction_by_id(
+                entry.get("original_id", ""), conn=conn
+            )
+            if (
+                candidate is None
+                or parent is None
+                or candidate.transaction_type is not TransactionType.REVERSAL
+                or candidate.note != reason
+                or candidate.created_by != actor
+                or candidate.product_id != entry.get("product_id")
+                or candidate.linked_transaction_id != parent.id
+                or candidate.shares is None
+                or candidate.amount is None
+                or self._decimal_audit_text(candidate.shares)
+                != entry.get("shares")
+                or self._decimal_audit_text(candidate.amount)
+                != entry.get("amount")
+                or parent.status is not TransactionStatus.REVERSED
+                or len(self._reversal_children(parent.id, conn)) != 1
+            ):
+                return False
+            try:
+                self._require_exact_reversal_edge(candidate, parent)
+            except ValueError:
+                return False
+        return True
+
+    def _matching_cancel_retry(self, transaction, audit_payload, conn):
+        if (
+            transaction is None
+            or transaction.status is not TransactionStatus.CANCELLED
+            or audit_payload.get("target_status")
+            != TransactionStatus.CANCELLED.value
+        ):
+            return False
+        linked_id = audit_payload.get("linked_transaction_id", "")
+        if not linked_id:
+            return audit_payload.get("linked_status", "") == ""
+        linked = self.repository.get_transaction_by_id(
+            linked_id, conn=conn
+        )
         return (
-            reversal is not None
-            and reversal.id == audit_payload.get("reversal_id")
-            and reversal.transaction_type is TransactionType.REVERSAL
-            and reversal.linked_transaction_id == transaction_id
-            and reversal.note == reason
-            and reversal.created_by == actor
-            and original is not None
-            and original.status is TransactionStatus.REVERSED
-            and original.shares is not None
-            and original.amount is not None
-            and reversal.shares == -original.shares
-            and reversal.amount == -original.amount
+            transaction.linked_transaction_id == linked_id
+            and linked is not None
+            and linked.status is TransactionStatus.CANCELLED
+            and linked.linked_transaction_id == transaction.id
+            and audit_payload.get("linked_status")
+            == TransactionStatus.CANCELLED.value
         )
 
     @staticmethod
@@ -762,11 +1052,38 @@ class PortfolioTransactionService:
             and adjustment.id == audit_payload.get("adjustment_id")
             and adjustment.transaction_type
             is TransactionType.HOLDING_ADJUSTMENT
-            and adjustment.status is TransactionStatus.CONFIRMED
+            and adjustment.status
+            in {
+                TransactionStatus.CONFIRMED,
+                TransactionStatus.REVERSED,
+            }
             and adjustment.product_id == product_id
             and adjustment.trade_date == effective_date
             and adjustment.note == reason
             and adjustment.created_by == actor
+            and adjustment.shares is not None
+            and adjustment.amount is not None
+            and PortfolioTransactionService._decimal_audit_text(
+                adjustment.shares
+            )
+            == audit_payload.get("difference")
+            and PortfolioTransactionService._decimal_audit_text(
+                adjustment.amount
+            )
+            == audit_payload.get("amount")
+            and (
+                (
+                    audit_payload.get("unit_cost", "") == ""
+                    and adjustment.confirmation_nav is None
+                )
+                or (
+                    adjustment.confirmation_nav is not None
+                    and PortfolioTransactionService._decimal_audit_text(
+                        adjustment.confirmation_nav
+                    )
+                    == audit_payload.get("unit_cost")
+                )
+            )
         )
 
     def _require_matching_purchase_request(
@@ -881,20 +1198,20 @@ class PortfolioTransactionService:
             TransactionType.MANUAL_REDEMPTION,
         }:
             raise ValueError("inconsistent linked transaction")
+        reverse_cash_links = [
+            candidate
+            for candidate in self.repository.list_transactions(conn=conn)
+            if (
+                candidate.linked_transaction_id == transaction.id
+                and candidate.transaction_type
+                in {
+                    TransactionType.CASH_TRANSFER_OUT,
+                    TransactionType.CASH_TRANSFER_IN,
+                }
+            )
+        ]
         if not transaction.linked_transaction_id:
-            orphaned_cash_links = [
-                candidate
-                for candidate in self.repository.list_transactions(conn=conn)
-                if (
-                    candidate.linked_transaction_id == transaction.id
-                    and candidate.transaction_type
-                    in {
-                        TransactionType.CASH_TRANSFER_OUT,
-                        TransactionType.CASH_TRANSFER_IN,
-                    }
-                )
-            ]
-            if orphaned_cash_links:
+            if reverse_cash_links:
                 raise ValueError("inconsistent linked transaction")
             return None
         linked = self.repository.get_transaction_by_id(
@@ -907,6 +1224,8 @@ class PortfolioTransactionService:
         )
         if (
             linked is None
+            or len(reverse_cash_links) != 1
+            or reverse_cash_links[0].id != linked.id
             or linked.linked_transaction_id != transaction.id
             or linked.transaction_type is not expected_type
             or linked.status is not transaction.status
@@ -955,7 +1274,10 @@ class PortfolioTransactionService:
                 and linked.confirmation_nav is None
                 and linked.confirmation_date is None
             )
-        if transaction.status is not TransactionStatus.CONFIRMED:
+        if transaction.status not in {
+            TransactionStatus.CONFIRMED,
+            TransactionStatus.REVERSED,
+        }:
             return False
         if (
             not cls._is_finite_positive(transaction.confirmation_nav)
@@ -1001,7 +1323,10 @@ class PortfolioTransactionService:
                 and linked.confirmation_nav is None
                 and linked.confirmation_date is None
             )
-        if transaction.status is not TransactionStatus.CONFIRMED:
+        if transaction.status not in {
+            TransactionStatus.CONFIRMED,
+            TransactionStatus.REVERSED,
+        }:
             return False
         if (
             not cls._is_finite_positive(transaction.amount)

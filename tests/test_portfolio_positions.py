@@ -680,6 +680,10 @@ def test_reversal_rejects_inconsistent_pair_statuses(
 
 def test_reversal_rejects_duplicate_children_for_one_original(repo):
     repo.add_product(product("fund"))
+    with repo.database.connection() as conn:
+        conn.execute(
+            "DROP INDEX idx_one_reversal_child_per_transaction"
+        )
     repo.create_transaction(
         tx(
             "original",
