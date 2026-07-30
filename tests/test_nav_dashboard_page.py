@@ -52,6 +52,52 @@ def test_read_only_state_disables_dialog_writes_and_load_failure_closes_writes()
     assert "if (!state.writeEnabled) return;" in html
 
 
+def test_preview_and_submit_share_one_idempotency_key_from_the_first_request():
+    html = _read_page()
+    assert "const idempotencyKey = newIdempotencyKey();" in html
+    assert "requestJson(previewPath, payload, idempotencyKey)" in html
+    assert (
+        "state.pendingAction = {submitPath, payload: submitPayload, "
+        "idempotencyKey, originDialog"
+    ) in html
+
+
+def test_reverse_collects_a_nonempty_reason_before_preview():
+    html = _read_page()
+    assert 'id="reverseReasonField"' in html
+    assert 'id="reverseReason"' in html
+    assert "function openReverse(transactionId)" in html
+    assert "if (!reason)" in html
+    assert "payload: {operation: 'reverse', transaction_id: action.transactionId, reason}" in html
+    assert "if (operation === 'reverse') openReverse(control.dataset.transactionId);" in html
+
+
+def test_sip_save_is_draft_and_activation_is_an_explicit_operation():
+    html = _read_page()
+    assert "activate: false" in html
+    assert "data-write-operation=\"sip-activate\"" in html
+    assert "if (existingStatus !== 'draft')" in html
+    assert "sip_id: form.dataset.sipId || undefined" in html
+
+
+def test_product_create_preserves_preview_identity_for_submit():
+    html = _read_page()
+    assert "const previewIdentity = preview?.preview?.product" in html
+    assert "submitPayload = {...payload, ...previewIdentity}" in html
+    assert "capturePreviewIdentity: true" in html
+    assert "registration_code" in html
+
+
+def test_disable_payload_and_transaction_note_are_preserved():
+    html = _read_page()
+    assert "payload: {operation: 'disable', product_id: control.dataset.productId}" in html
+    assert '<textarea name="note" maxlength="300"></textarea>' in html
+    trade_submit = html[html.index("$('tradeForm').addEventListener"):html.index(
+        "$('adjustmentForm').addEventListener"
+    )]
+    assert "payload: formPayload(event.currentTarget)" in trade_submit
+
+
 def test_holding_css_rule_exists():
     page = _read_page()
     assert ".holding" in page

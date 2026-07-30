@@ -441,6 +441,7 @@
   <dialog class="management-dialog" id="confirmDialog" aria-labelledby="confirmDialogTitle">
     <header class="dialog-head"><h2 id="confirmDialogTitle">确认提交</h2><button class="icon-button" type="button" data-close-dialog="confirmDialog" aria-label="关闭">×</button></header><div class="dialog-body">
       <div class="preview-result" id="confirmPreview">正在生成预览...</div><div class="confirm-status" id="confirmStatus" role="status"></div>
+      <div id="reverseReasonField" hidden><label class="form-field">冲正原因<textarea id="reverseReason" name="reason" required maxlength="300"></textarea></label></div>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="confirmDialog">返回</button><button class="action-button" id="confirmSubmitButton" type="button">确认提交</button></div>
     </div>
   </dialog>
@@ -641,9 +642,13 @@
       $('sipList').innerHTML = rows.length ? rows.map(row => {
         const id = rowValue(row, 'id', 'sip_id');
         const status = String(rowValue(row, 'status', 'state') || 'draft').toLowerCase();
-        const controls = status === 'paused'
-          ? `<button class="row-action" type="button" data-write-operation="sip-resume" data-sip-id="${esc(id)}">恢复</button>`
-          : `<button class="row-action" type="button" data-write-operation="sip-pause" data-sip-id="${esc(id)}">暂停</button>`;
+        const controls = status === 'draft'
+          ? `<button class="row-action" type="button" data-write-operation="sip-activate" data-sip-id="${esc(id)}">激活</button>`
+          : status === 'paused'
+            ? `<button class="row-action" type="button" data-write-operation="sip-resume" data-sip-id="${esc(id)}">恢复</button>`
+            : status === 'active'
+              ? `<button class="row-action" type="button" data-write-operation="sip-pause" data-sip-id="${esc(id)}">暂停</button>`
+              : '';
         const edit = status === 'draft' ? `<button class="row-action" type="button" data-write-operation="sip-edit" data-sip-id="${esc(id)}">编辑草稿</button>` : '';
         return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(status)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${esc(rowValue(row, 'amount', 'daily_amount') || '--')} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'fee_rate', 'purchase_fee_rate') || '--')}</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}</div></article>`;
       }).join('') : '<div class="empty">暂无定投计划。</div>';
@@ -906,13 +911,23 @@
       const fields = Object.entries(details).filter(([key, value]) => !['message', 'summary', 'ok'].includes(key) && typeof value !== 'object');
       return `<p>${esc(message)}</p>${fields.map(([key, value]) => `<p><strong>${esc(key)}</strong>：${esc(value)}</p>`).join('')}`;
     }
-    async function previewAction({previewPath, submitPath, payload, originDialog}) {
+    async function previewAction({previewPath, submitPath, payload, originDialog, capturePreviewIdentity = false}) {
       if (!state.writeEnabled) return;
+      const idempotencyKey = newIdempotencyKey();
+      let submitPayload = payload;
+      state.pendingAction = {submitPath, payload: submitPayload, idempotencyKey, originDialog};
       try {
-        const preview = await requestJson(previewPath, payload);
-        state.pendingAction = {submitPath, payload, idempotencyKey: newIdempotencyKey(), originDialog};
+        const preview = await requestJson(previewPath, payload, idempotencyKey);
+        const previewIdentity = preview?.preview?.product || null;
+        if (capturePreviewIdentity) {
+          if (!previewIdentity?.registration_code) throw new Error('产品预览未返回完整身份信息');
+          submitPayload = {...payload, ...previewIdentity};
+        }
+        state.pendingAction = {submitPath, payload: submitPayload, idempotencyKey, originDialog, previewIdentity};
         $('confirmPreview').innerHTML = previewHtml(preview);
         $('confirmStatus').textContent = '';
+        $('reverseReasonField').hidden = true;
+        $('confirmSubmitButton').textContent = '确认提交';
         closeDialog(originDialog);
         dialogOpen('confirmDialog');
       } catch (error) {
@@ -922,6 +937,21 @@
     async function submitPendingAction() {
       const action = state.pendingAction;
       if (!action || !state.writeEnabled) return;
+      if (action.type === 'reverse-reason') {
+        const reason = $('reverseReason').value.trim();
+        if (!reason) {
+          $('confirmStatus').textContent = '请填写非空的冲正原因。';
+          $('reverseReason').focus();
+          return;
+        }
+        await previewAction({
+          previewPath: '/api/portfolio/transactions/preview',
+          submitPath: '/api/portfolio/transactions',
+          payload: {operation: 'reverse', transaction_id: action.transactionId, reason},
+          originDialog: 'confirmDialog',
+        });
+        return;
+      }
       const button = $('confirmSubmitButton');
       button.disabled = true;
       $('confirmStatus').textContent = '正在提交...';
@@ -952,6 +982,11 @@
       const form = $('sipForm');
       form.reset();
       if (existing) {
+        const existingStatus = String(rowValue(existing, 'status', 'state') || '').toLowerCase();
+        if (existingStatus !== 'draft') {
+          $('statusText').textContent = '只有草稿状态的定投计划可以编辑。';
+          return;
+        }
         form.product_id.value = rowValue(existing, 'product_id');
         form.amount.value = rowValue(existing, 'amount', 'daily_amount');
         form.source.value = rowValue(existing, 'source', 'fund_source');
@@ -966,9 +1001,20 @@
       $('adjustmentProductId').value = productId;
       dialogOpen('adjustmentDialog');
     }
+    function openReverse(transactionId) {
+      if (!state.writeEnabled) return;
+      state.pendingAction = {type: 'reverse-reason', transactionId};
+      $('confirmPreview').innerHTML = '<p>冲正会创建反向流水，请先填写原因再预览影响。</p>';
+      $('confirmStatus').textContent = '';
+      $('reverseReason').value = '';
+      $('reverseReasonField').hidden = false;
+      $('confirmSubmitButton').textContent = '预览冲正';
+      dialogOpen('confirmDialog');
+      $('reverseReason').focus();
+    }
     async function simpleOperation(operation, id) {
       if (!state.writeEnabled) return;
-      const isSipOperation = operation === 'sip-pause' || operation === 'sip-resume';
+      const isSipOperation = operation === 'sip-activate' || operation === 'sip-pause' || operation === 'sip-resume';
       await previewAction({
         previewPath: isSipOperation ? '/api/portfolio/sip-plans/preview' : '/api/portfolio/transactions/preview',
         submitPath: isSipOperation ? '/api/portfolio/sip-plans' : '/api/portfolio/transactions',
@@ -1004,9 +1050,10 @@
       const operation = control.dataset.writeOperation;
       if (operation === 'trade') openTrade(control.dataset.productId);
       if (operation === 'adjust') openAdjustment(control.dataset.productId);
-      if (operation === 'cancel' || operation === 'reverse') simpleOperation(operation, control.dataset.transactionId);
+      if (operation === 'cancel') simpleOperation(operation, control.dataset.transactionId);
+      if (operation === 'reverse') openReverse(control.dataset.transactionId);
       if (operation === 'sip-edit') openSip(control.dataset.sipId);
-      if (operation === 'sip-pause' || operation === 'sip-resume') simpleOperation(operation, control.dataset.sipId);
+      if (operation === 'sip-activate' || operation === 'sip-pause' || operation === 'sip-resume') simpleOperation(operation, control.dataset.sipId);
       if (operation === 'disable-product') previewAction({
         previewPath: '/api/portfolio/products/preview', submitPath: '/api/portfolio/products',
         payload: {operation: 'disable', product_id: control.dataset.productId}, originDialog: 'confirmDialog',
@@ -1020,7 +1067,7 @@
     });
     $('productForm').addEventListener('submit', event => {
       event.preventDefault();
-      previewAction({previewPath: '/api/portfolio/products/preview', submitPath: '/api/portfolio/products', payload: formPayload(event.currentTarget), originDialog: 'productDialog'});
+      previewAction({previewPath: '/api/portfolio/products/preview', submitPath: '/api/portfolio/products', payload: formPayload(event.currentTarget), originDialog: 'productDialog', capturePreviewIdentity: true});
     });
     $('tradeForm').addEventListener('submit', event => {
       event.preventDefault();
@@ -1034,7 +1081,7 @@
       event.preventDefault();
       if (!state.writeEnabled) return;
       const form = event.currentTarget;
-      const payload = {...formPayload(form), sip_id: form.dataset.sipId || undefined};
+      const payload = {...formPayload(form), activate: false, sip_id: form.dataset.sipId || undefined};
       previewAction({
         previewPath: '/api/portfolio/sip-plans/preview', submitPath: '/api/portfolio/sip-plans',
         payload, originDialog: 'sipDialog',
