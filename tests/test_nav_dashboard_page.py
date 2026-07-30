@@ -8,6 +8,26 @@ def _read_page() -> str:
     return PAGE_PATH.read_text(encoding="utf-8")
 
 
+def test_page_has_four_management_tabs_and_quick_trade():
+    html = _read_page()
+    for element_id in (
+        "overviewTab", "positionsTab", "transactionsTab", "sipTab",
+        "overviewPanel", "positionsPanel", "transactionsPanel", "sipPanel",
+        "quickTradeButton", "productDialog", "tradeDialog",
+        "confirmDialog", "sipDialog", "adjustmentDialog",
+    ):
+        assert f'id="{element_id}"' in html
+
+
+def test_write_fetch_uses_private_token_idempotency_and_custom_header():
+    html = _read_page()
+    assert '"X-Nav-Dashboard-Key": token' in html
+    assert '"X-Portfolio-Request": "1"' in html
+    assert '"Idempotency-Key": idempotencyKey' in html
+    assert "/api/portfolio/transactions/preview" in html
+    assert "/api/portfolio/sip-plans/preview" in html
+
+
 def test_holding_css_rule_exists():
     page = _read_page()
     assert ".holding" in page

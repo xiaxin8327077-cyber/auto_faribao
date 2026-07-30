@@ -243,6 +243,45 @@
     .daily-profit-amount { font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; }
     .daily-profit-amount.positive { color: var(--positive); }
     .daily-profit-amount.negative { color: var(--negative); }
+    .management-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 0 -2px 14px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 5px 16px rgba(38, 72, 112, .06); }
+    .management-tab { min-height: 38px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 800; cursor: pointer; }
+    .management-tab[aria-selected="true"] { background: var(--blue); color: #fff; box-shadow: 0 3px 9px rgba(31, 111, 209, .28); }
+    .management-tab:focus-visible, .action-button:focus-visible { outline: 3px solid rgba(31, 111, 209, .24); outline-offset: 2px; }
+    .management-panel[hidden] { display: none; }
+    .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 2px 0; }
+    .panel-heading h2 { font-size: 20px; }
+    .action-button { min-height: 36px; padding: 0 12px; border: 1px solid var(--blue); border-radius: 7px; background: var(--blue); color: #fff; font-size: 13px; font-weight: 800; cursor: pointer; }
+    .action-button.secondary { border-color: var(--line); background: var(--panel); color: var(--blue); }
+    .action-button.danger { border-color: #c73737; background: #c73737; }
+    .action-button:disabled, .row-action:disabled { cursor: not-allowed; opacity: .48; }
+    .write-notice { margin: 12px 0 2px; padding: 10px 12px; border: 1px solid #f0cd9b; border-radius: 8px; background: #fff8eb; color: #9b6100; font-size: 12px; line-height: 1.45; }
+    .manage-list { display: grid; gap: 10px; margin-top: 12px; }
+    .manage-card { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); box-shadow: 0 5px 16px rgba(38, 72, 112, .06); }
+    .manage-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .manage-name { min-width: 0; font-size: 15px; font-weight: 850; line-height: 1.4; }
+    .manage-code, .manage-meta { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .manage-value { flex: 0 0 auto; color: var(--blue); font-size: 15px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
+    .manage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+    .manage-stat { padding: 9px; border-radius: 7px; background: var(--bg); }
+    .manage-stat span { display: block; color: var(--muted); font-size: 10px; }
+    .manage-stat b { display: block; margin-top: 4px; overflow: hidden; font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+    .row-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+    .row-action { min-height: 31px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--blue); font-size: 12px; font-weight: 750; cursor: pointer; }
+    .transaction-filters { display: flex; overflow-x: auto; gap: 7px; margin-top: 12px; padding-bottom: 2px; scrollbar-width: none; }
+    .transaction-filter { flex: 0 0 auto; min-height: 31px; padding: 0 10px; border: 1px solid var(--line); border-radius: 15px; background: var(--panel); color: var(--muted); font-size: 12px; font-weight: 750; cursor: pointer; }
+    .transaction-filter[aria-pressed="true"] { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); }
+    dialog.management-dialog { width: min(calc(100% - 24px), 406px); max-height: min(84vh, 680px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: var(--panel); box-shadow: 0 24px 70px rgba(13, 29, 50, .32); }
+    dialog.management-dialog::backdrop { background: rgba(13, 29, 50, .44); }
+    .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+    .dialog-head h2 { font-size: 19px; }
+    .dialog-body { padding: 15px 16px 18px; overflow-y: auto; }
+    .form-field { display: grid; gap: 6px; margin-bottom: 12px; color: var(--muted); font-size: 12px; font-weight: 700; }
+    .form-field input, .form-field select, .form-field textarea { width: 100%; min-height: 39px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--text); font: inherit; font-size: 14px; }
+    .form-field textarea { min-height: 72px; resize: vertical; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    .preview-result { display: grid; gap: 9px; padding: 12px; border-radius: 8px; background: var(--bg); font-size: 13px; line-height: 1.5; }
+    .preview-result p { margin: 0; }
+    .confirm-status { min-height: 18px; margin-top: 10px; color: var(--muted); font-size: 12px; }
     @media (max-width: 370px) {
       .app { padding-left: 10px; padding-right: 10px; }
       h1 { font-size: 25px; }
@@ -275,6 +314,16 @@
         </div>
       </header>
 
+      <nav class="management-tabs" role="tablist" aria-label="组合管理">
+        <button class="management-tab" id="overviewTab" type="button" role="tab" aria-selected="true" aria-controls="overviewPanel" data-tab="overview">总览</button>
+        <button class="management-tab" id="positionsTab" type="button" role="tab" aria-selected="false" aria-controls="positionsPanel" data-tab="positions">持仓</button>
+        <button class="management-tab" id="transactionsTab" type="button" role="tab" aria-selected="false" aria-controls="transactionsPanel" data-tab="transactions">交易</button>
+        <button class="management-tab" id="sipTab" type="button" role="tab" aria-selected="false" aria-controls="sipPanel" data-tab="sip">定投</button>
+      </nav>
+
+      <section id="overviewPanel" class="management-panel" role="tabpanel" aria-labelledby="overviewTab">
+      <div class="panel-heading"><h2>组合总览</h2><button class="action-button" id="quickTradeButton" type="button" data-write-action="trade">+交易</button></div>
+
       <section class="hero" id="hero" aria-label="组合收益概览">
         <button class="profit-trigger" id="cumulativeProfitTrigger" type="button" aria-controls="dailyProfitSheet" aria-expanded="false">
           <span class="hero-label">累计收益<span class="detail-cue">查看每日明细</span></span>
@@ -290,6 +339,11 @@
         <div class="metric"><div class="metric-label">估算市值(元)</div><div class="metric-value" id="marketValue">--</div></div>
         <div class="metric"><div class="metric-label">已设份额</div><div class="metric-value" id="sharesCount">0/0</div></div>
         <div class="metric"><div class="metric-label">今日披露</div><div class="metric-value" id="disclosedCount">0/0</div></div>
+      </section>
+
+      <section class="card section" aria-label="组合类型与待处理事项">
+        <div class="section-head"><h2>组合概况</h2><span class="section-meta" id="pendingStatus">待处理 0 笔</span></div>
+        <div class="manage-grid" id="typeSummary"><div class="empty">正在统计产品类型...</div></div>
       </section>
 
       <section class="card insights" aria-label="今日贡献洞察">
@@ -311,6 +365,32 @@
         <div class="note">累计收益按 2026-07-01 起收益流水统计；份额变更只影响后续收益，产品删除不回退历史累计。</div>
       </section>
       <div class="status" id="statusText" role="status"></div>
+      </section>
+
+      <section id="positionsPanel" class="management-panel" role="tabpanel" aria-labelledby="positionsTab" hidden>
+        <div class="panel-heading"><h2>产品持仓</h2><button class="action-button" type="button" data-write-action="product">添加产品</button></div>
+        <div class="write-notice" id="positionsWriteNotice" hidden></div>
+        <div class="manage-list" id="positionsList"><div class="empty">正在读取持仓...</div></div>
+      </section>
+
+      <section id="transactionsPanel" class="management-panel" role="tabpanel" aria-labelledby="transactionsTab" hidden>
+        <div class="panel-heading"><h2>交易记录</h2><button class="action-button" type="button" data-write-action="trade">+交易</button></div>
+        <div class="write-notice" id="transactionsWriteNotice" hidden></div>
+        <div class="transaction-filters" role="group" aria-label="交易状态筛选">
+          <button class="transaction-filter" type="button" aria-pressed="true" data-transaction-filter="all">全部</button>
+          <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="pending">待确认</button>
+          <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="confirmed">已确认</button>
+          <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="cancelled">已取消</button>
+          <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="reversed">已冲正</button>
+        </div>
+        <div class="manage-list" id="transactionsList"><div class="empty">暂无交易记录</div></div>
+      </section>
+
+      <section id="sipPanel" class="management-panel" role="tabpanel" aria-labelledby="sipTab" hidden>
+        <div class="panel-heading"><h2>定投计划</h2><button class="action-button" type="button" data-write-action="sip">新增定投</button></div>
+        <div class="write-notice" id="sipWriteNotice" hidden></div>
+        <div class="manage-list" id="sipList"><div class="empty">暂无定投计划</div></div>
+      </section>
     </div>
   </main>
 
@@ -337,11 +417,53 @@
     </section>
   </div>
 
+  <dialog class="management-dialog" id="productDialog" aria-labelledby="productDialogTitle">
+    <form id="productForm" method="dialog"><header class="dialog-head"><h2 id="productDialogTitle">添加产品</h2><button class="icon-button" type="button" data-close-dialog="productDialog" aria-label="关闭">×</button></header><div class="dialog-body">
+      <label class="form-field">产品名称<input name="name" required maxlength="100" autocomplete="off"></label>
+      <label class="form-field">产品类型<select name="wealth_type"><option value="wealth_nav">净值型理财</option><option value="cash_management">现金管理</option><option value="public_fund">公募基金</option></select></label>
+      <label class="form-field">产品代码<input name="code" maxlength="80" autocomplete="off"></label>
+      <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="productDialog">取消</button><button class="action-button" type="submit">预览</button></div>
+    </div></form>
+  </dialog>
+
+  <dialog class="management-dialog" id="tradeDialog" aria-labelledby="tradeDialogTitle">
+    <form id="tradeForm" method="dialog"><header class="dialog-head"><h2 id="tradeDialogTitle">新建交易</h2><button class="icon-button" type="button" data-close-dialog="tradeDialog" aria-label="关闭">×</button></header><div class="dialog-body">
+      <label class="form-field">产品<select name="product_id" id="tradeProduct" required></select></label>
+      <label class="form-field">交易类型<select name="transaction_type"><option value="purchase">申购</option><option value="redemption">赎回</option></select></label>
+      <label class="form-field">金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label>
+      <label class="form-field">交易日期<input name="trade_date" type="date"></label>
+      <label class="form-field">备注<textarea name="note" maxlength="300"></textarea></label>
+      <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="tradeDialog">取消</button><button class="action-button" type="submit">预览</button></div>
+    </div></form>
+  </dialog>
+
+  <dialog class="management-dialog" id="confirmDialog" aria-labelledby="confirmDialogTitle">
+    <header class="dialog-head"><h2 id="confirmDialogTitle">确认提交</h2><button class="icon-button" type="button" data-close-dialog="confirmDialog" aria-label="关闭">×</button></header><div class="dialog-body">
+      <div class="preview-result" id="confirmPreview">正在生成预览...</div><div class="confirm-status" id="confirmStatus" role="status"></div>
+      <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="confirmDialog">返回</button><button class="action-button" id="confirmSubmitButton" type="button">确认提交</button></div>
+    </div>
+  </dialog>
+
+  <dialog class="management-dialog" id="sipDialog" aria-labelledby="sipDialogTitle">
+    <form id="sipForm" method="dialog"><header class="dialog-head"><h2 id="sipDialogTitle">定投计划</h2><button class="icon-button" type="button" data-close-dialog="sipDialog" aria-label="关闭">×</button></header><div class="dialog-body">
+      <label class="form-field">产品<select name="product_id" id="sipProduct" required></select></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">扣款来源<input name="source" maxlength="80" required></label><label class="form-field">申购费率<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
+      <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存草稿</button></div>
+    </div></form>
+  </dialog>
+
+  <dialog class="management-dialog" id="adjustmentDialog" aria-labelledby="adjustmentDialogTitle">
+    <form id="adjustmentForm" method="dialog"><header class="dialog-head"><h2 id="adjustmentDialogTitle">校准持仓</h2><button class="icon-button" type="button" data-close-dialog="adjustmentDialog" aria-label="关闭">×</button></header><div class="dialog-body">
+      <input name="product_id" id="adjustmentProductId" type="hidden"><label class="form-field">调整后份额<input name="shares" type="number" min="0" step="0.0001" required inputmode="decimal"></label><label class="form-field">说明<textarea name="note" maxlength="300"></textarea></label>
+      <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="adjustmentDialog">取消</button><button class="action-button" type="submit">预览</button></div>
+    </div></form>
+  </dialog>
+
   <script>
     const API_PATH = '/api/nav-dashboard';
     const REFRESH_PATH = '/api/nav-dashboard/refresh';
     const hashKey = decodeURIComponent(location.hash.slice(1));
-    const accessKey = hashKey;
+    const token = hashKey;
+    const accessKey = token;
     const $ = id => document.getElementById(id);
     const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
     const number = value => Number(value || 0);
@@ -374,6 +496,13 @@
     let refreshPollTimer = null;
     let transientRefreshError = '';
     let transientRefreshErrorUntil = 0;
+    const state = {
+      data: null,
+      activeTab: "overview",
+      pendingAction: null,
+      writeEnabled: false,
+    };
+    let transactionFilter = 'all';
     const profitViewMeta = {
       daily: {tab: 'dailyProfitTab', periodLabel: '净值日期', amountLabel: '当日收益', countLabel: '个收益日'},
       monthly: {tab: 'monthlyProfitTab', periodLabel: '自然月', amountLabel: '月度收益', countLabel: '个月'},
@@ -381,8 +510,139 @@
     };
 
     async function api(path, options = {}) {
-      const headers = {...(options.headers || {}), 'X-Nav-Dashboard-Key': accessKey};
+      const headers = {...(options.headers || {}), "X-Nav-Dashboard-Key": token};
       return fetch(path, {...options, headers, cache: 'no-store'});
+    }
+    const portfolioRows = (key, fallback = []) => {
+      const portfolio = state.data?.portfolio || state.data || {};
+      const value = portfolio[key] ?? state.data?.[key] ?? fallback;
+      return Array.isArray(value) ? value : [];
+    };
+    const rowValue = (row, ...keys) => {
+      for (const key of keys) if (row?.[key] !== undefined && row[key] !== null && row[key] !== '') return row[key];
+      return '';
+    };
+    const dialogOpen = id => {
+      const dialog = $(id);
+      if (!dialog.open) dialog.showModal();
+    };
+    const closeDialog = id => {
+      const dialog = $(id);
+      if (dialog.open) dialog.close();
+    };
+    const formPayload = form => Object.fromEntries(new FormData(form).entries());
+    const newIdempotencyKey = () => window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    function writeReason(data) {
+      return data?.write_disabled_reason || data?.write_reason || data?.portfolio?.write_disabled_reason || '当前组合为只读状态，暂不能提交管理操作。';
+    }
+    function updateWriteControls() {
+      const reason = writeReason(state.data);
+      document.querySelectorAll('[data-write-action], [data-write-operation]').forEach(control => {
+        control.disabled = !state.writeEnabled;
+        control.title = state.writeEnabled ? '' : reason;
+      });
+      document.querySelectorAll('.write-notice').forEach(notice => {
+        notice.hidden = state.writeEnabled;
+        notice.textContent = reason;
+      });
+    }
+    function setActiveTab(tab) {
+      if (!['overview', 'positions', 'transactions', 'sip'].includes(tab)) return;
+      state.activeTab = tab;
+      document.querySelectorAll('[data-tab]').forEach(button => {
+        const selected = button.dataset.tab === tab;
+        button.setAttribute('aria-selected', String(selected));
+        $(`${button.dataset.tab}Panel`).hidden = !selected;
+      });
+    }
+    function positionTypeLabel(value) {
+      return ({wealth_nav: '净值型理财', cash_management: '现金管理', public_fund: '公募基金'})[value] || '其他产品';
+    }
+    function productOptions(selectId) {
+      const select = $(selectId);
+      const rows = portfolioRows('positions', portfolioRows('products', []));
+      select.innerHTML = `<option value="">请选择产品</option>${rows.map(row => {
+        const id = rowValue(row, 'product_id', 'id', 'code');
+        const label = rowValue(row, 'name', 'product_name', 'code') || '未命名产品';
+        return `<option value="${esc(id)}">${esc(label)}</option>`;
+      }).join('')}`;
+    }
+    function renderPositions() {
+      const rows = portfolioRows('positions', portfolioRows('products', []));
+      const groups = ['wealth_nav', 'cash_management', 'public_fund'];
+      const list = $('positionsList');
+      if (!rows.length) { list.innerHTML = '<div class="empty">暂无持仓，请先添加产品。</div>'; return; }
+      list.innerHTML = groups.map(group => {
+        const groupRows = rows.filter(row => rowValue(row, 'wealth_type', 'type', 'category') === group);
+        if (!groupRows.length) return '';
+        return `<section class="manage-card"><div class="section-head"><h2>${esc(positionTypeLabel(group))}</h2><span class="section-meta">${groupRows.length} 项</span></div>${groupRows.map(row => {
+          const id = rowValue(row, 'product_id', 'id', 'code');
+          const name = rowValue(row, 'name', 'product_name', 'code') || '未命名产品';
+          const nav = rowValue(row, 'unit_nav', 'latest_nav', 'nav');
+          const holding = rowValue(row, 'market_value', 'value', 'holding_value');
+          const shares = rowValue(row, 'shares', 'share');
+          const cashYield = rowValue(row, 'per_10k_yield', 'per_ten_thousand_yield');
+          const sevenDay = rowValue(row, 'seven_day_yield', 'seven_day_annualized_yield');
+          const navStat = group === 'cash_management'
+            ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDay || '--')}</b></div>`
+            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div><div class="manage-stat"><span>持有份额</span><b>${esc(shares || '--')}</b></div>`;
+          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${esc(holding || '--')} 元</div></div><div class="manage-grid">${navStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-view-product="${esc(id)}">查看</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
+        }).join('')}</section>`;
+      }).join('') || '<div class="empty">暂无可展示的分类持仓。</div>';
+    }
+    function normalStatus(value) {
+      const raw = String(value || '').toLowerCase();
+      if (raw.includes('pending') || raw.includes('quote')) return 'pending';
+      if (raw.includes('confirm')) return 'confirmed';
+      if (raw.includes('cancel')) return 'cancelled';
+      if (raw.includes('reverse')) return 'reversed';
+      return raw;
+    }
+    function transactionStatusLabel(value) {
+      return ({pending: '待确认', confirmed: '已确认', cancelled: '已取消', reversed: '已冲正'})[normalStatus(value)] || esc(value || '--');
+    }
+    function renderTransactions() {
+      const rows = portfolioRows('transactions');
+      const visible = transactionFilter === 'all' ? rows : rows.filter(row => normalStatus(rowValue(row, 'status')) === transactionFilter);
+      $('transactionsList').innerHTML = visible.length ? visible.map(row => {
+        const id = rowValue(row, 'id', 'transaction_id');
+        const status = normalStatus(rowValue(row, 'status'));
+        const title = rowValue(row, 'product_name', 'name', 'product_id') || '交易';
+        const transactionType = rowValue(row, 'transaction_type', 'type');
+        const actions = status === 'pending' ? `<button class="row-action" type="button" data-write-operation="cancel" data-transaction-id="${esc(id)}">取消</button>` : status === 'confirmed' ? `<button class="row-action" type="button" data-write-operation="reverse" data-transaction-id="${esc(id)}">冲正</button>` : '';
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(title)} · ${esc(transactionType || '交易')}</div><div class="manage-meta">${esc(rowValue(row, 'trade_date', 'created_at'))} · ${transactionStatusLabel(status)}</div></div><div class="manage-value">${esc(rowValue(row, 'amount') || '--')} 元</div></div>${actions ? `<div class="row-actions">${actions}</div>` : ''}</article>`;
+      }).join('') : '<div class="empty">当前筛选条件下暂无交易记录。</div>';
+      updateWriteControls();
+    }
+    function renderSip() {
+      const rows = portfolioRows('sip_plans', portfolioRows('sips', []));
+      $('sipList').innerHTML = rows.length ? rows.map(row => {
+        const id = rowValue(row, 'id', 'sip_id');
+        const status = String(rowValue(row, 'status', 'state') || 'draft').toLowerCase();
+        const controls = status === 'paused'
+          ? `<button class="row-action" type="button" data-write-operation="sip-resume" data-sip-id="${esc(id)}">恢复</button>`
+          : `<button class="row-action" type="button" data-write-operation="sip-pause" data-sip-id="${esc(id)}">暂停</button>`;
+        const edit = status === 'draft' ? `<button class="row-action" type="button" data-write-operation="sip-edit" data-sip-id="${esc(id)}">编辑草稿</button>` : '';
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(status)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${esc(rowValue(row, 'amount', 'daily_amount') || '--')} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'fee_rate', 'purchase_fee_rate') || '--')}</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}</div></article>`;
+      }).join('') : '<div class="empty">暂无定投计划。</div>';
+      updateWriteControls();
+    }
+    function renderManagement(data) {
+      state.data = data || {};
+      state.writeEnabled = state.data.write_enabled === true || state.data.portfolio?.write_enabled === true;
+      const positions = portfolioRows('positions', portfolioRows('products', []));
+      const transactions = portfolioRows('transactions');
+      const pending = transactions.filter(row => normalStatus(rowValue(row, 'status')) === 'pending').length;
+      $('pendingStatus').textContent = `待处理 ${pending} 笔`;
+      $('typeSummary').innerHTML = ['wealth_nav', 'cash_management', 'public_fund'].map(group => {
+        const rows = positions.filter(row => rowValue(row, 'wealth_type', 'type', 'category') === group);
+        const total = rows.reduce((sum, row) => sum + number(rowValue(row, 'market_value', 'value', 'holding_value')), 0);
+        return `<div class="manage-stat"><span>${esc(positionTypeLabel(group))}</span><b>${rows.length ? `${money(total)} 元` : '--'}</b></div>`;
+      }).join('');
+      renderPositions();
+      renderTransactions();
+      renderSip();
+      updateWriteControls();
     }
     function setAccessState(valid) {
       $('accessError').style.display = valid ? 'none' : 'block';
@@ -545,6 +805,7 @@
       $('positiveRanking').innerHTML = rankingRows(monthlyPositives, '本月无正贡献');
       $('negativeRanking').innerHTML = rankingRows(monthlyNegatives, '本月无拖累');
       $('statusText').textContent = data.last_error ? `部分数据更新失败：${data.last_error}` : data.refreshing ? '正在更新官网净值...' : '';
+      renderManagement(data);
       setRefreshState(data);
       if (!$('dailyProfitBackdrop').hidden) renderDailyProfits();
     }
@@ -587,12 +848,166 @@
         updateRefreshControls();
       }
     }
+    async function requestJson(path, payload, idempotencyKey = '') {
+      const headers = {
+        "Content-Type": "application/json",
+        "X-Nav-Dashboard-Key": token,
+        "X-Portfolio-Request": "1",
+        "Idempotency-Key": idempotencyKey,
+      };
+      if (!idempotencyKey) delete headers["Idempotency-Key"];
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const response = await fetch(path, {
+          method: 'POST', headers, body: JSON.stringify(payload), cache: 'no-store', signal: controller.signal,
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.message || result.error || `HTTP ${response.status}`);
+        return result;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    function previewHtml(result) {
+      const details = result?.preview || result?.details || result || {};
+      const message = rowValue(details, 'message', 'summary') || '请核对以下内容，确认后将提交。';
+      const fields = Object.entries(details).filter(([key, value]) => !['message', 'summary', 'ok'].includes(key) && typeof value !== 'object');
+      return `<p>${esc(message)}</p>${fields.map(([key, value]) => `<p><strong>${esc(key)}</strong>：${esc(value)}</p>`).join('')}`;
+    }
+    async function previewAction({previewPath, submitPath, payload, originDialog}) {
+      if (!state.writeEnabled) return;
+      try {
+        const preview = await requestJson(previewPath, payload);
+        state.pendingAction = {submitPath, payload, idempotencyKey: newIdempotencyKey(), originDialog};
+        $('confirmPreview').innerHTML = previewHtml(preview);
+        $('confirmStatus').textContent = '';
+        closeDialog(originDialog);
+        dialogOpen('confirmDialog');
+      } catch (error) {
+        $('statusText').textContent = `预览失败：${error.message}`;
+      }
+    }
+    async function submitPendingAction() {
+      const action = state.pendingAction;
+      if (!action || !state.writeEnabled) return;
+      const button = $('confirmSubmitButton');
+      button.disabled = true;
+      $('confirmStatus').textContent = '正在提交...';
+      try {
+        const result = await requestJson(action.submitPath, action.payload, action.idempotencyKey);
+        $('confirmStatus').textContent = result.message || result.status || '已提交，正在刷新数据。';
+        state.pendingAction = null;
+        setTimeout(() => { closeDialog('confirmDialog'); loadDashboard(); }, 500);
+      } catch (error) {
+        const timeout = error.name === 'AbortError';
+        $('confirmStatus').textContent = timeout
+          ? '请求超时。再次点击确认会使用同一请求键恢复结果。'
+          : `提交失败：${error.message}`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+    function openTrade(productId = '') {
+      if (!state.writeEnabled) return;
+      productOptions('tradeProduct');
+      $('tradeProduct').value = productId;
+      dialogOpen('tradeDialog');
+    }
+    function openSip(sipId = '') {
+      if (!state.writeEnabled) return;
+      productOptions('sipProduct');
+      const existing = portfolioRows('sip_plans', portfolioRows('sips', [])).find(row => String(rowValue(row, 'id', 'sip_id')) === String(sipId));
+      const form = $('sipForm');
+      form.reset();
+      if (existing) {
+        form.product_id.value = rowValue(existing, 'product_id');
+        form.amount.value = rowValue(existing, 'amount', 'daily_amount');
+        form.source.value = rowValue(existing, 'source', 'fund_source');
+        form.fee_rate.value = rowValue(existing, 'fee_rate', 'purchase_fee_rate');
+        form.dataset.sipId = sipId;
+      } else delete form.dataset.sipId;
+      dialogOpen('sipDialog');
+    }
+    function openAdjustment(productId) {
+      if (!state.writeEnabled) return;
+      $('adjustmentForm').reset();
+      $('adjustmentProductId').value = productId;
+      dialogOpen('adjustmentDialog');
+    }
+    async function simpleOperation(operation, id) {
+      if (!state.writeEnabled) return;
+      const isSipOperation = operation === 'sip-pause' || operation === 'sip-resume';
+      await previewAction({
+        previewPath: isSipOperation ? '/api/portfolio/sip-plans/preview' : '/api/portfolio/transactions/preview',
+        submitPath: isSipOperation ? '/api/portfolio/sip-plans' : '/api/portfolio/transactions',
+        payload: isSipOperation ? {operation: operation.replace('sip-', ''), sip_id: id} : {operation, transaction_id: id},
+        originDialog: 'confirmDialog',
+      });
+    }
     $('refreshButton').addEventListener('click', refresh);
     $('cumulativeProfitTrigger').addEventListener('click', openDailyProfits);
     $('dailyProfitClose').addEventListener('click', closeDailyProfits);
     document.querySelectorAll('[data-profit-view]').forEach(tab => {
       tab.addEventListener('click', () => setProfitView(tab.dataset.profitView));
     });
+    document.querySelectorAll('[data-tab]').forEach(tab => tab.addEventListener('click', () => setActiveTab(tab.dataset.tab)));
+    document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => closeDialog(button.dataset.closeDialog)));
+    document.querySelectorAll('[data-write-action]').forEach(button => button.addEventListener('click', () => {
+      if (button.dataset.writeAction === 'product') dialogOpen('productDialog');
+      if (button.dataset.writeAction === 'trade') openTrade();
+      if (button.dataset.writeAction === 'sip') openSip();
+    }));
+    document.querySelectorAll('[data-transaction-filter]').forEach(button => button.addEventListener('click', () => {
+      transactionFilter = button.dataset.transactionFilter;
+      document.querySelectorAll('[data-transaction-filter]').forEach(filter => filter.setAttribute('aria-pressed', String(filter === button)));
+      renderTransactions();
+    }));
+    document.addEventListener('click', event => {
+      const control = event.target.closest('[data-write-operation]');
+      if (!control || !state.writeEnabled) return;
+      const operation = control.dataset.writeOperation;
+      if (operation === 'trade') openTrade(control.dataset.productId);
+      if (operation === 'adjust') openAdjustment(control.dataset.productId);
+      if (operation === 'cancel' || operation === 'reverse') simpleOperation(operation, control.dataset.transactionId);
+      if (operation === 'sip-edit') openSip(control.dataset.sipId);
+      if (operation === 'sip-pause' || operation === 'sip-resume') simpleOperation(operation, control.dataset.sipId);
+      if (operation === 'disable-product') previewAction({
+        previewPath: '/api/portfolio/products/preview', submitPath: '/api/portfolio/products',
+        payload: {operation: 'disable', product_id: control.dataset.productId}, originDialog: 'confirmDialog',
+      });
+    });
+    document.addEventListener('click', event => {
+      const view = event.target.closest('[data-view-product]');
+      if (!view) return;
+      const product = portfolioRows('positions', portfolioRows('products', [])).find(row => String(rowValue(row, 'product_id', 'id', 'code')) === String(view.dataset.viewProduct));
+      $('statusText').textContent = product ? `${rowValue(product, 'name', 'product_name', 'code')}：当前市值 ${rowValue(product, 'market_value', 'value', 'holding_value') || '--'} 元` : '未找到该产品详情。';
+    });
+    $('productForm').addEventListener('submit', event => {
+      event.preventDefault();
+      previewAction({previewPath: '/api/portfolio/products/preview', submitPath: '/api/portfolio/products', payload: formPayload(event.currentTarget), originDialog: 'productDialog'});
+    });
+    $('tradeForm').addEventListener('submit', event => {
+      event.preventDefault();
+      previewAction({previewPath: '/api/portfolio/transactions/preview', submitPath: '/api/portfolio/transactions', payload: formPayload(event.currentTarget), originDialog: 'tradeDialog'});
+    });
+    $('adjustmentForm').addEventListener('submit', event => {
+      event.preventDefault();
+      previewAction({previewPath: '/api/portfolio/positions/adjustments/preview', submitPath: '/api/portfolio/positions/adjustments', payload: formPayload(event.currentTarget), originDialog: 'adjustmentDialog'});
+    });
+    $('sipForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!state.writeEnabled) return;
+      const form = event.currentTarget;
+      const payload = {...formPayload(form), sip_id: form.dataset.sipId || undefined};
+      try {
+        const result = await requestJson('/api/portfolio/sip-plans', payload, newIdempotencyKey());
+        closeDialog('sipDialog');
+        $('statusText').textContent = result.message || '定投草稿已保存。';
+        loadDashboard();
+      } catch (error) { $('statusText').textContent = `保存失败：${error.message}`; }
+    });
+    $('confirmSubmitButton').addEventListener('click', submitPendingAction);
     $('dailyProfitBackdrop').addEventListener('click', event => {
       if (event.target === $('dailyProfitBackdrop')) closeDailyProfits();
     });
