@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from enum import Enum
-from typing import Optional
+from typing import Mapping, Optional
 
 
 class ProductType(str, Enum):
@@ -71,6 +71,29 @@ class Product:
     registration_code: str = ""
     currency: str = "CNY"
     metadata_json: str = "{}"
+
+
+@dataclass(frozen=True)
+class MarketProduct:
+    provider: str
+    code: str
+    name: str
+    product_type: ProductType
+    registration_code: str = ""
+    metadata: Optional[Mapping[str, str]] = None
+
+
+@dataclass(frozen=True)
+class MarketQuote:
+    product_code: str
+    quote_date: date
+    source: str
+    raw_hash: str
+    unit_nav: Optional[Decimal] = None
+    cumulative_nav: Optional[Decimal] = None
+    income_per_10k: Optional[Decimal] = None
+    seven_day_annualized_rate: Optional[Decimal] = None
+    source_timestamp: str = ""
 
 
 @dataclass(frozen=True)
