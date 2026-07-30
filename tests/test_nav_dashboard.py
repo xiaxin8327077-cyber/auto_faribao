@@ -1,11 +1,13 @@
 from datetime import date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 from src.config import Config
 from src.nav_dashboard import (
     NavDashboardStore,
+    get_dashboard_payload,
     request_manual_refresh,
     should_auto_refresh,
 )
@@ -54,6 +56,60 @@ def _cfg(shares: str = "10000", include_product: bool = True) -> Config:
             }
         )
     return Config({"nav_monitor": {"products": products}})
+
+
+def test_dashboard_embeds_initialized_portfolio_runtime_payload(tmp_path, monkeypatch):
+    import src.nav_dashboard as dashboard
+
+    legacy = NavDashboardStore(tmp_path / "state.json")
+    legacy.state["initialized"] = True
+    legacy.save()
+    portfolio = {
+        "summary": {"market_value": "100"},
+        "products": [{"code": "003103", "shares": "100", "market_value": "100"}],
+        "transactions": [],
+        "sip_plans": [],
+        "profit_history": [],
+        "write_enabled": True,
+    }
+    monkeypatch.setattr(
+        dashboard,
+        "_get_portfolio_runtime",
+        lambda: SimpleNamespace(repository=object(), write_enabled=True),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "build_portfolio_payload",
+        lambda repository: portfolio,
+    )
+
+    payload = get_dashboard_payload(_cfg(), state_path=tmp_path / "state.json")
+
+    assert payload["portfolio"] is portfolio
+    assert payload["portfolio"]["products"][0]["market_value"] == "100"
+    assert payload["write_enabled"] is True
+
+
+def test_dashboard_keeps_legacy_payload_readonly_after_migration_failure(
+    tmp_path, monkeypatch
+):
+    import src.nav_dashboard as dashboard
+
+    monkeypatch.setattr(
+        dashboard,
+        "_get_portfolio_runtime",
+        lambda: SimpleNamespace(
+            repository=None,
+            write_enabled=False,
+            migration_error="migration failed",
+        ),
+    )
+
+    payload = get_dashboard_payload(_cfg(), state_path=tmp_path / "state.json")
+
+    assert "portfolio" not in payload
+    assert payload["write_enabled"] is False
+    assert payload["write_disabled_reason"] == "portfolio_migration_failed"
 
 
 def test_initial_backfill_uses_current_shares_from_base_date(tmp_path):

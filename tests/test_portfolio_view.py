@@ -1,0 +1,116 @@
+from datetime import date
+from decimal import Decimal
+
+import pytest
+
+from src.portfolio_db import PortfolioDatabase
+from src.portfolio_models import (
+    MarketQuote,
+    Product,
+    ProductType,
+    Transaction,
+    TransactionStatus,
+    TransactionType,
+)
+from src.portfolio_positions import PositionProjector
+from src.portfolio_repository import PortfolioRepository
+from src.portfolio_view import build_portfolio_payload
+
+
+@pytest.fixture
+def portfolio_fixture(tmp_path):
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    products = (
+        Product("wealth", "citic_wealth", "AF233276B", "净值理财", ProductType.WEALTH_NAV),
+        Product("cash", "nanyin_wealth", "NYRR000007", "现金管理", ProductType.CASH_MANAGEMENT),
+        Product("fund", "fund", "003103", "公募基金", ProductType.PUBLIC_FUND),
+    )
+    for product in products:
+        repository.add_product(product)
+        repository.create_transaction(
+            Transaction(
+                id=f"opening:{product.id}",
+                product_id=product.id,
+                transaction_type=TransactionType.OPENING_POSITION,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=date(2026, 7, 1),
+                idempotency_key=f"opening:{product.id}",
+                amount=Decimal("100"),
+                shares=Decimal("100"),
+            )
+        )
+    repository.upsert_quote(
+        "wealth",
+        MarketQuote("AF233276B", date(2026, 7, 30), "official", "wealth-hash", unit_nav=Decimal("1.078")),
+        "2026-07-30T10:00:00",
+    )
+    repository.upsert_quote(
+        "cash",
+        MarketQuote(
+            "NYRR000007", date(2026, 7, 30), "official", "cash-hash",
+            income_per_10k=Decimal("0.4475"),
+            seven_day_annualized_rate=Decimal("0.016315"),
+        ),
+        "2026-07-30T10:00:00",
+    )
+    repository.upsert_quote(
+        "fund",
+        MarketQuote("003103", date(2026, 7, 30), "official", "fund-hash", unit_nav=Decimal("1.0321")),
+        "2026-07-30T10:00:00",
+    )
+    repository.create_transaction(
+        Transaction(
+            id="income:cash:2026-07-30",
+            product_id="cash",
+            transaction_type=TransactionType.INCOME_ACCRUAL,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 30),
+            idempotency_key="income:cash:2026-07-30",
+            amount=Decimal("0.4475"),
+            shares=Decimal("0.4475"),
+        )
+    )
+    with database.transaction() as connection:
+        connection.execute(
+            """INSERT INTO legacy_profit_history
+               (id, profit_date, amount, source_kind, source_json)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("legacy:manual", "2026-07-28", "9.87", "manual", "{}"),
+        )
+    PositionProjector(repository).rebuild()
+    return repository
+
+
+def test_payload_keeps_type_specific_quote_semantics(portfolio_fixture):
+    repo = portfolio_fixture
+    payload = build_portfolio_payload(repo, as_of=date(2026, 7, 30))
+    rows = {row["code"]: row for row in payload["products"]}
+
+    assert rows["AF233276B"]["quote"]["unit_nav"] == "1.078"
+    assert "income_per_10k" not in rows["AF233276B"]["quote"]
+    assert rows["NYRR000007"]["quote"]["income_per_10k"] == "0.4475"
+    assert rows["NYRR000007"]["quote"]["seven_day_annualized_rate"] == "0.016315"
+    assert "unit_nav" not in rows["NYRR000007"]["quote"]
+    assert rows["003103"]["quote"]["unit_nav"] == "1.0321"
+
+
+def test_payload_preserves_legacy_profit_rows_without_recalculation(portfolio_fixture):
+    payload = build_portfolio_payload(portfolio_fixture)
+
+    assert payload["profit_history"][0] == {
+        "date": "2026-07-28",
+        "amount": "9.87",
+        "source": "legacy_manual",
+    }
+
+
+def test_payload_keeps_overview_fields_and_cash_value_is_shares(portfolio_fixture):
+    payload = build_portfolio_payload(portfolio_fixture)
+    cash = next(row for row in payload["products"] if row["code"] == "NYRR000007")
+
+    assert cash["shares"] == "100.4475"
+    assert cash["latest_nav"] is None
+    assert cash["market_value"] == "100.4475"
+    assert cash["latest_profit"] == "0.4475"

@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from src.beijing_time import now as beijing_now
+from src.portfolio_view import build_portfolio_payload
 
 
 logger = logging.getLogger(__name__)
@@ -651,8 +652,37 @@ class NavDashboardStore:
             }
 
 
+def _get_portfolio_runtime():
+    try:
+        from src.portfolio_runtime import get_portfolio_runtime
+
+        return get_portfolio_runtime()
+    except (ImportError, RuntimeError):
+        return None
+
+
 def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
-    return NavDashboardStore(state_path).payload(cfg)
+    payload = NavDashboardStore(state_path).payload(cfg)
+    runtime = _get_portfolio_runtime()
+    repository = getattr(runtime, "repository", None)
+    if repository is None:
+        if runtime is not None and getattr(runtime, "migration_error", ""):
+            payload["write_enabled"] = False
+            payload["write_disabled_reason"] = "portfolio_migration_failed"
+        return payload
+
+    write_enabled = bool(getattr(runtime, "write_enabled", False))
+    portfolio = build_portfolio_payload(repository)
+    portfolio["write_enabled"] = write_enabled
+    if not write_enabled:
+        portfolio["write_disabled_reason"] = "portfolio_migration_failed"
+    # The overview still consumes the legacy root fields while management
+    # tabs read this nested ledger projection through portfolioRows().
+    payload["portfolio"] = portfolio
+    payload["write_enabled"] = write_enabled
+    if not write_enabled:
+        payload["write_disabled_reason"] = "portfolio_migration_failed"
+    return payload
 
 
 def sync_dashboard_portfolio(cfg, changed_at=None, state_path=DEFAULT_STATE_PATH) -> dict:
