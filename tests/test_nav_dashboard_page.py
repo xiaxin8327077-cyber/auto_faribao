@@ -28,6 +28,30 @@ def test_write_fetch_uses_private_token_idempotency_and_custom_header():
     assert "/api/portfolio/sip-plans/preview" in html
 
 
+def test_sip_save_uses_the_shared_preview_confirm_pending_action_flow():
+    html = _read_page()
+    assert (
+        "previewPath: '/api/portfolio/sip-plans/preview', "
+        "submitPath: '/api/portfolio/sip-plans'"
+    ) in html
+    assert (
+        "requestJson('/api/portfolio/sip-plans', payload, newIdempotencyKey())"
+        not in html
+    )
+
+
+def test_read_only_state_disables_dialog_writes_and_load_failure_closes_writes():
+    html = _read_page()
+    assert (
+        "'.management-dialog input, .management-dialog select, "
+        ".management-dialog textarea, .management-dialog "
+        "button:not([data-close-dialog])'"
+    ) in html
+    assert "function disableWrites(reason)" in html
+    assert "disableWrites('组合数据读取失败，写操作已关闭。')" in html
+    assert "if (!state.writeEnabled) return;" in html
+
+
 def test_holding_css_rule_exists():
     page = _read_page()
     assert ".holding" in page

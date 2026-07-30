@@ -282,6 +282,7 @@
     .preview-result { display: grid; gap: 9px; padding: 12px; border-radius: 8px; background: var(--bg); font-size: 13px; line-height: 1.5; }
     .preview-result p { margin: 0; }
     .confirm-status { min-height: 18px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .dialog-write-notice { margin: 0 0 12px; }
     @media (max-width: 370px) {
       .app { padding-left: 10px; padding-right: 10px; }
       h1 { font-size: 25px; }
@@ -545,6 +546,27 @@
         notice.hidden = state.writeEnabled;
         notice.textContent = reason;
       });
+      const dialogWriteControls = document.querySelectorAll('.management-dialog input, .management-dialog select, .management-dialog textarea, .management-dialog button:not([data-close-dialog])');
+      dialogWriteControls.forEach(control => {
+        control.disabled = !state.writeEnabled;
+        control.title = state.writeEnabled ? '' : reason;
+      });
+      document.querySelectorAll('.management-dialog').forEach(dialog => {
+        let notice = dialog.querySelector('.dialog-write-notice');
+        if (!notice) {
+          notice = document.createElement('div');
+          notice.className = 'write-notice dialog-write-notice';
+          dialog.querySelector('.dialog-body')?.prepend(notice);
+        }
+        notice.hidden = state.writeEnabled;
+        notice.textContent = reason;
+      });
+    }
+    function disableWrites(reason) {
+      const current = state.data && typeof state.data === 'object' ? state.data : {};
+      state.data = {...current, write_enabled: false, write_disabled_reason: reason || writeReason(current)};
+      state.writeEnabled = false;
+      updateWriteControls();
     }
     function setActiveTab(tab) {
       if (!['overview', 'positions', 'transactions', 'sip'].includes(tab)) return;
@@ -810,14 +832,23 @@
       if (!$('dailyProfitBackdrop').hidden) renderDailyProfits();
     }
     async function loadDashboard() {
-      if (!accessKey) { setAccessState(false); return; }
+      if (!accessKey) {
+        disableWrites('私密链接无效，写操作已关闭。');
+        setAccessState(false);
+        return;
+      }
       try {
         const response = await api(API_PATH);
-        if (response.status === 403) { setAccessState(false); return; }
+        if (response.status === 403) {
+          disableWrites('私密链接无效，写操作已关闭。');
+          setAccessState(false);
+          return;
+        }
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         setAccessState(true);
         render(await response.json());
       } catch (error) {
+        disableWrites('组合数据读取失败，写操作已关闭。');
         setAccessState(true);
         $('statusText').textContent = `读取失败：${error.message}`;
       }
@@ -905,7 +936,7 @@
           ? '请求超时。再次点击确认会使用同一请求键恢复结果。'
           : `提交失败：${error.message}`;
       } finally {
-        button.disabled = false;
+        button.disabled = !state.writeEnabled;
       }
     }
     function openTrade(productId = '') {
@@ -954,6 +985,10 @@
     document.querySelectorAll('[data-tab]').forEach(tab => tab.addEventListener('click', () => setActiveTab(tab.dataset.tab)));
     document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => closeDialog(button.dataset.closeDialog)));
     document.querySelectorAll('[data-write-action]').forEach(button => button.addEventListener('click', () => {
+      if (!state.writeEnabled) {
+        updateWriteControls();
+        return;
+      }
       if (button.dataset.writeAction === 'product') dialogOpen('productDialog');
       if (button.dataset.writeAction === 'trade') openTrade();
       if (button.dataset.writeAction === 'sip') openSip();
@@ -995,17 +1030,15 @@
       event.preventDefault();
       previewAction({previewPath: '/api/portfolio/positions/adjustments/preview', submitPath: '/api/portfolio/positions/adjustments', payload: formPayload(event.currentTarget), originDialog: 'adjustmentDialog'});
     });
-    $('sipForm').addEventListener('submit', async event => {
+    $('sipForm').addEventListener('submit', event => {
       event.preventDefault();
       if (!state.writeEnabled) return;
       const form = event.currentTarget;
       const payload = {...formPayload(form), sip_id: form.dataset.sipId || undefined};
-      try {
-        const result = await requestJson('/api/portfolio/sip-plans', payload, newIdempotencyKey());
-        closeDialog('sipDialog');
-        $('statusText').textContent = result.message || '定投草稿已保存。';
-        loadDashboard();
-      } catch (error) { $('statusText').textContent = `保存失败：${error.message}`; }
+      previewAction({
+        previewPath: '/api/portfolio/sip-plans/preview', submitPath: '/api/portfolio/sip-plans',
+        payload, originDialog: 'sipDialog',
+      });
     });
     $('confirmSubmitButton').addEventListener('click', submitPendingAction);
     $('dailyProfitBackdrop').addEventListener('click', event => {
@@ -1015,6 +1048,7 @@
       if (event.key === 'Escape') closeDailyProfits();
     });
     window.addEventListener('hashchange', () => location.reload());
+    updateWriteControls();
     loadDashboard();
     setInterval(updateRefreshControls, 1000);
     setInterval(loadDashboard, 60000);
