@@ -276,6 +276,131 @@ class PortfolioTransactionService:
                 )
             return redemption
 
+    def record_cash_dividend(
+        self,
+        product_id,
+        amount,
+        dividend_date,
+        idempotency_key,
+        destination_cash_product_id="",
+        actor="web",
+    ) -> Transaction:
+        idempotency_key = self._nonempty_text(
+            idempotency_key, "idempotency_key"
+        )
+        amount = self._positive_decimal(amount, "amount")
+        actor = self._nonempty_text(actor, "actor")
+        destination_cash_product_id = destination_cash_product_id or ""
+        request = {
+            "actor": actor,
+            "amount": self._decimal_audit_text(amount),
+            "destination_cash_product_id": destination_cash_product_id,
+            "dividend_date": dividend_date.isoformat(),
+            "product_id": product_id,
+        }
+
+        with self.repository.database.transaction() as conn:
+            retry = self._operation_retry(
+                idempotency_key,
+                "record_cash_dividend",
+                "product",
+                product_id,
+                request,
+                conn,
+            )
+            if retry is not None:
+                dividend = self.repository.get_transaction_by_idempotency(
+                    idempotency_key,
+                    conn=conn,
+                )
+                if not self._matching_cash_dividend_retry(
+                    dividend,
+                    retry,
+                    product_id,
+                    amount,
+                    dividend_date,
+                    destination_cash_product_id,
+                    actor,
+                    conn,
+                ):
+                    raise ValueError(
+                        "idempotency key conflicts with existing request"
+                    )
+                return dividend
+            self._reject_transaction_idempotency_collision(
+                idempotency_key,
+                conn,
+            )
+
+            product = self.repository.require_product(product_id, conn=conn)
+            destination = None
+            if destination_cash_product_id:
+                destination = self.repository.require_product(
+                    destination_cash_product_id,
+                    conn=conn,
+                )
+                if (
+                    destination.product_type
+                    is not ProductType.CASH_MANAGEMENT
+                ):
+                    raise ValueError(
+                        "destination must be cash_management"
+                    )
+
+            dividend = Transaction(
+                id=str(uuid4()),
+                product_id=product.id,
+                transaction_type=TransactionType.CASH_DIVIDEND,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=dividend_date,
+                idempotency_key=idempotency_key,
+                amount=amount,
+                shares=ZERO,
+                confirmation_date=dividend_date,
+                created_by=actor,
+            )
+            if destination is None:
+                self.repository.create_transaction(dividend, conn)
+            else:
+                dividend = self._create_linked_pair(
+                    dividend,
+                    Transaction(
+                        id=str(uuid4()),
+                        product_id=destination.id,
+                        transaction_type=TransactionType.CASH_TRANSFER_IN,
+                        status=TransactionStatus.CONFIRMED,
+                        trade_date=dividend_date,
+                        idempotency_key=f"linked:{dividend.id}",
+                        amount=amount,
+                        shares=amount,
+                        confirmation_nav=ONE,
+                        confirmation_date=dividend_date,
+                        linked_transaction_id=dividend.id,
+                        created_by=actor,
+                    ),
+                    conn,
+                )
+                self._rebuild_positions({destination.id}, conn)
+
+            self._append_operation_audit(
+                idempotency_key,
+                "record_cash_dividend",
+                "product",
+                product_id,
+                {},
+                {
+                    **request,
+                    "dividend_id": dividend.id,
+                    "linked_transaction_id": (
+                        dividend.linked_transaction_id
+                    ),
+                    "status": dividend.status.value,
+                },
+                actor,
+                conn,
+            )
+            return dividend
+
     def confirm_pending(self, transaction_id, quote) -> Transaction:
         with self.repository.database.transaction() as conn:
             transaction = self.repository.get_transaction_by_id(
@@ -958,6 +1083,7 @@ class PortfolioTransactionService:
             TransactionType.MANUAL_PURCHASE,
             TransactionType.MANUAL_REDEMPTION,
             TransactionType.SIP_PURCHASE,
+            TransactionType.CASH_DIVIDEND,
         }:
             linked = self._require_consistent_link(transaction, conn)
             return [transaction, linked] if linked is not None else [transaction]
@@ -1072,6 +1198,7 @@ class PortfolioTransactionService:
             TransactionType.MANUAL_PURCHASE,
             TransactionType.MANUAL_REDEMPTION,
             TransactionType.SIP_PURCHASE,
+            TransactionType.CASH_DIVIDEND,
         }:
             return self._require_consistent_link(root, conn)
         if root.transaction_type in {
@@ -1094,6 +1221,7 @@ class PortfolioTransactionService:
                 TransactionType.MANUAL_PURCHASE,
                 TransactionType.MANUAL_REDEMPTION,
                 TransactionType.SIP_PURCHASE,
+                TransactionType.CASH_DIVIDEND,
             }
         ):
             raise ValueError("inconsistent reversal group")
@@ -1221,6 +1349,57 @@ class PortfolioTransactionService:
             and linked.status is TransactionStatus.CANCELLED
             and audit_payload.get("linked_status")
             == TransactionStatus.CANCELLED.value
+        )
+
+    def _matching_cash_dividend_retry(
+        self,
+        dividend,
+        audit_payload,
+        product_id,
+        amount,
+        dividend_date,
+        destination_cash_product_id,
+        actor,
+        conn,
+    ):
+        if (
+            dividend is None
+            or dividend.id != audit_payload.get("dividend_id")
+            or audit_payload.get("status")
+            != TransactionStatus.CONFIRMED.value
+            or dividend.transaction_type
+            is not TransactionType.CASH_DIVIDEND
+            or dividend.status
+            not in {
+                TransactionStatus.CONFIRMED,
+                TransactionStatus.REVERSED,
+            }
+            or dividend.product_id != product_id
+            or dividend.amount != amount
+            or dividend.shares != ZERO
+            or dividend.trade_date != dividend_date
+            or dividend.confirmation_date != dividend_date
+            or dividend.confirmation_nav is not None
+            or dividend.fee_amount is not None
+            or dividend.fee_rate is not None
+            or dividend.created_by != actor
+        ):
+            return False
+        try:
+            linked = self._require_consistent_link(dividend, conn)
+        except ValueError:
+            return False
+        linked_id = audit_payload.get("linked_transaction_id", "")
+        if destination_cash_product_id == "":
+            return (
+                linked is None
+                and dividend.linked_transaction_id == ""
+                and linked_id == ""
+            )
+        return (
+            linked is not None
+            and linked.id == linked_id
+            and linked.product_id == destination_cash_product_id
         )
 
     def _matching_adjustment_retry(
@@ -1456,6 +1635,7 @@ class PortfolioTransactionService:
             TransactionType.MANUAL_PURCHASE,
             TransactionType.MANUAL_REDEMPTION,
             TransactionType.SIP_PURCHASE,
+            TransactionType.CASH_DIVIDEND,
         }:
             raise ValueError("inconsistent linked transaction")
         reverse_cash_links = [
@@ -1519,6 +1699,11 @@ class PortfolioTransactionService:
             consistent = self._purchase_link_is_consistent(
                 transaction, linked, product
             )
+        elif transaction.transaction_type is TransactionType.CASH_DIVIDEND:
+            consistent = self._cash_dividend_link_is_consistent(
+                transaction,
+                linked,
+            )
         else:
             consistent = self._redemption_link_is_consistent(
                 transaction, linked, product
@@ -1526,6 +1711,27 @@ class PortfolioTransactionService:
         if not consistent:
             raise ValueError("inconsistent linked transaction")
         return linked
+
+    @classmethod
+    def _cash_dividend_link_is_consistent(cls, transaction, linked):
+        return (
+            transaction.status
+            in {
+                TransactionStatus.CONFIRMED,
+                TransactionStatus.REVERSED,
+            }
+            and cls._is_finite_positive(transaction.amount)
+            and transaction.shares == ZERO
+            and transaction.confirmation_nav is None
+            and transaction.confirmation_date == transaction.trade_date
+            and transaction.fee_amount is None
+            and transaction.fee_rate is None
+            and linked.amount == transaction.amount
+            and linked.shares == transaction.amount
+            and linked.idempotency_key == f"linked:{transaction.id}"
+            and linked.confirmation_nav == ONE
+            and linked.confirmation_date == transaction.trade_date
+        )
 
     @classmethod
     def _purchase_link_is_consistent(cls, transaction, linked, product):

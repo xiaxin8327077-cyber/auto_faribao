@@ -2718,3 +2718,244 @@ def test_repository_get_quote_is_exact_date_and_connection_aware(services):
     assert repository.get_quote("fund", TRADE_DATE) is None
     with repository.database.transaction() as conn:
         assert repository.get_quote("fund", date(2026, 7, 29), conn=conn) == old
+
+
+def test_cash_dividend_without_destination_is_external_and_share_neutral(
+    services,
+):
+    repository, transactions, projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_opening_position(repository, "fund", "100", amount="125")
+    before = projector.calculate("fund")
+
+    dividend = transactions.record_cash_dividend(
+        "fund",
+        Decimal("25"),
+        TRADE_DATE,
+        "web:dividend-external",
+        actor="operator",
+    )
+
+    assert dividend.transaction_type is TransactionType.CASH_DIVIDEND
+    assert dividend.status is TransactionStatus.CONFIRMED
+    assert dividend.amount == Decimal("25")
+    assert dividend.shares == Decimal("0")
+    assert dividend.linked_transaction_id == ""
+    assert dividend.created_by == "operator"
+    assert projector.calculate("fund") == before
+
+
+def test_cash_dividend_destination_creates_equal_linked_cash_transfer(
+    services,
+):
+    repository, transactions, projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_cash(repository, "cash", "1000")
+
+    dividend = transactions.record_cash_dividend(
+        "fund",
+        Decimal("25"),
+        TRADE_DATE,
+        "web:dividend-linked",
+        destination_cash_product_id="cash",
+    )
+
+    cash_leg = linked_leg(repository, dividend)
+    assert cash_leg.transaction_type is TransactionType.CASH_TRANSFER_IN
+    assert cash_leg.status is TransactionStatus.CONFIRMED
+    assert cash_leg.product_id == "cash"
+    assert cash_leg.amount == Decimal("25")
+    assert cash_leg.shares == Decimal("25")
+    assert cash_leg.confirmation_nav == Decimal("1")
+    assert cash_leg.confirmation_date == TRADE_DATE
+    assert cash_leg.linked_transaction_id == dividend.id
+    assert projector.calculate("cash").total_shares == Decimal("1025")
+    assert projector.calculate("fund").total_shares == Decimal("0")
+
+
+@pytest.mark.parametrize("reverse_from", ["dividend", "cash_leg"])
+def test_linked_cash_dividend_reversal_restores_destination_holding(
+    services,
+    reverse_from,
+):
+    repository, transactions, projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_cash(repository, "cash", "1000")
+    dividend = transactions.record_cash_dividend(
+        "fund",
+        Decimal("25"),
+        TRADE_DATE,
+        f"web:dividend-to-reverse:{reverse_from}",
+        destination_cash_product_id="cash",
+    )
+    cash_leg = linked_leg(repository, dividend)
+
+    reversal = transactions.reverse_confirmed(
+        dividend.id if reverse_from == "dividend" else cash_leg.id,
+        "分红录入错误",
+        f"web:reverse-dividend:{reverse_from}",
+    )
+
+    assert reversal.transaction_type is TransactionType.REVERSAL
+    assert projector.calculate("fund").total_shares == Decimal("0")
+    assert projector.calculate("cash").total_shares == Decimal("1000")
+    assert (
+        repository.get_transaction_by_id(dividend.id).status
+        is TransactionStatus.REVERSED
+    )
+    assert (
+        repository.get_transaction_by_id(cash_leg.id).status
+        is TransactionStatus.REVERSED
+    )
+
+
+def test_external_cash_dividend_can_be_reversed_without_changing_shares(
+    services,
+):
+    repository, transactions, projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_opening_position(repository, "fund", "100", amount="125")
+    before = projector.calculate("fund")
+    dividend = transactions.record_cash_dividend(
+        "fund",
+        Decimal("25"),
+        TRADE_DATE,
+        "web:external-dividend-to-reverse",
+    )
+
+    reversal = transactions.reverse_confirmed(
+        dividend.id,
+        "分红录入错误",
+        "web:reverse-external-dividend",
+    )
+
+    assert reversal.amount == Decimal("-25")
+    assert reversal.shares == Decimal("0")
+    assert projector.calculate("fund") == before
+
+
+def test_cash_dividend_is_idempotent_and_audited_once(services):
+    repository, transactions, _projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_cash(repository, "cash", "1000")
+
+    first = transactions.record_cash_dividend(
+        "fund",
+        Decimal("25"),
+        TRADE_DATE,
+        "web:dividend-idempotent",
+        destination_cash_product_id="cash",
+        actor="operator",
+    )
+    retried = transactions.record_cash_dividend(
+        "fund",
+        Decimal("25.0"),
+        TRADE_DATE,
+        "web:dividend-idempotent",
+        destination_cash_product_id="cash",
+        actor="operator",
+    )
+
+    assert retried == first
+    with repository.database.connection() as conn:
+        audits = conn.execute(
+            """SELECT action, object_type, object_id, source,
+                      before_json, after_json
+               FROM audit_logs"""
+        ).fetchall()
+    assert len(audits) == 1
+    assert tuple(audits[0][:4]) == (
+        "record_cash_dividend",
+        "product",
+        "fund",
+        "operator",
+    )
+    assert json.loads(audits[0]["before_json"]) == {}
+    after = json.loads(audits[0]["after_json"])
+    assert after["amount"] == "25"
+    assert after["destination_cash_product_id"] == "cash"
+    assert after["dividend_id"] == first.id
+    assert after["linked_transaction_id"] == first.linked_transaction_id
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("amount", Decimal("26")),
+        ("dividend_date", date(2026, 7, 29)),
+        ("destination_cash_product_id", ""),
+        ("actor", "other"),
+    ],
+)
+def test_cash_dividend_retry_rejects_conflicting_request(
+    services,
+    field,
+    value,
+):
+    repository, transactions, _projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_cash(repository, "cash", "1000")
+    request = {
+        "product_id": "fund",
+        "amount": Decimal("25"),
+        "dividend_date": TRADE_DATE,
+        "idempotency_key": "web:dividend-conflict",
+        "destination_cash_product_id": "cash",
+        "actor": "operator",
+    }
+    transactions.record_cash_dividend(**request)
+    request[field] = value
+
+    with pytest.raises(
+        ValueError,
+        match="idempotency key conflicts with existing request",
+    ):
+        transactions.record_cash_dividend(**request)
+
+
+def test_cash_dividend_requires_cash_management_destination(services):
+    repository, transactions, _projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_product(repository, "other-fund", ProductType.PUBLIC_FUND)
+
+    with pytest.raises(ValueError, match="destination must be cash_management"):
+        transactions.record_cash_dividend(
+            "fund",
+            Decimal("25"),
+            TRADE_DATE,
+            "web:dividend-invalid-destination",
+            destination_cash_product_id="other-fund",
+        )
+
+
+def test_cash_dividend_rolls_back_linked_pair_audit_and_projection_together(
+    services,
+    monkeypatch,
+):
+    repository, transactions, projector = services
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_cash(repository, "cash", "1000")
+    before = repository.get_position("cash")
+
+    def fail_destination_calculation(product_id, conn=None):
+        assert product_id == "cash"
+        assert conn is not None
+        raise RuntimeError("destination projection failed")
+
+    monkeypatch.setattr(projector, "_calculate", fail_destination_calculation)
+
+    with pytest.raises(RuntimeError, match="destination projection failed"):
+        transactions.record_cash_dividend(
+            "fund",
+            Decimal("25"),
+            TRADE_DATE,
+            "web:dividend-rollback",
+            destination_cash_product_id="cash",
+        )
+
+    assert repository.get_transaction_by_idempotency(
+        "web:dividend-rollback"
+    ) is None
+    assert repository.get_position("cash") == before
+    with repository.database.connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0] == 0
