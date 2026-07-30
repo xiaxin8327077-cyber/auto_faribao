@@ -142,19 +142,90 @@ class PositionProjector:
         transactions_by_id = {
             transaction.id: transaction for transaction in transactions
         }
-        neutralized_event_ids = set()
+        reversals = [
+            transaction
+            for transaction in transactions
+            if transaction.transaction_type is TransactionType.REVERSAL
+        ]
+        original_by_reversal_id = {}
+        reversal_by_original_id = {}
+
+        for reversal in reversals:
+            if not reversal.linked_transaction_id:
+                raise ValueError("invalid reversal link")
+            original = transactions_by_id.get(reversal.linked_transaction_id)
+            if (
+                original is None
+                or original.product_id != reversal.product_id
+            ):
+                raise ValueError("invalid reversal link")
+            if original.id in reversal_by_original_id:
+                raise ValueError("duplicate reversal link")
+            if (
+                original.status is not TransactionStatus.REVERSED
+                or reversal.status
+                not in {
+                    TransactionStatus.CONFIRMED,
+                    TransactionStatus.REVERSED,
+                }
+            ):
+                raise ValueError("invalid reversal status")
+            if (
+                original.shares is None
+                or original.amount is None
+                or reversal.shares is None
+                or reversal.amount is None
+                or reversal.shares != -original.shares
+                or reversal.amount != -original.amount
+            ):
+                raise ValueError("invalid reversal values")
+            original_by_reversal_id[reversal.id] = original
+            reversal_by_original_id[original.id] = reversal
+
         for transaction in transactions:
             if (
-                transaction.transaction_type is not TransactionType.REVERSAL
-                or transaction.status not in _APPLIED_STATUSES
-                or not transaction.linked_transaction_id
+                transaction.status is TransactionStatus.REVERSED
+                and transaction.id not in reversal_by_original_id
             ):
-                continue
-            original = transactions_by_id.get(transaction.linked_transaction_id)
-            if original is None or original.status not in _APPLIED_STATUSES:
-                continue
-            neutralized_event_ids.add(original.id)
-            neutralized_event_ids.add(transaction.id)
+                raise ValueError("invalid reversal status")
+
+        confirmed_leaves = []
+        for reversal in reversals:
+            if reversal.status is TransactionStatus.CONFIRMED:
+                if reversal.id in reversal_by_original_id:
+                    raise ValueError("invalid reversal status")
+                confirmed_leaves.append(reversal)
+            elif reversal.id not in reversal_by_original_id:
+                raise ValueError("invalid reversal status")
+
+        neutralized_event_ids = set()
+        reached_reversal_ids = set()
+        for leaf in confirmed_leaves:
+            chain = [leaf]
+            current = leaf
+            local_reversal_ids = set()
+            while current.transaction_type is TransactionType.REVERSAL:
+                if current.id in local_reversal_ids:
+                    raise ValueError("invalid reversal link")
+                local_reversal_ids.add(current.id)
+                reached_reversal_ids.add(current.id)
+                original = original_by_reversal_id.get(current.id)
+                if original is None:
+                    raise ValueError("invalid reversal link")
+                chain.append(original)
+                current = original
+
+            for index in range(0, len(chain) - 1, 2):
+                pair = {chain[index].id, chain[index + 1].id}
+                if neutralized_event_ids.intersection(pair):
+                    raise ValueError("duplicate reversal link")
+                neutralized_event_ids.update(pair)
+
+        if reached_reversal_ids != {
+            reversal.id for reversal in reversals
+        }:
+            raise ValueError("invalid reversal status")
+
         return neutralized_event_ids
 
     @staticmethod

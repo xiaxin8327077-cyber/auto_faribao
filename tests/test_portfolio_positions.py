@@ -51,8 +51,8 @@ def tx(
         status=status,
         trade_date=trade_date,
         idempotency_key=f"test:{tx_id}",
-        shares=Decimal(shares),
-        amount=Decimal(amount),
+        shares=Decimal(shares) if shares is not None else None,
+        amount=Decimal(amount) if amount is not None else None,
         linked_transaction_id=linked_transaction_id,
     )
 
@@ -281,7 +281,7 @@ def test_projector_applies_income_and_transfer_cost_and_ignores_cash_dividend(re
     )
 
 
-def test_projector_replays_reversed_original_and_independent_signed_reversal(repo):
+def test_projector_replays_a_strict_linked_reversal_pair(repo):
     repo.add_product(product("fund"))
     repo.create_transaction(
         tx(
@@ -301,6 +301,7 @@ def test_projector_replays_reversed_original_and_independent_signed_reversal(rep
             TransactionStatus.CONFIRMED,
             "-12.5",
             "-25",
+            linked_transaction_id="01-original",
         )
     )
     repo.create_transaction(
@@ -333,7 +334,7 @@ def test_projector_replays_reversed_original_and_independent_signed_reversal(rep
     )
 
 
-def test_positive_signed_reversal_restores_a_reversed_outflow(repo):
+def test_linked_reversal_negates_raw_outflow_fields_not_share_direction(repo):
     repo.add_product(product("fund"))
     events = [
         tx(
@@ -357,8 +358,9 @@ def test_positive_signed_reversal_restores_a_reversed_outflow(repo):
             "fund",
             TransactionType.REVERSAL,
             TransactionStatus.CONFIRMED,
-            "20",
-            "40",
+            "-20",
+            "-50",
+            linked_transaction_id="02-outflow",
         ),
     ]
     for event in events:
@@ -394,7 +396,7 @@ def test_linked_reversal_restores_cost_after_a_full_outflow(repo):
             "fund",
             TransactionType.REVERSAL,
             TransactionStatus.CONFIRMED,
-            "3",
+            "-3",
             "-10",
             linked_transaction_id="02-outflow",
         ),
@@ -517,6 +519,227 @@ def test_linked_reversal_is_causal_when_same_timestamp_id_sorts_before_original(
         reversal_id,
         original_id,
     ]
+    assert PositionProjector(repo).calculate("fund") == Position(
+        "fund",
+        available_shares=Decimal("100"),
+        locked_shares=Decimal("0"),
+        total_shares=Decimal("100"),
+        cost_basis=Decimal("100"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("reversal_shares", "reversal_amount"),
+    [
+        ("-99", "-1000"),
+        ("-100", "-999"),
+        ("-100", None),
+    ],
+)
+def test_linked_reversal_rejects_partial_or_incomplete_values(
+    repo, reversal_shares, reversal_amount
+):
+    repo.add_product(product("fund"))
+    repo.create_transaction(
+        tx(
+            "original",
+            "fund",
+            TransactionType.MANUAL_PURCHASE,
+            TransactionStatus.REVERSED,
+            "100",
+            "1000",
+        )
+    )
+    repo.create_transaction(
+        tx(
+            "reversal",
+            "fund",
+            TransactionType.REVERSAL,
+            TransactionStatus.CONFIRMED,
+            reversal_shares,
+            reversal_amount,
+            linked_transaction_id="original",
+        )
+    )
+
+    with pytest.raises(ValueError, match="^invalid reversal values$"):
+        PositionProjector(repo).calculate("fund")
+
+
+def test_reversal_rejects_empty_link(repo):
+    repo.add_product(product("fund"))
+    repo.create_transaction(
+        tx(
+            "reversal",
+            "fund",
+            TransactionType.REVERSAL,
+            TransactionStatus.CONFIRMED,
+            "-1",
+            "-1",
+        )
+    )
+
+    with pytest.raises(ValueError, match="^invalid reversal link$"):
+        PositionProjector(repo).calculate("fund")
+
+
+def test_reversal_rejects_nonempty_link_missing_from_snapshot(repo):
+    repo.add_product(product("fund"))
+    with repo.database.connection() as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date,
+                amount, shares, linked_transaction_id, idempotency_key,
+                note, created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "reversal",
+                "fund",
+                TransactionType.REVERSAL.value,
+                TransactionStatus.CONFIRMED.value,
+                date(2026, 7, 30).isoformat(),
+                "-1",
+                "-1",
+                "missing",
+                "test:reversal",
+                "",
+                "system",
+            ),
+        )
+
+    with pytest.raises(ValueError, match="^invalid reversal link$"):
+        PositionProjector(repo).calculate("fund")
+
+
+def test_reversal_rejects_cross_product_link(repo):
+    repo.add_product(product("a"))
+    repo.add_product(product("b"))
+    repo.create_transaction(
+        tx(
+            "original",
+            "a",
+            TransactionType.MANUAL_PURCHASE,
+            TransactionStatus.REVERSED,
+            "1",
+            "1",
+        )
+    )
+    repo.create_transaction(
+        tx(
+            "reversal",
+            "b",
+            TransactionType.REVERSAL,
+            TransactionStatus.CONFIRMED,
+            "-1",
+            "-1",
+            linked_transaction_id="original",
+        )
+    )
+
+    with pytest.raises(ValueError, match="^invalid reversal link$"):
+        PositionProjector(repo).calculate("b")
+
+
+@pytest.mark.parametrize(
+    ("original_status", "reversal_status"),
+    [
+        (TransactionStatus.CONFIRMED, TransactionStatus.CONFIRMED),
+        (TransactionStatus.REVERSED, TransactionStatus.REVERSED),
+    ],
+)
+def test_reversal_rejects_inconsistent_pair_statuses(
+    repo, original_status, reversal_status
+):
+    repo.add_product(product("fund"))
+    repo.create_transaction(
+        tx(
+            "original",
+            "fund",
+            TransactionType.MANUAL_PURCHASE,
+            original_status,
+            "1",
+            "1",
+        )
+    )
+    repo.create_transaction(
+        tx(
+            "reversal",
+            "fund",
+            TransactionType.REVERSAL,
+            reversal_status,
+            "-1",
+            "-1",
+            linked_transaction_id="original",
+        )
+    )
+
+    with pytest.raises(ValueError, match="^invalid reversal status$"):
+        PositionProjector(repo).calculate("fund")
+
+
+def test_reversal_rejects_duplicate_children_for_one_original(repo):
+    repo.add_product(product("fund"))
+    repo.create_transaction(
+        tx(
+            "original",
+            "fund",
+            TransactionType.MANUAL_PURCHASE,
+            TransactionStatus.REVERSED,
+            "1",
+            "1",
+        )
+    )
+    for reversal_id in ("reversal-a", "reversal-b"):
+        repo.create_transaction(
+            tx(
+                reversal_id,
+                "fund",
+                TransactionType.REVERSAL,
+                TransactionStatus.CONFIRMED,
+                "-1",
+                "-1",
+                linked_transaction_id="original",
+            )
+        )
+
+    with pytest.raises(ValueError, match="^duplicate reversal link$"):
+        PositionProjector(repo).calculate("fund")
+
+
+def test_reversal_of_reversal_pairs_from_confirmed_leaf_and_restores_root(repo):
+    repo.add_product(product("fund"))
+    events = [
+        tx(
+            "a",
+            "fund",
+            TransactionType.MANUAL_PURCHASE,
+            TransactionStatus.REVERSED,
+            "100",
+            "100",
+        ),
+        tx(
+            "r1",
+            "fund",
+            TransactionType.REVERSAL,
+            TransactionStatus.REVERSED,
+            "-100",
+            "-100",
+            linked_transaction_id="a",
+        ),
+        tx(
+            "r2",
+            "fund",
+            TransactionType.REVERSAL,
+            TransactionStatus.CONFIRMED,
+            "100",
+            "100",
+            linked_transaction_id="r1",
+        ),
+    ]
+    for event in events:
+        repo.create_transaction(event)
+
     assert PositionProjector(repo).calculate("fund") == Position(
         "fund",
         available_shares=Decimal("100"),
