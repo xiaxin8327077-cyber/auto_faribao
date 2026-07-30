@@ -749,6 +749,114 @@ def test_reversal_of_reversal_pairs_from_confirmed_leaf_and_restores_root(repo):
     )
 
 
+@pytest.mark.parametrize(
+    "reversal_status",
+    [TransactionStatus.CANCELLED, TransactionStatus.FAILED],
+)
+def test_cancelled_or_failed_reversal_is_ignored(
+    repo, reversal_status
+):
+    repo.add_product(product("fund"))
+    repo.create_transaction(
+        tx(
+            "purchase",
+            "fund",
+            TransactionType.MANUAL_PURCHASE,
+            TransactionStatus.CONFIRMED,
+            "100",
+            "250",
+        )
+    )
+    repo.create_transaction(
+        tx(
+            "ignored-reversal",
+            "fund",
+            TransactionType.REVERSAL,
+            reversal_status,
+            "-100",
+            "-250",
+            linked_transaction_id="purchase",
+        )
+    )
+
+    assert PositionProjector(repo).calculate("fund") == Position(
+        "fund",
+        available_shares=Decimal("100"),
+        locked_shares=Decimal("0"),
+        total_shares=Decimal("100"),
+        cost_basis=Decimal("250"),
+    )
+
+
+@pytest.mark.parametrize(
+    "reversal_status",
+    [
+        TransactionStatus.PENDING_QUOTE,
+        TransactionStatus.PENDING_CONFIRMATION,
+    ],
+)
+def test_pending_reversal_does_not_enter_graph_validation_or_affect_totals(
+    repo, reversal_status
+):
+    repo.add_product(product("fund"))
+    repo.create_transaction(
+        tx(
+            "purchase",
+            "fund",
+            TransactionType.MANUAL_PURCHASE,
+            TransactionStatus.CONFIRMED,
+            "100",
+            "250",
+        )
+    )
+    repo.create_transaction(
+        tx(
+            "ignored-reversal",
+            "fund",
+            TransactionType.REVERSAL,
+            reversal_status,
+            "-999",
+            None,
+        )
+    )
+
+    assert PositionProjector(repo).calculate("fund") == Position(
+        "fund",
+        available_shares=Decimal("100"),
+        locked_shares=Decimal("0"),
+        total_shares=Decimal("100"),
+        cost_basis=Decimal("250"),
+    )
+
+
+def test_pending_reversal_does_not_hide_a_reversed_orphan(repo):
+    repo.add_product(product("fund"))
+    repo.create_transaction(
+        tx(
+            "orphan",
+            "fund",
+            TransactionType.MANUAL_PURCHASE,
+            TransactionStatus.REVERSED,
+            "100",
+            "250",
+        )
+    )
+    repo.create_transaction(
+        tx(
+            "pending-reversal",
+            "fund",
+            TransactionType.REVERSAL,
+            TransactionStatus.PENDING_CONFIRMATION,
+            "-100",
+            "-250",
+            linked_transaction_id="orphan",
+        )
+    )
+
+    with pytest.raises(ValueError, match="^invalid reversal status$"):
+        PositionProjector(repo).calculate("fund")
+
+
 def test_full_average_cost_outflow_has_no_decimal_rounding_residue(repo):
     repo.add_product(product("fund"))
     repo.create_transaction(

@@ -145,7 +145,10 @@ class PositionProjector:
         reversals = [
             transaction
             for transaction in transactions
-            if transaction.transaction_type is TransactionType.REVERSAL
+            if (
+                transaction.transaction_type is TransactionType.REVERSAL
+                and transaction.status in _APPLIED_STATUSES
+            )
         ]
         original_by_reversal_id = {}
         reversal_by_original_id = {}
