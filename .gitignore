@@ -20,6 +20,7 @@ env/
 # Project runtime data (drafts, markers, etc.)
 data/*.json
 !data/.gitkeep
+data/nav_dashboard_access_token
 
 # Logs
 *.log
