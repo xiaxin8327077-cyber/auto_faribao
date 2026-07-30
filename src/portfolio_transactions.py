@@ -3,6 +3,7 @@ from decimal import Decimal, InvalidOperation
 import json
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from src.portfolio_db import canonical_idempotency_key
 from src.portfolio_models import (
     ProductType,
     Transaction,
@@ -688,9 +689,10 @@ class PortfolioTransactionService:
 
     @staticmethod
     def _nonempty_text(value, name):
-        if not isinstance(value, str) or not value.strip():
+        normalized = canonical_idempotency_key(value)
+        if not normalized:
             raise ValueError(f"{name} must not be empty")
-        return value.strip()
+        return normalized
 
     @staticmethod
     def _decimal_audit_text(value):

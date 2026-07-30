@@ -35,6 +35,7 @@ class PortfolioTargetState(Enum):
     LEGACY_OR_MISSING = "legacy_or_missing"
     CURRENT = "current"
     UPGRADEABLE_V1 = "upgradeable_v1"
+    ACTIVE_SIDECARS = "active_sidecars"
     UNSUPPORTED_PORTFOLIO = "unsupported_portfolio"
 
 
@@ -57,13 +58,18 @@ def migrate_legacy_portfolio(
     products, expected_shares = _legacy_products(cfg)
 
     target_state = _inspect_target_schema(target_path)
+    if target_state is PortfolioTargetState.ACTIVE_SIDECARS:
+        raise ValueError("active portfolio database sidecars are unsafe")
     if target_state is PortfolioTargetState.UNSUPPORTED_PORTFOLIO:
         raise ValueError("unsupported portfolio schema version")
     if target_state is PortfolioTargetState.UPGRADEABLE_V1:
-        PortfolioDatabase(target_path).initialize()
-        target_state = _inspect_target_schema(target_path)
-        if target_state is not PortfolioTargetState.CURRENT:
-            raise ValueError("portfolio schema upgrade did not reach current")
+        return _handle_v1_target(
+            state_path,
+            target_path,
+            len(products),
+            expected_shares,
+            install,
+        )
     if target_state is PortfolioTargetState.CURRENT:
         _validate_candidate(target_path, len(products), expected_shares)
         counts = _database_counts(target_path)
@@ -101,6 +107,7 @@ def migrate_legacy_portfolio(
             )
 
         _copy_legacy_profits(database, state)
+        _close_candidate_snapshot(candidate)
         _validate_candidate(candidate, len(products), expected_shares)
         counts = _database_counts(candidate)
 
@@ -120,6 +127,59 @@ def migrate_legacy_portfolio(
     except BaseException:
         _delete_candidate(candidate)
         raise
+
+
+def _handle_v1_target(
+    state_path,
+    target_path,
+    expected_product_count,
+    expected_shares,
+    install,
+):
+    _load_legacy_state(state_path)
+    candidate = target_path.with_name(
+        f"{target_path.name}.migrating-{uuid4()}"
+    )
+    try:
+        shutil.copy2(target_path, candidate)
+        PortfolioDatabase(candidate).initialize()
+        _close_candidate_snapshot(candidate)
+        _validate_candidate(
+            candidate,
+            expected_product_count,
+            expected_shares,
+        )
+        counts = _database_counts(candidate)
+        if install:
+            target_state = _inspect_target_schema(target_path)
+            if target_state is PortfolioTargetState.ACTIVE_SIDECARS:
+                raise ValueError(
+                    "active portfolio database sidecars are unsafe"
+                )
+            if target_state is not PortfolioTargetState.UPGRADEABLE_V1:
+                raise ValueError(
+                    "portfolio target changed during validation"
+                )
+            PortfolioDatabase(target_path).initialize()
+        return MigrationReport(
+            *counts,
+            installed=False,
+            backup_dir="",
+        )
+    finally:
+        _delete_candidate(candidate)
+
+
+def _close_candidate_snapshot(candidate):
+    conn = sqlite3.connect(candidate)
+    try:
+        if conn.execute(
+            "PRAGMA journal_mode"
+        ).fetchone()[0].lower() == "wal":
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            conn.execute("PRAGMA journal_mode = DELETE").fetchone()
+    finally:
+        conn.close()
 
 
 def _legacy_products(cfg):
@@ -238,6 +298,18 @@ def _contains_current_schema(path: Path) -> bool:
 def _inspect_target_schema(path: Path) -> PortfolioTargetState:
     if not path.is_file():
         return PortfolioTargetState.LEGACY_OR_MISSING
+    sidecars = (
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    )
+    try:
+        if any(
+            sidecar.is_file() and sidecar.stat().st_size
+            for sidecar in sidecars
+        ):
+            return PortfolioTargetState.ACTIVE_SIDECARS
+    except OSError:
+        return PortfolioTargetState.ACTIVE_SIDECARS
     try:
         with _read_only_connection(path) as conn:
             tables = {

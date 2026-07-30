@@ -39,6 +39,10 @@ def _is_decimal_negation(left, right) -> int:
     )
 
 
+def canonical_idempotency_key(value) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 BASE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -322,15 +326,15 @@ BEGIN
 END;
 CREATE TRIGGER IF NOT EXISTS validate_transaction_idempotency_key_on_insert
 BEFORE INSERT ON transactions
-WHEN NEW.idempotency_key != TRIM(NEW.idempotency_key)
-    OR LENGTH(TRIM(NEW.idempotency_key)) = 0
+WHEN NEW.idempotency_key != canonical_idempotency_key(NEW.idempotency_key)
+    OR LENGTH(canonical_idempotency_key(NEW.idempotency_key)) = 0
 BEGIN
     SELECT RAISE(ABORT, 'idempotency key must be normalized');
 END;
 CREATE TRIGGER IF NOT EXISTS validate_transaction_idempotency_key_on_update
 BEFORE UPDATE OF idempotency_key ON transactions
-WHEN NEW.idempotency_key != TRIM(NEW.idempotency_key)
-    OR LENGTH(TRIM(NEW.idempotency_key)) = 0
+WHEN NEW.idempotency_key != canonical_idempotency_key(NEW.idempotency_key)
+    OR LENGTH(canonical_idempotency_key(NEW.idempotency_key)) = 0
 BEGIN
     SELECT RAISE(ABORT, 'idempotency key must be normalized');
 END;
@@ -397,6 +401,12 @@ class PortfolioDatabase:
         )
         conn.create_function(
             "decimal_negation", 2, _is_decimal_negation, deterministic=True
+        )
+        conn.create_function(
+            "canonical_idempotency_key",
+            1,
+            canonical_idempotency_key,
+            deterministic=True,
         )
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 15000")
@@ -466,8 +476,10 @@ class PortfolioDatabase:
         unsafe_key = conn.execute(
             """SELECT 1
                FROM transactions
-               GROUP BY TRIM(idempotency_key)
-               HAVING LENGTH(TRIM(idempotency_key)) = 0
+               GROUP BY canonical_idempotency_key(idempotency_key)
+               HAVING LENGTH(
+                   canonical_idempotency_key(idempotency_key)
+               ) = 0
                    OR COUNT(*) > 1
                LIMIT 1"""
         ).fetchone()
@@ -479,9 +491,11 @@ class PortfolioDatabase:
             row["id"] for row in conn.execute("SELECT id FROM audit_logs")
         }
         for row in conn.execute(
-            "SELECT idempotency_key FROM transactions"
+            """SELECT canonical_idempotency_key(idempotency_key)
+                      AS normalized_key
+               FROM transactions"""
         ):
-            normalized_key = row["idempotency_key"].strip()
+            normalized_key = row["normalized_key"]
             operation_id = str(
                 uuid5(
                     NAMESPACE_URL,
@@ -611,8 +625,10 @@ class PortfolioDatabase:
         )
         conn.execute(
             """UPDATE transactions
-               SET idempotency_key = TRIM(idempotency_key)
-               WHERE idempotency_key != TRIM(idempotency_key)"""
+               SET idempotency_key =
+                   canonical_idempotency_key(idempotency_key)
+               WHERE idempotency_key !=
+                   canonical_idempotency_key(idempotency_key)"""
         )
         _execute_sql_script(conn, IMMUTABLE_TRANSACTION_TRIGGERS_SQL)
 

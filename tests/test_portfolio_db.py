@@ -386,8 +386,13 @@ def test_v1_upgrade_rejects_invalid_applied_reversal_graph_atomically(
         ] == before_rows
 
 
+@pytest.mark.parametrize(
+    "whitespace",
+    [" ", "\t", "\r\n", "\u00a0", "\u2003"],
+)
 def test_v1_upgrade_normalizes_key_and_equivalent_retry_reuses_old_row(
     tmp_path,
+    whitespace,
 ):
     db = PortfolioDatabase(tmp_path / "portfolio.db")
     initialize_v1_database(db)
@@ -405,7 +410,8 @@ def test_v1_upgrade_normalizes_key_and_equivalent_retry_reuses_old_row(
                 confirmation_nav, idempotency_key, created_by)
                VALUES ('old-purchase', 'cash', 'manual_purchase', 'confirmed',
                        '2026-07-30', '10', '10', '0', '0', '2026-07-30',
-                       '1', ' old-key ', 'web')"""
+                       '1', ?, 'web')""",
+            (f"{whitespace}old-key{whitespace}",),
         )
 
     db.initialize()
@@ -444,8 +450,8 @@ def test_v1_upgrade_rejects_unsafe_idempotency_normalization_atomically(
                        'active')"""
         )
         keys = {
-            "blank": ["   "],
-            "trim_collision": ["same-key", " same-key "],
+            "blank": ["\u2003\t\r\n\u00a0"],
+            "trim_collision": ["same-key", "\u00a0same-key\t"],
             "operation_collision": [" operation-key "],
         }[dirty_kind]
         for index, key in enumerate(keys):
@@ -503,7 +509,19 @@ def test_v1_upgrade_rejects_unsafe_idempotency_normalization_atomically(
         ] == before_rows
 
 
-@pytest.mark.parametrize("bad_key", ["", "   ", " padded "])
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "",
+        "   ",
+        " padded ",
+        "\tkey\t",
+        "\r\nkey\r\n",
+        "\u00a0key\u00a0",
+        "\u2003key\u2003",
+        "\t\r\n\u00a0\u2003",
+    ],
+)
 def test_v2_database_rejects_non_normalized_transaction_keys(
     tmp_path,
     bad_key,
@@ -528,6 +546,40 @@ def test_v2_database_rejects_non_normalized_transaction_keys(
                    VALUES ('bad', 'cash', 'opening_position', 'confirmed',
                            '2026-01-01', '1', '1', ?, 'test')""",
                 (bad_key,),
+            )
+
+
+def test_v2_external_sqlite_writer_without_canonical_function_fails_safe(
+    tmp_path,
+):
+    path = tmp_path / "portfolio.db"
+    db = PortfolioDatabase(path)
+    db.initialize()
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('cash', 'test', 'cash', '现金', 'cash_management',
+                       'active')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date,
+                amount, shares, idempotency_key, created_by)
+               VALUES ('external', 'cash', 'opening_position',
+                       'pending_quote', '2026-01-01', '1', '1',
+                       'external-key', 'test')"""
+        )
+
+    with sqlite3.connect(path) as conn:
+        with pytest.raises(
+            sqlite3.OperationalError,
+            match="canonical_idempotency_key",
+        ):
+            conn.execute(
+                """UPDATE transactions
+                   SET idempotency_key = 'external-key-2'
+                   WHERE id = 'external'"""
             )
 
 

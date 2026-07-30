@@ -29,6 +29,41 @@ def legacy_cfg():
     ]}})
 
 
+def file_snapshot(*paths):
+    return {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in paths
+    }
+
+
+def downgrade_target_to_v1(target):
+    conn = sqlite3.connect(target)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode = DELETE")
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute("INSERT INTO schema_migrations(version) VALUES (1)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_target_versions(target, versions):
+    conn = sqlite3.connect(target)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode = DELETE")
+        conn.execute("DELETE FROM schema_migrations")
+        for version in versions:
+            conn.execute(
+                "INSERT INTO schema_migrations(version) VALUES (?)",
+                (version,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_migration_dry_run_does_not_install_database(tmp_path):
     state = tmp_path / "state.json"
     state.write_text(json.dumps({
@@ -96,8 +131,7 @@ def test_install_upgrades_v1_target_in_place_and_preserves_portfolio_data(
         transaction_ids = {
             row["id"] for row in conn.execute("SELECT id FROM transactions")
         }
-        conn.execute("DELETE FROM schema_migrations")
-        conn.execute("INSERT INTO schema_migrations(version) VALUES (1)")
+    downgrade_target_to_v1(target)
 
     monkeypatch.setattr(
         portfolio_migration.os,
@@ -124,6 +158,99 @@ def test_install_upgrades_v1_target_in_place_and_preserves_portfolio_data(
         } == transaction_ids
 
 
+def test_v1_target_dry_run_validates_copy_without_modifying_target(tmp_path):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    migrate_legacy_portfolio(
+        legacy_cfg(), state, target, tmp_path / "backups", install=True
+    )
+    downgrade_target_to_v1(target)
+    before_bytes = target.read_bytes()
+    with sqlite3.connect(target) as conn:
+        before_objects = conn.execute(
+            """SELECT type, name, sql FROM sqlite_master
+               ORDER BY type, name"""
+        ).fetchall()
+        before_rows = conn.execute(
+            """SELECT id, idempotency_key FROM transactions
+               ORDER BY id"""
+        ).fetchall()
+
+    report = migrate_legacy_portfolio(
+        legacy_cfg(),
+        state,
+        target,
+        tmp_path / "backups",
+        install=False,
+    )
+
+    assert report.installed is False
+    assert target.read_bytes() == before_bytes
+    with sqlite3.connect(target) as conn:
+        assert conn.execute(
+            """SELECT type, name, sql FROM sqlite_master
+               ORDER BY type, name"""
+        ).fetchall() == before_objects
+        assert conn.execute(
+            """SELECT id, idempotency_key FROM transactions
+               ORDER BY id"""
+        ).fetchall() == before_rows
+        assert conn.execute(
+            "SELECT version FROM schema_migrations"
+        ).fetchall() == [(1,)]
+    assert not list(tmp_path.glob("portfolio.db.migrating-*"))
+
+
+def test_v1_target_failed_copy_validation_never_modifies_target(tmp_path):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    migrate_legacy_portfolio(
+        legacy_cfg(), state, target, tmp_path / "backups", install=True
+    )
+    downgrade_target_to_v1(target)
+    before_bytes = target.read_bytes()
+    with sqlite3.connect(target) as conn:
+        before_objects = conn.execute(
+            """SELECT type, name, sql FROM sqlite_master
+               ORDER BY type, name"""
+        ).fetchall()
+        before_rows = conn.execute(
+            """SELECT id, idempotency_key FROM transactions
+               ORDER BY id"""
+        ).fetchall()
+    changed_cfg = legacy_cfg()
+    changed_cfg.nav_monitor.products[0].shares = "1"
+
+    with pytest.raises(
+        ValueError,
+        match="opening-position share totals mismatch",
+    ):
+        migrate_legacy_portfolio(
+            changed_cfg,
+            state,
+            target,
+            tmp_path / "backups",
+            install=True,
+        )
+
+    assert target.read_bytes() == before_bytes
+    with sqlite3.connect(target) as conn:
+        assert conn.execute(
+            """SELECT type, name, sql FROM sqlite_master
+               ORDER BY type, name"""
+        ).fetchall() == before_objects
+        assert conn.execute(
+            """SELECT id, idempotency_key FROM transactions
+               ORDER BY id"""
+        ).fetchall() == before_rows
+        assert conn.execute(
+            "SELECT version FROM schema_migrations"
+        ).fetchall() == [(1,)]
+    assert not list(tmp_path.glob("portfolio.db.migrating-*"))
+
+
 @pytest.mark.parametrize("versions", [{3}, {1, 2}])
 def test_install_rejects_unsupported_portfolio_versions_without_changes(
     tmp_path,
@@ -135,13 +262,7 @@ def test_install_rejects_unsupported_portfolio_versions_without_changes(
     migrate_legacy_portfolio(
         legacy_cfg(), state, target, tmp_path / "backups", install=True
     )
-    with PortfolioDatabase(target).connection() as conn:
-        conn.execute("DELETE FROM schema_migrations")
-        for version in versions:
-            conn.execute(
-                "INSERT INTO schema_migrations(version) VALUES (?)",
-                (version,),
-            )
+    set_target_versions(target, versions)
     before_bytes = target.read_bytes()
     with sqlite3.connect(target) as conn:
         before_rows = conn.execute(
@@ -209,6 +330,55 @@ def test_install_rejects_malformed_portfolio_migration_table_without_replace(
         assert conn.execute(
             "SELECT * FROM products"
         ).fetchall() == [("sentinel", "keep")]
+
+
+@pytest.mark.parametrize("versions", [{1}, {3}, {1, 2}])
+def test_migration_rejects_real_uncheckpointed_wal_without_touching_files(
+    tmp_path,
+    versions,
+):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    migrate_legacy_portfolio(
+        legacy_cfg(), state, target, tmp_path / "backups", install=True
+    )
+    wal_path = target.with_name(f"{target.name}-wal")
+    shm_path = target.with_name(f"{target.name}-shm")
+
+    conn = sqlite3.connect(target)
+    try:
+        assert conn.execute(
+            "PRAGMA journal_mode = WAL"
+        ).fetchone()[0].lower() == "wal"
+        conn.execute("PRAGMA wal_autocheckpoint = 0")
+        conn.execute("DELETE FROM schema_migrations")
+        for version in versions:
+            conn.execute(
+                "INSERT INTO schema_migrations(version) VALUES (?)",
+                (version,),
+            )
+        conn.commit()
+        assert wal_path.stat().st_size > 0
+        assert shm_path.stat().st_size > 0
+        before = file_snapshot(target, wal_path, shm_path)
+
+        with pytest.raises(
+            ValueError,
+            match="active portfolio database sidecars",
+        ):
+            migrate_legacy_portfolio(
+                legacy_cfg(),
+                state,
+                target,
+                tmp_path / "backups",
+                install=True,
+            )
+
+        assert file_snapshot(target, wal_path, shm_path) == before
+        assert not list(tmp_path.glob("portfolio.db.migrating-*"))
+    finally:
+        conn.close()
 
 
 def test_failed_validation_never_replaces_target(tmp_path, monkeypatch):
@@ -430,7 +600,7 @@ def test_failed_existing_schema_validation_preserves_database_and_sidecars(
 
     with pytest.raises(
         ValueError,
-        match="opening-position share totals mismatch",
+        match="active portfolio database sidecars",
     ):
         migrate_legacy_portfolio(
             changed_cfg,
