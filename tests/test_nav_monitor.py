@@ -2,6 +2,8 @@ import os
 from datetime import date, datetime
 from decimal import Decimal
 
+import pytest
+
 from src.config import Config, load_config, save_config
 from src.nav_monitor import (
     CiticWealthProvider,
@@ -24,6 +26,92 @@ from src.nav_monitor import (
     set_nav_product_shares_batch,
     set_nav_product_shares,
 )
+
+
+def test_public_fund_market_quote_converts_to_legacy_nav_record():
+    from src.portfolio_models import MarketProduct, MarketQuote, ProductType
+    from src.nav_monitor import market_quote_to_nav_record
+
+    product = MarketProduct(
+        "changsheng_fund", "003103", "长盛盛裕纯债C", ProductType.PUBLIC_FUND
+    )
+    quote = MarketQuote(
+        "003103", date(2026, 7, 29), "changsheng_fund", "hash",
+        unit_nav=Decimal("1.0321"),
+        cumulative_nav=Decimal("1.1288"),
+    )
+
+    record = market_quote_to_nav_record(product, quote)
+
+    assert record.provider == "changsheng_fund"
+    assert record.code == "003103"
+    assert record.name == "长盛盛裕纯债C"
+    assert record.nav_date == date(2026, 7, 29)
+    assert record.unit_nav == Decimal("1.0321")
+    assert record.cumulative_nav == Decimal("1.1288")
+    assert record.source == "changsheng_fund"
+
+
+def test_wealth_nav_market_quote_converts_to_legacy_nav_record():
+    from src.portfolio_models import MarketProduct, MarketQuote, ProductType
+    from src.nav_monitor import market_quote_to_nav_record
+
+    product = MarketProduct(
+        "citic_wealth", "AF233276B", "慧盈象固收增强一年持有期5号B", ProductType.WEALTH_NAV
+    )
+    quote = MarketQuote(
+        "AF233276B", date(2026, 7, 29), "citic_wealth", "hash",
+        unit_nav=Decimal("1.077800"),
+    )
+
+    record = market_quote_to_nav_record(product, quote)
+
+    assert record.nav_date == date(2026, 7, 29)
+    assert record.unit_nav == Decimal("1.077800")
+    assert record.cumulative_nav is None
+
+
+def test_cash_market_quote_cannot_be_forced_into_nav_record():
+    from src.portfolio_models import MarketProduct, MarketQuote, ProductType
+    from src.nav_monitor import market_quote_to_nav_record
+
+    with pytest.raises(ValueError, match="^cash management quote has no unit NAV$"):
+        market_quote_to_nav_record(
+            MarketProduct("nanyin_wealth", "NYRR000007", "日日聚宝", ProductType.CASH_MANAGEMENT),
+            MarketQuote(
+                "NYRR000007", date(2026, 7, 30), "nanyin_wealth", "hash",
+                income_per_10k=Decimal("0.4475"),
+            ),
+        )
+
+
+def test_market_quote_code_must_match_product_before_conversion():
+    from src.portfolio_models import MarketProduct, MarketQuote, ProductType
+    from src.nav_monitor import market_quote_to_nav_record
+
+    product = MarketProduct(
+        "changsheng_fund", "003103", "长盛盛裕纯债C", ProductType.PUBLIC_FUND
+    )
+    quote = MarketQuote(
+        "015736", date(2026, 7, 29), "changsheng_fund", "hash",
+        unit_nav=Decimal("1.0321"),
+    )
+
+    with pytest.raises(ValueError, match="market quote does not match product code"):
+        market_quote_to_nav_record(product, quote)
+
+
+def test_nav_market_quote_requires_unit_nav_for_conversion():
+    from src.portfolio_models import MarketProduct, MarketQuote, ProductType
+    from src.nav_monitor import market_quote_to_nav_record
+
+    product = MarketProduct(
+        "changsheng_fund", "003103", "长盛盛裕纯债C", ProductType.PUBLIC_FUND
+    )
+    quote = MarketQuote("003103", date(2026, 7, 29), "changsheng_fund", "hash")
+
+    with pytest.raises(ValueError, match="market quote is missing unit NAV"):
+        market_quote_to_nav_record(product, quote)
 
 
 def _sample_nav_results_for_image():

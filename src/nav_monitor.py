@@ -133,6 +133,28 @@ class NavRecord:
     source: str = ""
 
 
+def market_quote_to_nav_record(product, quote) -> NavRecord:
+    from src.portfolio_models import ProductType
+
+    if product.product_type is ProductType.CASH_MANAGEMENT:
+        raise ValueError("cash management quote has no unit NAV")
+    if product.product_type not in (ProductType.WEALTH_NAV, ProductType.PUBLIC_FUND):
+        raise ValueError("market quote product type does not support unit NAV")
+    if quote.product_code != product.code:
+        raise ValueError("market quote does not match product code")
+    if quote.unit_nav is None:
+        raise ValueError("market quote is missing unit NAV")
+    return NavRecord(
+        provider=product.provider,
+        code=product.code,
+        name=product.name,
+        nav_date=quote.quote_date,
+        unit_nav=quote.unit_nav,
+        cumulative_nav=quote.cumulative_nav,
+        source=quote.source,
+    )
+
+
 @dataclass(frozen=True)
 class ProductCandidate:
     provider: str
