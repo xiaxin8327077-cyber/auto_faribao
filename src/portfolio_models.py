@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from enum import Enum
+from types import MappingProxyType
 from typing import Mapping, Optional
 
 
@@ -81,6 +82,10 @@ class MarketProduct:
     product_type: ProductType
     registration_code: str = ""
     metadata: Optional[Mapping[str, str]] = None
+
+    def __post_init__(self) -> None:
+        metadata = {} if self.metadata is None else dict(self.metadata)
+        object.__setattr__(self, "metadata", MappingProxyType(metadata))
 
 
 @dataclass(frozen=True)

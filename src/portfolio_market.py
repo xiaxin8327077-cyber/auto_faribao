@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 from typing import Protocol
 
 from src.portfolio_models import MarketProduct, MarketQuote, ProductType
@@ -24,6 +25,8 @@ def validate_market_quote(product_type: ProductType, quote: MarketQuote) -> None
         quote.income_per_10k,
         quote.seven_day_annualized_rate,
     )
+    if any(value is not None and not isinstance(value, Decimal) for value in numeric):
+        raise ValueError("quote decimals must be Decimal instances")
     if any(value is not None and not value.is_finite() for value in numeric):
         raise ValueError("quote decimals must be finite")
 
