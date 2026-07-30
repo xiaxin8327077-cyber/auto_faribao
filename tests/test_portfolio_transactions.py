@@ -17,6 +17,7 @@ from src.portfolio_models import (
 )
 from src.portfolio_positions import PositionProjector
 from src.portfolio_repository import PortfolioRepository
+from src.portfolio_sip import SipService
 from src.portfolio_transactions import PortfolioTransactionService
 
 
@@ -211,6 +212,85 @@ def test_cancel_pending_is_idempotent_and_audited_once(services):
     )
     assert json.loads(audits[0]["before_json"])["status"] == "pending_quote"
     assert json.loads(audits[0]["after_json"])["status"] == "cancelled"
+
+
+def test_cancel_sip_updates_execution_and_settlement_skips_it(services):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    sip = SipService(repository, projector, transactions)
+    plan = sip.activate(
+        sip.save_plan(
+            product_id="fund",
+            daily_amount=Decimal("100"),
+            purchase_fee_rate=Decimal("0"),
+            source_cash_product_id="cash",
+            start_date=TRADE_DATE,
+        ).id
+    )
+    cancelled_execution = sip.ensure_intent(plan.id, TRADE_DATE)
+    other_execution = sip.ensure_intent(
+        plan.id,
+        date(2026, 7, 31),
+    )
+
+    transactions.cancel_pending(
+        cancelled_execution.transaction_id,
+        "test:cancel-sip-execution",
+    )
+    settled = sip.settle_pending(date(2026, 7, 31))
+
+    updated = sip.get_execution(cancelled_execution.id)
+    assert updated.status == "cancelled"
+    assert updated.reason == "user_cancelled"
+    assert sip.get_execution(other_execution.id).status == "pending_quote"
+    assert settled == []
+
+
+def test_reverse_sip_updates_execution_across_retry_and_correction(services):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+    fund = seed_product(
+        repository,
+        "fund",
+        ProductType.PUBLIC_FUND,
+        "003103",
+    )
+    seed_quote(repository, fund, TRADE_DATE, Decimal("1"))
+    sip = SipService(repository, projector, transactions)
+    plan = sip.activate(
+        sip.save_plan(
+            product_id="fund",
+            daily_amount=Decimal("100"),
+            purchase_fee_rate=Decimal("0"),
+            source_cash_product_id="cash",
+            start_date=TRADE_DATE,
+        ).id
+    )
+    execution = sip.ensure_intent(plan.id, TRADE_DATE)
+    sip.settle_pending(TRADE_DATE)
+
+    reversal = transactions.reverse_confirmed(
+        execution.transaction_id,
+        "撤销定投",
+        "test:reverse-sip-execution",
+    )
+    retried = transactions.reverse_confirmed(
+        execution.transaction_id,
+        "撤销定投",
+        "test:reverse-sip-execution",
+    )
+    assert retried == reversal
+    assert sip.get_execution(execution.id).status == "reversed"
+
+    transactions.reverse_confirmed(
+        reversal.id,
+        "恢复定投",
+        "test:correct-sip-execution",
+    )
+    corrected = sip.get_execution(execution.id)
+    assert corrected.status == "confirmed"
+    assert corrected.reason == ""
 
 
 def test_cancel_retry_rejects_corrupt_linked_final_status(services):

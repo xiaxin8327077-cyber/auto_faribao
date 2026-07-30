@@ -328,6 +328,11 @@ class PortfolioTransactionService:
                     raise ValueError(
                         "idempotency key conflicts with existing request"
                     )
+                self._require_sip_execution_state(
+                    self._reversal_business_group(transaction, conn),
+                    "cancelled",
+                    conn,
+                )
                 return transaction
             self._reject_transaction_idempotency_collision(
                 idempotency_key, conn
@@ -355,6 +360,21 @@ class PortfolioTransactionService:
                     conn,
                 )
                 affected_product_ids.add(linked.product_id)
+            sip_execution, _depth = self._sip_execution_context(
+                [transaction, linked] if linked is not None else [transaction],
+                conn,
+            )
+            if sip_execution is not None:
+                if sip_execution.status != "pending_quote":
+                    raise ValueError("inconsistent SIP execution state")
+                self.repository.save_plan_execution(
+                    replace(
+                        sip_execution,
+                        status="cancelled",
+                        reason="user_cancelled",
+                    ),
+                    conn,
+                )
 
             self._rebuild_positions(affected_product_ids, conn)
             after = {
@@ -419,6 +439,23 @@ class PortfolioTransactionService:
                     raise ValueError(
                         "idempotency key conflicts with existing request"
                     )
+                original = self.repository.get_transaction_by_id(
+                    transaction_id, conn=conn
+                )
+                retry_group = self._reversal_business_group(original, conn)
+                _execution, depth = self._sip_execution_context(
+                    retry_group, conn
+                )
+                if depth is not None:
+                    self._require_sip_execution_state(
+                        retry_group,
+                        (
+                            "reversed"
+                            if (depth + 1) % 2
+                            else "confirmed"
+                        ),
+                        conn,
+                    )
                 return reversal
             self._reject_transaction_idempotency_collision(
                 idempotency_key, conn
@@ -430,6 +467,15 @@ class PortfolioTransactionService:
             if transaction is None:
                 raise ValueError("transaction not found")
             group = self._reversal_business_group(transaction, conn)
+            sip_execution, sip_depth = self._sip_execution_context(
+                group, conn
+            )
+            if sip_execution is not None:
+                expected_before = (
+                    "reversed" if sip_depth % 2 else "confirmed"
+                )
+                if sip_execution.status != expected_before:
+                    raise ValueError("inconsistent SIP execution state")
             for member in group:
                 if member.status is not TransactionStatus.CONFIRMED:
                     raise ValueError("transaction is not confirmed")
@@ -471,6 +517,20 @@ class PortfolioTransactionService:
                 reversals.append(reversal)
             for member in group:
                 self._mark_reversed(member.id, conn)
+            if sip_execution is not None:
+                reversed_state = (sip_depth + 1) % 2 == 1
+                self.repository.save_plan_execution(
+                    replace(
+                        sip_execution,
+                        status=(
+                            "reversed" if reversed_state else "confirmed"
+                        ),
+                        reason=(
+                            "transaction_reversed" if reversed_state else ""
+                        ),
+                    ),
+                    conn,
+                )
 
             affected_product_ids = {
                 member.product_id for member in group
@@ -875,6 +935,40 @@ class PortfolioTransactionService:
             if str(exc) == "inconsistent reversal group":
                 raise
             raise ValueError("inconsistent reversal group") from exc
+
+    def _sip_execution_context(self, group, conn):
+        for member in group:
+            if member is None:
+                continue
+            if member.transaction_type is TransactionType.SIP_PURCHASE:
+                root = member
+                depth = 0
+            elif member.transaction_type is TransactionType.REVERSAL:
+                chain = self._validated_reversal_chain(member, conn)
+                root = chain[0]
+                depth = len(chain) - 1
+                if root.transaction_type is not TransactionType.SIP_PURCHASE:
+                    continue
+            else:
+                continue
+            execution = self.repository.get_plan_execution(
+                root.plan_id,
+                root.trade_date,
+                conn=conn,
+            )
+            if (
+                execution is None
+                or not root.plan_id
+                or execution.transaction_id != root.id
+            ):
+                raise ValueError("inconsistent SIP execution state")
+            return execution, depth
+        return None, None
+
+    def _require_sip_execution_state(self, group, expected, conn):
+        execution, _depth = self._sip_execution_context(group, conn)
+        if execution is not None and execution.status != expected:
+            raise ValueError("inconsistent SIP execution state")
 
     def _validated_reversal_chain(self, transaction, conn):
         chain = [transaction]

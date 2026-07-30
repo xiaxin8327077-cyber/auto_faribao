@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,15 @@ class PortfolioTargetState(Enum):
     UNSUPPORTED_PORTFOLIO = "unsupported_portfolio"
 
 
+@dataclass(frozen=True)
+class PortfolioTargetSnapshot:
+    state: PortfolioTargetState
+    exists: bool
+    size: int = 0
+    mtime_ns: int = 0
+    sha256: str = ""
+
+
 LEGACY_PRODUCT_TYPE_OVERRIDES = {
     ("nanyin_wealth", "NYRR000007"): ProductType.CASH_MANAGEMENT,
     ("citic_wealth", "AM264381F"): ProductType.CASH_MANAGEMENT,
@@ -58,6 +68,7 @@ def migrate_legacy_portfolio(
     products, expected_shares = _legacy_products(cfg)
 
     target_state = _inspect_target_schema(target_path)
+    target_snapshot = _snapshot_target(target_path, target_state)
     if target_state is PortfolioTargetState.ACTIVE_SIDECARS:
         raise ValueError("active portfolio database sidecars are unsafe")
     if target_state is PortfolioTargetState.UNSUPPORTED_PORTFOLIO:
@@ -118,7 +129,11 @@ def migrate_legacy_portfolio(
         backup_dir = _backup_legacy_inputs(
             state_path, target_path, backup_root
         )
-        _publish_candidate_no_overwrite(candidate, target_path)
+        _publish_candidate_no_overwrite(
+            candidate,
+            target_path,
+            target_snapshot,
+        )
         return MigrationReport(
             *counts,
             installed=True,
@@ -500,7 +515,33 @@ def _backup_legacy_inputs(
     return backup_dir
 
 
-def _publish_candidate_no_overwrite(candidate, target):
+def _snapshot_target(path, state=None):
+    state = state or _inspect_target_schema(path)
+    if not path.is_file():
+        return PortfolioTargetSnapshot(state=state, exists=False)
+    stat = path.stat()
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    final_stat = path.stat()
+    if (
+        stat.st_size != final_stat.st_size
+        or stat.st_mtime_ns != final_stat.st_mtime_ns
+    ):
+        raise ValueError("target changed during portfolio inspection")
+    return PortfolioTargetSnapshot(
+        state=state,
+        exists=True,
+        size=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        sha256=digest.hexdigest(),
+    )
+
+
+def _publish_candidate_no_overwrite(candidate, target, expected):
+    if _snapshot_target(target) != expected:
+        raise ValueError("target changed during portfolio publication")
     if _has_active_sidecars(target):
         raise ValueError("active portfolio database sidecars are unsafe")
     displaced = None
@@ -511,6 +552,8 @@ def _publish_candidate_no_overwrite(candidate, target):
         )
         os.link(target, displaced)
         if (
+            _snapshot_target(target) != expected
+            or
             _has_active_sidecars(target)
             or not target.is_file()
             or not os.path.samefile(target, displaced)

@@ -535,6 +535,51 @@ def test_missing_target_publish_never_overwrites_racing_file(
     assert not list(tmp_path.glob("portfolio.db.migrating-*"))
 
 
+@pytest.mark.parametrize("racing_versions", [{1}, {3}, {1, 2}])
+def test_existing_legacy_publish_rejects_portfolio_target_replacement(
+    tmp_path,
+    monkeypatch,
+    racing_versions,
+):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    target.write_bytes(b"legacy-target")
+    original_stabilize = portfolio_migration._stabilize_candidate
+
+    def replace_target(candidate):
+        original_stabilize(candidate)
+        target.unlink()
+        PortfolioDatabase(target).initialize()
+        set_target_versions(target, racing_versions)
+
+    monkeypatch.setattr(
+        portfolio_migration,
+        "_stabilize_candidate",
+        replace_target,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="target changed during portfolio publication",
+    ):
+        migrate_legacy_portfolio(
+            legacy_cfg(),
+            state,
+            target,
+            tmp_path / "backups",
+            install=True,
+        )
+
+    with sqlite3.connect(target) as conn:
+        assert {
+            row[0]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            )
+        } == racing_versions
+
+
 @pytest.mark.parametrize(
     "checkpoint_result",
     [(1, 4, 3), (0, 4, 3)],
