@@ -1009,8 +1009,33 @@ def _is_existing_command(text: str) -> bool:
     )
 
 
-def create_app(cfg: Config, ai_assistant=None) -> Flask:
+def create_app(
+    cfg: Config,
+    ai_assistant=None,
+    portfolio_runtime=None,
+    portfolio_provider_factory=None,
+) -> Flask:
     app = Flask(__name__)
+
+    if portfolio_runtime is None:
+        try:
+            from src.portfolio_runtime import get_portfolio_runtime
+
+            portfolio_runtime = get_portfolio_runtime()
+        except (ImportError, RuntimeError):
+            portfolio_runtime = None
+    if portfolio_provider_factory is None:
+        from src.portfolio_providers import get_market_provider
+
+        portfolio_provider_factory = get_market_provider
+    from src.portfolio_api import create_portfolio_blueprint
+
+    app.register_blueprint(
+        create_portfolio_blueprint(
+            portfolio_runtime,
+            portfolio_provider_factory,
+        )
+    )
 
     if ai_assistant is None:
         try:
