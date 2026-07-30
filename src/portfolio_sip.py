@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from src.portfolio_models import (
+    ProductStatus,
     ProductType,
     SipPlan,
     SipPlanStatus,
@@ -83,8 +84,13 @@ class SipService:
     def activate(self, plan_id) -> SipPlan:
         with self.repository.database.transaction() as conn:
             plan = self._require_plan(plan_id, conn)
+            if plan.status is SipPlanStatus.PAUSED:
+                raise ValueError("plan is paused")
             if not plan.source_cash_product_id:
                 raise ValueError("cash source is required")
+            self._require_active_plan_products(plan, conn)
+            if plan.status is SipPlanStatus.ACTIVE:
+                return plan
             return self.repository.save_plan(
                 replace(plan, status=SipPlanStatus.ACTIVE),
                 conn,
@@ -95,6 +101,8 @@ class SipService:
             plan = self._require_plan(plan_id, conn)
             if plan.status is SipPlanStatus.DRAFT:
                 raise ValueError("plan is not active")
+            if plan.status is SipPlanStatus.PAUSED:
+                return plan
             return self.repository.save_plan(
                 replace(plan, status=SipPlanStatus.PAUSED),
                 conn,
@@ -105,13 +113,16 @@ class SipService:
             plan = self._require_plan(plan_id, conn)
             if plan.status is SipPlanStatus.DRAFT:
                 raise ValueError("plan is not paused")
+            if plan.status is SipPlanStatus.ACTIVE:
+                return plan
+            self._require_active_plan_products(plan, conn)
             return self.repository.save_plan(
                 replace(plan, status=SipPlanStatus.ACTIVE),
                 conn,
             )
 
     def ensure_intent(self, plan_id, intended_date) -> PlanExecution:
-        notify = False
+        should_notify = False
         with self.repository.database.transaction() as conn:
             existing = self.repository.get_plan_execution(
                 plan_id, intended_date, conn=conn
@@ -127,43 +138,62 @@ class SipService:
                 )
                 return self.repository.save_plan_execution(execution, conn)
 
-            source_position = self.projector._calculate(
-                plan.source_cash_product_id, conn
-            )
-            if source_position.available_shares < plan.daily_amount:
+            inactive_reason = self._inactive_product_reason(plan, conn)
+            if inactive_reason:
                 execution = self._new_execution(
                     plan.id,
                     intended_date,
                     "skipped",
-                    "insufficient_balance",
+                    inactive_reason,
                 )
                 execution = self.repository.save_plan_execution(
                     execution, conn
                 )
-                notify = True
+                self.repository.enqueue_plan_execution_notification(
+                    execution, conn
+                )
+                should_notify = True
             else:
-                purchase = self._create_pending_transactions(
-                    plan, intended_date, conn
+                source_position = self.projector._calculate(
+                    plan.source_cash_product_id, conn
                 )
-                execution = self._new_execution(
-                    plan.id,
-                    intended_date,
-                    "pending_quote",
-                    transaction_id=purchase.id,
-                )
-                execution = self.repository.save_plan_execution(
-                    execution, conn
-                )
-                self._rebuild_positions(
-                    {
-                        plan.product_id,
-                        plan.source_cash_product_id,
-                    },
-                    conn,
-                )
+                if source_position.available_shares < plan.daily_amount:
+                    execution = self._new_execution(
+                        plan.id,
+                        intended_date,
+                        "skipped",
+                        "insufficient_balance",
+                    )
+                    execution = self.repository.save_plan_execution(
+                        execution, conn
+                    )
+                    self.repository.enqueue_plan_execution_notification(
+                        execution, conn
+                    )
+                    should_notify = True
+                else:
+                    purchase = self._create_pending_transactions(
+                        plan, intended_date, conn
+                    )
+                    execution = self._new_execution(
+                        plan.id,
+                        intended_date,
+                        "pending_quote",
+                        transaction_id=purchase.id,
+                    )
+                    execution = self.repository.save_plan_execution(
+                        execution, conn
+                    )
+                    self._rebuild_positions(
+                        {
+                            plan.product_id,
+                            plan.source_cash_product_id,
+                        },
+                        conn,
+                    )
 
-        if notify:
-            self._notify(execution)
+        if should_notify:
+            self._deliver_notification(execution)
         return execution
 
     def settle_pending(self, as_of_date) -> list[PlanExecution]:
@@ -200,6 +230,15 @@ class SipService:
             if execution.intended_trade_date <= on_or_before
         ]
 
+    def retry_notifications(self) -> list[PlanExecution]:
+        delivered = []
+        for execution in (
+            self.repository.list_pending_plan_execution_notifications()
+        ):
+            if self._deliver_notification(execution):
+                delivered.append(execution)
+        return delivered
+
     def _settle_execution(
         self,
         execution_id,
@@ -215,17 +254,18 @@ class SipService:
                 or execution.intended_trade_date > as_of_date
             ):
                 return None
-            plan = self._require_plan(execution.plan_id, conn)
-            purchase, cash = self._pending_pair(execution, plan, conn)
+            purchase, cash = self._pending_pair(execution, conn)
             quote = self.repository.get_quote(
-                plan.product_id,
+                purchase.product_id,
                 execution.intended_trade_date,
                 conn=conn,
             )
             if quote is not None and quote.unit_nav is not None:
                 nav = self._positive_decimal(quote.unit_nav, "unit_nav")
-                fee_amount = plan.daily_amount * plan.purchase_fee_rate
-                shares = (plan.daily_amount - fee_amount) / nav
+                amount = self._positive_decimal(purchase.amount, "amount")
+                fee_rate = self._fee_rate(purchase.fee_rate)
+                fee_amount = amount * fee_rate
+                shares = (amount - fee_amount) / nav
                 shares = self._positive_decimal(shares, "shares")
                 self.repository.update_pending_transaction(
                     replace(
@@ -250,7 +290,7 @@ class SipService:
                 result = replace(execution, status="confirmed")
             else:
                 later_quote = self.repository.latest_quote(
-                    plan.product_id,
+                    purchase.product_id,
                     on_or_before=as_of_date,
                     conn=conn,
                 )
@@ -277,8 +317,8 @@ class SipService:
             self.repository.save_plan_execution(result, conn)
             self._rebuild_positions(
                 {
-                    plan.product_id,
-                    plan.source_cash_product_id,
+                    purchase.product_id,
+                    cash.product_id,
                 },
                 conn,
             )
@@ -323,7 +363,7 @@ class SipService:
         self.repository.update_pending_transaction(purchase, conn)
         return purchase
 
-    def _pending_pair(self, execution, plan, conn):
+    def _pending_pair(self, execution, conn):
         purchase = self.repository.get_transaction_by_id(
             execution.transaction_id, conn=conn
         )
@@ -334,21 +374,73 @@ class SipService:
             if purchase is not None
             else None
         )
+        execution_key = (
+            f"{execution.plan_id}:"
+            f"{execution.intended_trade_date.isoformat()}"
+        )
+        expected_purchase_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"portfolio-sip-purchase:{execution_key}",
+            )
+        )
+        expected_cash_id = str(
+            uuid5(NAMESPACE_URL, f"portfolio-sip-cash:{execution_key}")
+        )
+        purchase_amount_valid = (
+            purchase is not None
+            and self._is_finite_positive(purchase.amount)
+        )
+        fee_rate_valid = (
+            purchase is not None
+            and self._is_valid_fee_rate(purchase.fee_rate)
+        )
+        target = (
+            self.repository.get_product(purchase.product_id, conn=conn)
+            if purchase is not None
+            else None
+        )
+        source = (
+            self.repository.get_product(cash.product_id, conn=conn)
+            if cash is not None
+            else None
+        )
         if (
             purchase is None
             or cash is None
+            or purchase.id != expected_purchase_id
+            or cash.id != expected_cash_id
             or purchase.transaction_type is not TransactionType.SIP_PURCHASE
             or cash.transaction_type is not TransactionType.CASH_TRANSFER_OUT
             or purchase.status is not TransactionStatus.PENDING_QUOTE
             or cash.status is not TransactionStatus.PENDING_QUOTE
-            or purchase.product_id != plan.product_id
-            or cash.product_id != plan.source_cash_product_id
             or purchase.linked_transaction_id != cash.id
             or cash.linked_transaction_id != purchase.id
-            or purchase.plan_id != plan.id
-            or cash.plan_id != plan.id
+            or purchase.plan_id != execution.plan_id
+            or cash.plan_id != execution.plan_id
             or purchase.trade_date != execution.intended_trade_date
             or cash.trade_date != execution.intended_trade_date
+            or purchase.idempotency_key
+            != f"sip:{execution_key}:purchase"
+            or cash.idempotency_key != f"sip:{execution_key}:cash"
+            or not purchase_amount_valid
+            or not fee_rate_valid
+            or purchase.shares is not None
+            or purchase.fee_amount is not None
+            or purchase.confirmation_nav is not None
+            or purchase.confirmation_date is not None
+            or cash.amount != purchase.amount
+            or cash.shares != purchase.amount
+            or cash.fee_amount is not None
+            or cash.fee_rate is not None
+            or cash.confirmation_nav is not None
+            or cash.confirmation_date is not None
+            or purchase.created_by != "sip"
+            or cash.created_by != purchase.created_by
+            or target is None
+            or target.product_type is not ProductType.PUBLIC_FUND
+            or source is None
+            or source.product_type is not ProductType.CASH_MANAGEMENT
         ):
             raise ValueError("inconsistent SIP transaction pair")
         return purchase, cash
@@ -362,6 +454,40 @@ class SipService:
             return "plan_paused"
         if plan.status is not SipPlanStatus.ACTIVE:
             return "plan_not_active"
+        return ""
+
+    def _require_active_plan_products(self, plan, conn):
+        target = self.repository.require_product(
+            plan.product_id, conn=conn
+        )
+        if target.product_type is not ProductType.PUBLIC_FUND:
+            raise ValueError("target must be public_fund")
+        if target.status is not ProductStatus.ACTIVE:
+            raise ValueError("target product is inactive")
+        source = self.repository.require_product(
+            plan.source_cash_product_id, conn=conn
+        )
+        if source.product_type is not ProductType.CASH_MANAGEMENT:
+            raise ValueError("source must be cash_management")
+        if source.status is not ProductStatus.ACTIVE:
+            raise ValueError("cash source is inactive")
+        return target, source
+
+    def _inactive_product_reason(self, plan, conn):
+        target = self.repository.require_product(
+            plan.product_id, conn=conn
+        )
+        if target.product_type is not ProductType.PUBLIC_FUND:
+            raise ValueError("target must be public_fund")
+        source = self.repository.require_product(
+            plan.source_cash_product_id, conn=conn
+        )
+        if source.product_type is not ProductType.CASH_MANAGEMENT:
+            raise ValueError("source must be cash_management")
+        if target.status is not ProductStatus.ACTIVE:
+            return "target_inactive"
+        if source.status is not ProductStatus.ACTIVE:
+            return "source_inactive"
         return ""
 
     def _require_plan(self, plan_id, conn):
@@ -411,6 +537,16 @@ class SipService:
             raise TypeError("notifier must be callable")
         notify(execution)
 
+    def _deliver_notification(self, execution):
+        if self.notifier is None:
+            return False
+        try:
+            self._notify(execution)
+        except Exception:
+            return False
+        self.repository.mark_plan_execution_notification_sent(execution.id)
+        return True
+
     @staticmethod
     def _decimal(value, name):
         try:
@@ -427,3 +563,26 @@ class SipService:
         if number <= ZERO:
             raise ValueError(f"{name} must be positive")
         return number
+
+    @classmethod
+    def _fee_rate(cls, value):
+        number = cls._decimal(value, "fee_rate")
+        if not ZERO <= number < ONE:
+            raise ValueError("fee_rate must be between 0 and 1")
+        return number
+
+    @staticmethod
+    def _is_finite_positive(value):
+        return (
+            isinstance(value, Decimal)
+            and value.is_finite()
+            and value > ZERO
+        )
+
+    @staticmethod
+    def _is_valid_fee_rate(value):
+        return (
+            isinstance(value, Decimal)
+            and value.is_finite()
+            and ZERO <= value < ONE
+        )

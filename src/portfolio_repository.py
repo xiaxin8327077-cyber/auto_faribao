@@ -411,7 +411,11 @@ class PortfolioRepository:
                    start_date = excluded.start_date,
                    updated_at = CURRENT_TIMESTAMP,
                    paused_at = CASE
-                       WHEN excluded.status = 'paused' THEN CURRENT_TIMESTAMP
+                       WHEN excluded.status = 'paused'
+                            AND sip_plans.status != 'paused'
+                           THEN CURRENT_TIMESTAMP
+                       WHEN excluded.status = 'paused'
+                           THEN sip_plans.paused_at
                        ELSE NULL
                    END""",
             (
@@ -548,6 +552,75 @@ class PortfolioRepository:
         else:
             rows = conn.execute(query, (plan_id,)).fetchall()
         return [self._plan_execution_from_row(row) for row in rows]
+
+    def enqueue_plan_execution_notification(
+        self,
+        execution,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        if conn is None:
+            with self.database.transaction() as owned:
+                self.enqueue_plan_execution_notification(execution, owned)
+            return
+        notification_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"portfolio-sip-notification:{execution.id}",
+            )
+        )
+        conn.execute(
+            """INSERT INTO audit_logs
+               (id, action, object_type, object_id, before_json, after_json,
+                result, source)
+               VALUES (?, 'notify', 'plan_execution', ?, '{}', '{}',
+                       'pending', 'sip')
+               ON CONFLICT(id) DO NOTHING""",
+            (notification_id, execution.id),
+        )
+
+    def list_pending_plan_execution_notifications(
+        self,
+        conn: sqlite3.Connection | None = None,
+    ):
+        query = """
+            SELECT e.id, e.plan_id, e.intended_trade_date, e.status,
+                   e.reason, e.transaction_id
+            FROM audit_logs AS a
+            JOIN plan_executions AS e ON e.id = a.object_id
+            WHERE a.action = 'notify'
+              AND a.object_type = 'plan_execution'
+              AND a.result = 'pending'
+              AND a.source = 'sip'
+            ORDER BY a.created_at, a.id
+        """
+        if conn is None:
+            with self.database.connection() as owned:
+                rows = owned.execute(query).fetchall()
+        else:
+            rows = conn.execute(query).fetchall()
+        return [self._plan_execution_from_row(row) for row in rows]
+
+    def mark_plan_execution_notification_sent(
+        self,
+        execution_id: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        if conn is None:
+            with self.database.transaction() as owned:
+                self.mark_plan_execution_notification_sent(
+                    execution_id, owned
+                )
+            return
+        conn.execute(
+            """UPDATE audit_logs
+               SET result = 'success'
+               WHERE action = 'notify'
+                 AND object_type = 'plan_execution'
+                 AND object_id = ?
+                 AND result = 'pending'
+                 AND source = 'sip'""",
+            (execution_id,),
+        )
 
     def append_audit(
         self,
