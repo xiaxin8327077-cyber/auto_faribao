@@ -36,6 +36,7 @@ Thumbs.db
 *.tmp
 *.bak
 *.swp
+.superpowers/
 
 # Screenshots
 *.png
