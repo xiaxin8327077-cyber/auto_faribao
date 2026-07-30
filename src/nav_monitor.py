@@ -265,19 +265,23 @@ def _parse_daily_profit_date(text: str, base_date: Optional[date] = None) -> Opt
 
 
 def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[NavCommand]:
-    batch_shares = _parse_batch_shares_command(text)
-    if batch_shares:
-        return batch_shares
+    # 组合写操作（添加/删除产品、设置份额、设置收益、启停监控、修改时间、更新画像、预估）
+    # 已迁移至理财看板网页，企业微信仅保留只读查询与推送。
 
     content = _normalize_command_text(text)
     if not content:
         return None
 
-    match = re.fullmatch(r"确认添加净值产品\s+(\d+)", content)
-    if match:
-        return NavCommand(action="confirm_add", index=int(match.group(1)))
-    if content == "取消添加净值产品":
-        return NavCommand(action="cancel_add")
+    # 写指令关键词拦截：避免含"净值/收益"的写指令落入只读查询回退分支。
+    if _is_portfolio_write_command(content):
+        return None
+    # 预估/预测涨跌（含能涨/会跌/走势等自然语言）触发画像刷新，属于写操作，迁移至网页。
+    if _contains_any(content, ("理财", "净值", "产品")) and _contains_any(
+        content,
+        ("预估", "预测", "能涨", "能跌", "会涨", "会跌", "会不会涨", "会不会跌",
+         "能不能涨", "能不能跌", "涨不涨", "跌不跌", "走势"),
+    ):
+        return None
 
     match = re.fullmatch(r"查看\s+(\S+)\s+持仓画像", content)
     if match:
@@ -286,81 +290,12 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
         return NavCommand(action="view_holdings")
     if content in ("查看画像状态", "查看持仓画像状态", "画像状态"):
         return NavCommand(action="view_holdings_status")
-    if content in ("更新持仓画像", "刷新持仓画像", "更新画像"):
-        return NavCommand(action="update_holdings")
-    match = re.search(r"([01]?\d|2[0-3])[:：]([0-5]\d)", content)
-    if match and _contains_any(content, ("预估", "收益预估", "理财预估")) and _contains_any(
-        content,
-        ("时间", "定时", "设置", "修改", "改到"),
-    ):
-        return NavCommand(
-            action="set_estimate_time",
-            hour=int(match.group(1)),
-            minute=int(match.group(2)),
-        )
-
-    if _looks_like_nav_prediction(content):
-        return NavCommand(
-            action="estimate_holdings",
-            target_date=parse_nav_query_date(content, base_date=base_date),
-        )
-
-    if content.startswith("添加产品"):
-        return _parse_add_product_command(content)
 
     if content in PERIOD_COMMANDS:
         return NavCommand(action="query_period", period=PERIOD_COMMANDS[content])
 
     if content == "查看净值配置":
         return NavCommand(action="view_config")
-    if content == "开启净值监控":
-        return NavCommand(action="enable")
-    if content == "关闭净值监控":
-        return NavCommand(action="disable")
-
-    match = re.fullmatch(r"设置净值推送时间\s+([01]?\d|2[0-3]):([0-5]\d)", content)
-    if match:
-        return NavCommand(
-            action="set_time",
-            hour=int(match.group(1)),
-            minute=int(match.group(2)),
-        )
-
-    match = re.fullmatch(r"设置(?:收益预估|理财预估|净值预估)时间\s+([01]?\d|2[0-3]):([0-5]\d)", content)
-    if match:
-        return NavCommand(
-            action="set_estimate_time",
-            hour=int(match.group(1)),
-            minute=int(match.group(2)),
-        )
-
-    match = re.fullmatch(r"设置净值份额\s+(\S+)\s+([0-9]+(?:\.[0-9]+)?)", content)
-    if match:
-        return NavCommand(
-            action="set_shares",
-            code=match.group(1).strip(),
-            shares=Decimal(match.group(2)),
-        )
-
-    if content.startswith("设置收益"):
-        match = re.fullmatch(r"设置收益\s+(\S+)\s+(-?[0-9]+(?:\.[0-9]+)?)", content)
-        if match:
-            target = _parse_daily_profit_date(match.group(1), base_date=base_date)
-            if target:
-                return NavCommand(
-                    action="set_daily_profit",
-                    target_date=target,
-                    amount=Decimal(match.group(2)),
-                )
-            return NavCommand(action="set_daily_profit_invalid_date", query=match.group(1))
-        return NavCommand(action="set_daily_profit_usage")
-
-    if content.startswith("添加净值产品"):
-        return _parse_add_product_command(content)
-
-    match = re.fullmatch(r"删除净值产品\s+(\S+)", content)
-    if match:
-        return NavCommand(action="delete_product", code=match.group(1).strip())
 
     natural_command = _parse_natural_nav_command(content, base_date=base_date)
     if natural_command:
@@ -377,6 +312,44 @@ def parse_nav_command(text: str, base_date: Optional[date] = None) -> Optional[N
         return NavCommand(action="query_latest")
 
     return None
+
+
+def _is_natural_portfolio_write(content: str) -> bool:
+    """识别自然语言形式的组合写指令（添加/删除产品、设置份额、修改收益）。"""
+    if _contains_any(content, ("收益",)) and _contains_any(
+        content, ("改成", "改为", "修改为", "修改成", "调成", "调为", "设为", "设置成")
+    ):
+        return True
+    code = _extract_product_code(content)
+    if not code:
+        return False
+    if "份额" in content and _contains_any(
+        content, ("改成", "改为", "修改为", "修改成", "调成", "调为", "设为", "设置成")
+    ):
+        return True
+    if _contains_any(content, ("删除", "删掉", "移除", "去掉")):
+        return True
+    if _contains_any(content, ("添加", "新增", "加一下", "加上", "加入")):
+        return True
+    return False
+
+
+def _is_portfolio_write_command(content: str) -> bool:
+    """识别已迁移至网页的组合写指令，避免被只读查询分支误匹配。"""
+    write_prefixes = (
+        "添加净值产品", "添加产品", "删除净值产品", "确认添加净值产品",
+        "取消添加净值产品", "设置净值份额", "批量设置净值份额",
+        "开启净值监控", "关闭净值监控", "更新持仓画像", "刷新持仓画像",
+        "更新画像",
+    )
+    if any(content.startswith(prefix) for prefix in write_prefixes):
+        return True
+    write_patterns = (
+        r"^设置净值推送时间",
+        r"^设置(?:收益预估|理财预估|净值预估)时间",
+        r"^设置收益\s+",
+    )
+    return any(re.match(pattern, content) for pattern in write_patterns)
 
 
 def _normalize_command_text(text: str) -> str:
@@ -402,26 +375,12 @@ def _parse_natural_nav_command(content: str, base_date: Optional[date] = None) -
     if not _looks_like_natural_nav_text(content):
         return None
 
-    code = _extract_product_code(content)
-    if "份额" in content and code:
-        shares = _extract_shares_value(content, code)
-        if shares is not None:
-            return NavCommand(action="set_shares", code=code, shares=shares)
-
-    if code and _contains_any(content, ("删除", "删掉", "移除", "去掉")):
-        return NavCommand(action="delete_product", code=code)
-
-    if code and _contains_any(content, ("添加", "新增", "加一下", "加上", "加入", "加")):
-        provider = _extract_provider_from_text(content)
-        if provider:
-            return NavCommand(action="add_product", provider=provider, query=code)
+    # 组合写操作（添加/删除产品、设置份额、设置收益）已迁移至理财看板网页。
+    if _is_natural_portfolio_write(content):
+        return None
 
     if "配置" in content and _contains_any(content, ("净值", "理财")):
         return NavCommand(action="view_config")
-
-    profit_cmd = _parse_natural_set_daily_profit(content, base_date=base_date)
-    if profit_cmd:
-        return profit_cmd
 
     period = _natural_period_from_text(content)
     if period:
@@ -434,7 +393,11 @@ def _parse_natural_nav_command(content: str, base_date: Optional[date] = None) -
             return NavCommand(action="query_latest")
         return NavCommand(action="query_date", target_date=target_date)
 
-    if _contains_any(content, ("净值", "理财", "收益", "最新", "当前", "现在", "今天", "今日")):
+    # 含"收益"的短语若无期间/日期限定，不自动视为查询（避免与写指令混淆）。
+    if "收益" in content:
+        return None
+
+    if _contains_any(content, ("净值", "理财", "最新", "当前", "现在", "今天", "今日")):
         return NavCommand(action="query_latest")
 
     return None

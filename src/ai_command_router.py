@@ -58,20 +58,9 @@ _READ_NAV_ACTIONS = {
     "query_period",
 }
 
-_WRITE_NAV_ACTIONS = {
-    "enable",
-    "disable",
-    "set_time",
-    "set_estimate_time",
-    "delete_product",
-    "set_shares",
-    "set_shares_batch",
-    "set_daily_profit",
-    "confirm_add",
-    "cancel_add",
-    "add_product",
-    "update_holdings",
-}
+# 组合写操作（添加/删除产品、设置份额、设置收益、启停监控、修改时间、更新画像、预估）
+# 已迁移至理财看板网页。企业微信不再执行任何组合写指令。
+_WRITE_NAV_ACTIONS = set()
 
 
 def classify_canonical_command(command: str) -> Optional[str]:
@@ -190,8 +179,9 @@ kind为command时，canonical_command必须严格使用下列指令或参数模�
 判定规则：用户意图是设置/追加/修改今天日报或查看/清除草稿时，canonical_command 取对应动作名；不判断今天是否已提交。
 日报参数指令：查询日报 YYYY-MM-DD；设置Cookies检查时间 HH:MM；设置统计推送时间 HH:MM；设置缓存清理时间 HH:MM；设置日报提交时间 HH:MM。
 净值查询指令：立即查询净值；查询净值 YYYYMMDD；查询周度净值；查询月度净值；查询季度净值；查询半年度净值；查询年度净值；查询近7天净值；查询近一月净值；查询近三月净值；查询近半年净值；查询近一年净值；查询近两年净值；查询近三年净值。
-净值配置指令：查看净值配置；开启净值监控；关闭净值监控；设置净值推送时间 HH:MM；设置收益预估时间 HH:MM；添加净值产品 机构 产品代码；删除净值产品 产品代码；设置净值份额 产品代码 数值；设置收益 YYYY-MM-DD 金额；查看持仓画像；查看 产品代码 持仓画像；查看画像状态；更新持仓画像；预估理财涨跌。
-相对日期必须根据当前日期换算：日报使用YYYY-MM-DD，净值使用YYYYMMDD。中文时间要换算为24小时HH:MM。设置收益的日期使用YYYY-MM-DD格式，金额支持负数。
+净值只读指令：查看净值配置；查看持仓画像；查看 产品代码 持仓画像；查看画像状态。
+组合写操作（添加/删除产品、设置份额、设置收益、启停监控、修改推送/预估时间、更新持仓画像、预估涨跌）已迁移至理财看板网页，企业微信不再执行；遇到这类请求使用chat并提示用户在网页中操作，不得生成对应的command。
+相对日期必须根据当前日期换算：日报使用YYYY-MM-DD，净值使用YYYYMMDD。
 
 示例：
 用户：OA今天交上去了吗
@@ -204,12 +194,8 @@ kind为command时，canonical_command必须严格使用下列指令或参数模�
 输出：{{"kind":"diagnose","canonical_command":"","confidence":0.98,"reply":"排查理财净值日报未发送原因"}}
 用户：为什么台风没有影响南京，一开始不是说很强吗
 输出：{{"kind":"chat","canonical_command":"","confidence":0.98,"reply":""}}
-用户：帮我删除那个理财产品，但缺少产品代码
-输出：{{"kind":"clarify","canonical_command":"","confidence":0.55,"reply":"请提供要删除的产品代码。"}}
-用户：把最新收益改成150块
-输出：{{"kind":"command","canonical_command":"设置收益 {current_date:%Y-%m-%d} 150","confidence":0.97,"reply":""}}
-用户：收益改成-50
-输出：{{"kind":"command","canonical_command":"设置收益 {current_date:%Y-%m-%d} -50","confidence":0.97,"reply":""}}
+用户：帮我添加一个信银理财产品，但记不清代码
+输出：{{"kind":"clarify","canonical_command":"","confidence":0.55,"reply":"请提供要添加的产品代码，或前往理财看板网页操作。"}}
 
 禁止把重启服务、清理缓存、启动或停止代理服务转换为command；遇到这些请求使用clarify并说明不支持。"""
 

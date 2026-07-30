@@ -54,19 +54,19 @@ def test_router_prompt_lists_exact_canonical_templates_and_examples():
     assert '"kind":"diagnose"' in prompt
     assert "为什么台风没有影响南京" in prompt
     assert '"kind":"chat"' in prompt
-    assert "缺少产品代码" in prompt
+    assert "已迁移至理财看板网页" in prompt
     assert '"kind":"clarify"' in prompt
 
 
 def test_router_marks_model_routed_write_command_for_confirmation():
+    # 组合写指令已迁移至网页：路由器对已删除的写指令应拒绝（返回 AiRouteError）
     client = StubClient(
         '{"kind":"command","canonical_command":"设置净值份额 AF233276B 10000",'
         '"confidence":0.96,"reply":""}'
     )
 
-    route = AiCommandRouter(client).route("份额帮我改成一万", date(2026, 7, 13))
-
-    assert route.risk == "write"
+    with pytest.raises(AiRouteError, match="不在允许范围"):
+        AiCommandRouter(client).route("份额帮我改成一万", date(2026, 7, 13))
 
 
 @pytest.mark.parametrize(
@@ -152,8 +152,9 @@ def test_pending_commands_are_isolated_cancelled_and_expire():
 
 
 def test_classifies_set_daily_profit_as_write():
-    assert classify_canonical_command("设置收益 2026-07-21 150.5") == "write"
-    assert classify_canonical_command("设置收益 2026-07-22 -80") == "write"
+    # 设置收益已迁移至网页，不再作为可执行指令
+    assert classify_canonical_command("设置收益 2026-07-21 150.5") is None
+    assert classify_canonical_command("设置收益 2026-07-22 -80") is None
 
 
 def test_router_prompt_includes_set_daily_profit_template():
@@ -165,6 +166,7 @@ def test_router_prompt_includes_set_daily_profit_template():
     AiCommandRouter(client).route("说得不够清楚", date(2026, 7, 13))
 
     prompt = client.calls[0][0][0]["content"]
-    assert "设置收益 YYYY-MM-DD 金额" in prompt
-    assert "把最新收益改成150块" in prompt
-    assert "收益改成-50" in prompt
+    # 设置收益已迁移至网页，prompt 中不再包含该模板
+    assert "设置收益 YYYY-MM-DD 金额" not in prompt
+    assert "把最新收益改成150块" not in prompt
+    assert "已迁移至理财看板网页" in prompt

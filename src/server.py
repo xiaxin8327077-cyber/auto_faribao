@@ -2344,21 +2344,29 @@ def _build_text_reply(msg: dict, content: str) -> str:
 
 def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
     from src.nav_monitor import (
-        build_add_product_candidates,
-        cancel_pending_nav_add,
-        confirm_pending_nav_add,
-        delete_nav_product,
         format_nav_config,
-        format_product_candidates,
-        get_provider,
         push_nav_period_report,
         push_nav_report,
-        save_pending_nav_add,
-        set_nav_product_shares_batch,
-        set_nav_product_shares,
     )
 
     action = nav_command.action
+
+    # 组合写操作（添加/删除产品、设置份额、设置收益、启停监控、修改时间、更新画像、预估）
+    # 已迁移至理财看板网页。企业微信仅保留只读查询与推送。
+    _WRITE_ACTIONS = {
+        "estimate_holdings", "update_holdings", "enable", "disable",
+        "set_time", "set_estimate_time", "delete_product", "set_shares",
+        "set_daily_profit", "set_daily_profit_invalid_date",
+        "set_daily_profit_usage", "set_shares_batch", "confirm_add",
+        "cancel_add", "unknown_provider", "add_product_usage", "add_product",
+    }
+    if action in _WRITE_ACTIONS:
+        _send_wechat_text(
+            cfg.wechat,
+            "请在理财看板网页中完成该操作。",
+            from_user_id,
+        )
+        return
 
     if action == "view_config":
         _send_wechat_markdown(cfg.wechat, format_nav_config(cfg), from_user_id)
@@ -2374,187 +2382,6 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         from src.nav_holdings import format_holdings_status
 
         _send_wechat_markdown(cfg.wechat, format_holdings_status(), from_user_id)
-        return
-
-    if action == "estimate_holdings":
-        if not _try_start_cmd("理财收益预估"):
-            _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
-            return
-        market_date = nav_command.target_date
-        if market_date:
-            loading_text = f"⏳ 正在结合持仓画像和 {market_date:%Y-%m-%d} 行情预估，请稍等..."
-        else:
-            loading_text = "⏳ 正在结合持仓画像和市场行情预估，请稍等..."
-        _send_wechat_text(cfg.wechat, loading_text, from_user_id)
-
-        def process_estimate():
-            try:
-                from src.nav_holdings import push_estimate_report, refresh_quarterly_profiles_if_due
-
-                refresh_quarterly_profiles_if_due(cfg, notify=False)
-                push_estimate_report(cfg, to_user=from_user_id, market_date=market_date)
-            except Exception as e:
-                logger.error(f"NAV estimate command failed: {e}", exc_info=True)
-                _send_wechat_text(cfg.wechat, f"❌ 理财收益预估失败\n{e}", from_user_id)
-            finally:
-                _end_cmd()
-
-        threading.Thread(target=process_estimate, daemon=True).start()
-        return
-
-    if action == "update_holdings":
-        if not _try_start_cmd("更新持仓画像"):
-            _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
-            return
-        _send_wechat_text(cfg.wechat, "⏳ 正在检查官网最新定期报告并更新画像，请稍等...", from_user_id)
-
-        def process_update_holdings():
-            try:
-                from src.nav_holdings import format_profile_update_result, refresh_all_profiles
-
-                profiles = refresh_all_profiles(cfg)
-                _send_wechat_markdown(cfg.wechat, format_profile_update_result(profiles), from_user_id)
-            except Exception as e:
-                logger.error(f"Update holdings command failed: {e}", exc_info=True)
-                _send_wechat_text(cfg.wechat, f"❌ 更新持仓画像失败\n{e}", from_user_id)
-            finally:
-                _end_cmd()
-
-        threading.Thread(target=process_update_holdings, daemon=True).start()
-        return
-
-    if action == "enable":
-        cfg.nav_monitor.enabled = True
-        _persist_runtime_config(cfg)
-        _send_wechat_text(cfg.wechat, "✅ 净值监控已开启", from_user_id)
-        return
-
-    if action == "disable":
-        cfg.nav_monitor.enabled = False
-        _persist_runtime_config(cfg)
-        _send_wechat_text(cfg.wechat, "✅ 净值监控已关闭", from_user_id)
-        return
-
-    if action == "set_time":
-        cfg.nav_monitor.push_hour = nav_command.hour
-        cfg.nav_monitor.push_minute = nav_command.minute
-        _persist_runtime_config(cfg)
-        _send_wechat_text(
-            cfg.wechat,
-            f"✅ 净值推送时间已修改\n\n新时间：{nav_command.hour:02d}:{nav_command.minute:02d}（工作日）\n立即生效，重启后仍然有效。",
-            from_user_id,
-        )
-        return
-
-    if action == "set_estimate_time":
-        cfg.nav_monitor.estimate_hour = nav_command.hour
-        cfg.nav_monitor.estimate_minute = nav_command.minute
-        _persist_runtime_config(cfg)
-        _send_wechat_text(
-            cfg.wechat,
-            f"✅ 收益预估时间已修改\n\n新时间：{nav_command.hour:02d}:{nav_command.minute:02d}（工作日）\n立即生效，重启后仍然有效。",
-            from_user_id,
-        )
-        return
-
-    if action == "delete_product":
-        ok, message = delete_nav_product(cfg, nav_command.code)
-        if ok:
-            _persist_runtime_config(cfg)
-        _send_wechat_text(cfg.wechat, ("✅ " if ok else "❌ ") + message, from_user_id)
-        return
-
-    if action == "set_shares":
-        ok, message = set_nav_product_shares(cfg, nav_command.code, nav_command.shares)
-        if ok:
-            _persist_runtime_config(cfg)
-        _send_wechat_text(cfg.wechat, ("✅ " if ok else "❌ ") + message, from_user_id)
-        return
-
-    if action == "set_daily_profit":
-        from src.nav_dashboard import NavDashboardStore
-
-        try:
-            store = NavDashboardStore()
-            target_date = nav_command.target_date
-            if target_date is None:
-                entries = store.state.get("profit_entries", [])
-                max_nav_date = max((str(e.get("nav_date") or "") for e in entries), default="")
-                if not max_nav_date:
-                    _send_wechat_text(cfg.wechat, "❌ 看板尚无收益数据，无法设置", from_user_id)
-                    return
-                from datetime import date as _date
-
-                target_date = _date.fromisoformat(max_nav_date)
-            store.set_manual_daily_profit(target_date, nav_command.amount)
-            amount_text = format(nav_command.amount, "f")
-            _send_wechat_text(
-                cfg.wechat,
-                f"✅ 收益已设置\n\n📅 日期：{target_date:%Y-%m-%d}\n💰 收益：{amount_text} 元\n\n仅影响看板展示，不影响自动计算的净值流水。",
-                from_user_id,
-            )
-        except Exception as e:
-            logger.error(f"Set daily profit failed: {e}", exc_info=True)
-            _send_wechat_text(cfg.wechat, f"❌ 设置收益失败\n{e}", from_user_id)
-        return
-
-    if action == "set_daily_profit_invalid_date":
-        _send_wechat_text(
-            cfg.wechat,
-            f"❌ 日期格式无效：{nav_command.query}\n\n支持格式：\n• 设置收益 2026-07-21 150.5\n• 设置收益 昨天 100\n• 设置收益 20260721 -80",
-            from_user_id,
-        )
-        return
-
-    if action == "set_daily_profit_usage":
-        _send_wechat_text(
-            cfg.wechat,
-            "❌ 设置收益格式不正确\n\n格式：设置收益 日期 金额\n\n示例：\n• 设置收益 2026-07-21 150.5\n• 设置收益 昨天 -80\n• 设置收益 20260721 200",
-            from_user_id,
-        )
-        return
-
-    if action == "set_shares_batch":
-        ok, message = set_nav_product_shares_batch(
-            cfg,
-            nav_command.share_updates,
-            nav_command.share_errors,
-        )
-        if ok:
-            _persist_runtime_config(cfg)
-        _send_wechat_markdown(cfg.wechat, message, from_user_id)
-        return
-
-    if action == "confirm_add":
-        if not _try_start_cmd("确认添加净值产品"):
-            _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
-            return
-        try:
-            ok, message = confirm_pending_nav_add(cfg, nav_command.index)
-            if ok:
-                _persist_runtime_config(cfg)
-            _send_wechat_text(cfg.wechat, ("✅ " if ok else "❌ ") + message, from_user_id)
-        except Exception as e:
-            logger.error(f"Confirm NAV add failed: {e}", exc_info=True)
-            _send_wechat_text(cfg.wechat, f"❌ 添加净值产品失败\n{e}", from_user_id)
-        finally:
-            _end_cmd()
-        return
-
-    if action == "cancel_add":
-        _send_wechat_text(cfg.wechat, cancel_pending_nav_add(), from_user_id)
-        return
-
-    if action == "unknown_provider":
-        _send_wechat_text(cfg.wechat, "❌ 暂不支持该理财机构\n\n目前支持：信银、南银", from_user_id)
-        return
-
-    if action == "add_product_usage":
-        _send_wechat_text(
-            cfg.wechat,
-            "❌ 添加净值产品格式不正确\n\n示例：\n添加净值产品 信银 AF233276B\n添加净值产品 南银 NYZY000022\n添加产品 信银 AF233276B",
-            from_user_id,
-        )
         return
 
     if action in ("query_latest", "query_date", "query_period"):
@@ -2577,28 +2404,6 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
                 _end_cmd()
 
         threading.Thread(target=process_nav_query, daemon=True).start()
-        return
-
-    if action == "add_product":
-        if not _try_start_cmd("添加净值产品"):
-            _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
-            return
-        _send_wechat_text(cfg.wechat, "⏳ 正在查询候选产品，请稍等...", from_user_id)
-
-        def process_nav_add():
-            try:
-                provider = get_provider(nav_command.provider)
-                candidates = build_add_product_candidates(provider, nav_command.query)
-                if candidates:
-                    save_pending_nav_add(candidates)
-                _send_wechat_markdown(cfg.wechat, format_product_candidates(candidates), from_user_id)
-            except Exception as e:
-                logger.error(f"NAV add command failed: {e}", exc_info=True)
-                _send_wechat_text(cfg.wechat, f"❌ 查询候选产品失败\n{e}", from_user_id)
-            finally:
-                _end_cmd()
-
-        threading.Thread(target=process_nav_add, daemon=True).start()
         return
 
     _send_wechat_text(cfg.wechat, "❌ 暂不支持该净值指令", from_user_id)
