@@ -143,6 +143,34 @@ class PortfolioRepository:
             ).fetchone()
         return self._transaction_from_row(row) if row else None
 
+    def list_transactions(
+        self,
+        product_id: str | None = None,
+        statuses=None,
+    ) -> list[Transaction]:
+        query = f"SELECT {_TRANSACTION_COLUMNS} FROM transactions"
+        conditions = []
+        params = []
+        if product_id is not None:
+            conditions.append("product_id = ?")
+            params.append(product_id)
+        if statuses is not None:
+            status_values = [
+                status.value if isinstance(status, TransactionStatus) else status
+                for status in statuses
+            ]
+            if not status_values:
+                return []
+            placeholders = ", ".join("?" for _ in status_values)
+            conditions.append(f"status IN ({placeholders})")
+            params.extend(status_values)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY trade_date, created_at, id"
+        with self.database.connection() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [self._transaction_from_row(row) for row in rows]
+
     def replace_position(
         self, position: Position, conn: sqlite3.Connection | None = None
     ) -> None:
