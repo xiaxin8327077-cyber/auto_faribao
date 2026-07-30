@@ -1,0 +1,113 @@
+from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal, InvalidOperation
+from enum import Enum
+from typing import Optional
+
+
+class ProductType(str, Enum):
+    WEALTH_NAV = "wealth_nav"
+    CASH_MANAGEMENT = "cash_management"
+    PUBLIC_FUND = "public_fund"
+
+
+class ProductStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+class TransactionType(str, Enum):
+    OPENING_POSITION = "opening_position"
+    MANUAL_PURCHASE = "manual_purchase"
+    MANUAL_REDEMPTION = "manual_redemption"
+    SIP_PURCHASE = "sip_purchase"
+    CASH_TRANSFER_OUT = "cash_transfer_out"
+    CASH_TRANSFER_IN = "cash_transfer_in"
+    INCOME_ACCRUAL = "income_accrual"
+    CASH_DIVIDEND = "cash_dividend"
+    REVERSAL = "reversal"
+    HOLDING_ADJUSTMENT = "holding_adjustment"
+
+
+class TransactionStatus(str, Enum):
+    PENDING_QUOTE = "pending_quote"
+    PENDING_CONFIRMATION = "pending_confirmation"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
+    REVERSED = "reversed"
+    FAILED = "failed"
+
+
+class SipPlanStatus(str, Enum):
+    DRAFT = "draft"
+    ACTIVE = "active"
+    PAUSED = "paused"
+
+
+def decimal_text(value) -> str:
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f"invalid decimal value: {value!r}") from exc
+    if not number.is_finite():
+        raise ValueError(f"decimal value must be finite: {value!r}")
+    return format(number.normalize(), "f")
+
+
+def optional_decimal_text(value) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    return decimal_text(value)
+
+
+@dataclass(frozen=True)
+class Product:
+    id: str
+    provider: str
+    code: str
+    name: str
+    product_type: ProductType
+    status: ProductStatus = ProductStatus.ACTIVE
+    registration_code: str = ""
+    currency: str = "CNY"
+    metadata_json: str = "{}"
+
+
+@dataclass(frozen=True)
+class Transaction:
+    id: str
+    product_id: str
+    transaction_type: TransactionType
+    status: TransactionStatus
+    trade_date: date
+    idempotency_key: str
+    amount: Optional[Decimal] = None
+    shares: Optional[Decimal] = None
+    fee_amount: Optional[Decimal] = None
+    fee_rate: Optional[Decimal] = None
+    confirmation_nav: Optional[Decimal] = None
+    confirmation_date: Optional[date] = None
+    linked_transaction_id: str = ""
+    plan_id: str = ""
+    note: str = ""
+    created_by: str = "system"
+
+
+@dataclass(frozen=True)
+class Position:
+    product_id: str
+    available_shares: Decimal
+    locked_shares: Decimal
+    total_shares: Decimal
+    cost_basis: Decimal
+
+
+@dataclass(frozen=True)
+class SipPlan:
+    id: str
+    product_id: str
+    daily_amount: Decimal
+    purchase_fee_rate: Decimal
+    source_cash_product_id: str
+    status: SipPlanStatus
+    start_date: date
