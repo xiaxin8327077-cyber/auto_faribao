@@ -445,6 +445,34 @@ class PortfolioDatabase:
         finally:
             conn.close()
 
+    def upgrade_v1_validated(self, validator):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = self._open(set_journal_mode=False)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if not self._has_schema_migrations(conn):
+                raise ValueError("portfolio target is not schema v1")
+            versions = {
+                row["version"]
+                for row in conn.execute(
+                    "SELECT version FROM schema_migrations"
+                )
+            }
+            if versions != {BASE_SCHEMA_VERSION}:
+                raise ValueError(
+                    "portfolio target changed before v1 upgrade"
+                )
+            result = validator(conn)
+            self._upgrade_v1_to_v2(conn)
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+            return result
+        finally:
+            conn.close()
+
     @staticmethod
     def _has_schema_migrations(conn) -> bool:
         return conn.execute(

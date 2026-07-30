@@ -837,6 +837,7 @@ class PortfolioTransactionService:
         if transaction.transaction_type in {
             TransactionType.MANUAL_PURCHASE,
             TransactionType.MANUAL_REDEMPTION,
+            TransactionType.SIP_PURCHASE,
         }:
             linked = self._require_consistent_link(transaction, conn)
             return [transaction, linked] if linked is not None else [transaction]
@@ -916,6 +917,7 @@ class PortfolioTransactionService:
         if root.transaction_type in {
             TransactionType.MANUAL_PURCHASE,
             TransactionType.MANUAL_REDEMPTION,
+            TransactionType.SIP_PURCHASE,
         }:
             return self._require_consistent_link(root, conn)
         if root.transaction_type in {
@@ -937,6 +939,7 @@ class PortfolioTransactionService:
             not in {
                 TransactionType.MANUAL_PURCHASE,
                 TransactionType.MANUAL_REDEMPTION,
+                TransactionType.SIP_PURCHASE,
             }
         ):
             raise ValueError("inconsistent reversal group")
@@ -1294,6 +1297,7 @@ class PortfolioTransactionService:
         if transaction.transaction_type not in {
             TransactionType.MANUAL_PURCHASE,
             TransactionType.MANUAL_REDEMPTION,
+            TransactionType.SIP_PURCHASE,
         }:
             raise ValueError("inconsistent linked transaction")
         reverse_cash_links = [
@@ -1317,7 +1321,11 @@ class PortfolioTransactionService:
         )
         expected_type = (
             TransactionType.CASH_TRANSFER_OUT
-            if transaction.transaction_type is TransactionType.MANUAL_PURCHASE
+            if transaction.transaction_type
+            in {
+                TransactionType.MANUAL_PURCHASE,
+                TransactionType.SIP_PURCHASE,
+            }
             else TransactionType.CASH_TRANSFER_IN
         )
         if (
@@ -1329,6 +1337,11 @@ class PortfolioTransactionService:
             or linked.status is not transaction.status
             or linked.trade_date != transaction.trade_date
             or linked.created_by != transaction.created_by
+            or linked.plan_id != transaction.plan_id
+            or (
+                transaction.transaction_type is TransactionType.SIP_PURCHASE
+                and not transaction.plan_id
+            )
             or linked.fee_amount is not None
             or linked.fee_rate is not None
         ):
@@ -1341,7 +1354,10 @@ class PortfolioTransactionService:
         product = self.repository.require_product(
             transaction.product_id, conn=conn
         )
-        if transaction.transaction_type is TransactionType.MANUAL_PURCHASE:
+        if transaction.transaction_type in {
+            TransactionType.MANUAL_PURCHASE,
+            TransactionType.SIP_PURCHASE,
+        }:
             consistent = self._purchase_link_is_consistent(
                 transaction, linked, product
             )

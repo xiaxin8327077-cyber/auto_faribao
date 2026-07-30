@@ -251,6 +251,100 @@ def test_v1_target_failed_copy_validation_never_modifies_target(tmp_path):
     assert not list(tmp_path.glob("portfolio.db.migrating-*"))
 
 
+def test_v1_install_validates_all_legacy_state_before_locked_upgrade(
+    tmp_path,
+):
+    state = tmp_path / "state.json"
+    state.write_text(
+        '{"profit_entries":[{"nav_date":"2026-07-30"}]}',
+        encoding="utf-8",
+    )
+    target = tmp_path / "portfolio.db"
+    valid_state = tmp_path / "valid-state.json"
+    valid_state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    migrate_legacy_portfolio(
+        legacy_cfg(),
+        valid_state,
+        target,
+        tmp_path / "backups",
+        install=True,
+    )
+    downgrade_target_to_v1(target)
+    before_bytes = target.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match="automatic profit entry has no amount",
+    ):
+        migrate_legacy_portfolio(
+            legacy_cfg(),
+            state,
+            target,
+            tmp_path / "backups",
+            install=True,
+        )
+
+    assert target.read_bytes() == before_bytes
+    with sqlite3.connect(target) as conn:
+        assert conn.execute(
+            "SELECT version FROM schema_migrations"
+        ).fetchall() == [(1,)]
+
+
+def test_v1_install_validates_latest_target_inside_upgrade_lock(
+    tmp_path,
+    monkeypatch,
+):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    migrate_legacy_portfolio(
+        legacy_cfg(), state, target, tmp_path / "backups", install=True
+    )
+    downgrade_target_to_v1(target)
+    original = PortfolioDatabase.upgrade_v1_validated
+
+    def inject_latest_change(database, validator):
+        conn = sqlite3.connect(database.path)
+        try:
+            conn.execute(
+                """INSERT INTO products
+                   (id, provider, code, name, product_type, status)
+                   VALUES ('racer', 'test', 'racer', 'racer', 'wealth_nav',
+                           'active')"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return original(database, validator)
+
+    monkeypatch.setattr(
+        PortfolioDatabase,
+        "upgrade_v1_validated",
+        inject_latest_change,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="portfolio product count mismatch",
+    ):
+        migrate_legacy_portfolio(
+            legacy_cfg(),
+            state,
+            target,
+            tmp_path / "backups",
+            install=True,
+        )
+
+    with sqlite3.connect(target) as conn:
+        assert conn.execute(
+            "SELECT version FROM schema_migrations"
+        ).fetchall() == [(1,)]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM products WHERE id = 'racer'"
+        ).fetchone()[0] == 1
+
+
 @pytest.mark.parametrize("versions", [{3}, {1, 2}])
 def test_install_rejects_unsupported_portfolio_versions_without_changes(
     tmp_path,
@@ -379,6 +473,113 @@ def test_migration_rejects_real_uncheckpointed_wal_without_touching_files(
         assert not list(tmp_path.glob("portfolio.db.migrating-*"))
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("sidecar_suffix", ["-wal", "-shm"])
+def test_missing_main_with_nonempty_sidecar_is_unsafe_and_unchanged(
+    tmp_path,
+    sidecar_suffix,
+):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    sidecar = Path(f"{target}{sidecar_suffix}")
+    sidecar.write_bytes(b"orphan-sidecar")
+    before = file_snapshot(sidecar)
+
+    with pytest.raises(
+        ValueError,
+        match="active portfolio database sidecars",
+    ):
+        migrate_legacy_portfolio(
+            legacy_cfg(),
+            state,
+            target,
+            tmp_path / "backups",
+            install=True,
+        )
+
+    assert not target.exists()
+    assert file_snapshot(sidecar) == before
+
+
+def test_missing_target_publish_never_overwrites_racing_file(
+    tmp_path,
+    monkeypatch,
+):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    real_link = os.link
+
+    def race_link(source, destination):
+        if Path(destination) == target:
+            target.write_bytes(b"racing-database")
+        return real_link(source, destination)
+
+    monkeypatch.setattr(portfolio_migration.os, "link", race_link)
+
+    with pytest.raises(
+        ValueError,
+        match="target appeared during portfolio publication",
+    ):
+        migrate_legacy_portfolio(
+            legacy_cfg(),
+            state,
+            target,
+            tmp_path / "backups",
+            install=True,
+        )
+
+    assert target.read_bytes() == b"racing-database"
+    assert not list(tmp_path.glob("portfolio.db.migrating-*"))
+
+
+@pytest.mark.parametrize(
+    "checkpoint_result",
+    [(1, 4, 3), (0, 4, 3)],
+)
+def test_candidate_stabilization_rejects_incomplete_checkpoint(
+    checkpoint_result,
+):
+    with pytest.raises(
+        RuntimeError,
+        match="candidate WAL checkpoint did not complete",
+    ):
+        portfolio_migration._require_complete_checkpoint(
+            checkpoint_result
+        )
+
+
+def test_candidate_stabilization_failure_cleans_candidate_without_publish(
+    tmp_path,
+    monkeypatch,
+):
+    state = tmp_path / "state.json"
+    state.write_text('{"profit_entries":[]}', encoding="utf-8")
+    target = tmp_path / "portfolio.db"
+    monkeypatch.setattr(
+        portfolio_migration,
+        "_stabilize_candidate",
+        lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("forced stabilization failure")
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="forced stabilization failure",
+    ):
+        migrate_legacy_portfolio(
+            legacy_cfg(),
+            state,
+            target,
+            tmp_path / "backups",
+            install=True,
+        )
+
+    assert not target.exists()
+    assert not list(tmp_path.glob("portfolio.db.migrating-*"))
 
 
 def test_failed_validation_never_replaces_target(tmp_path, monkeypatch):

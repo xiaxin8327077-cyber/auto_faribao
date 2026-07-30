@@ -107,7 +107,7 @@ def migrate_legacy_portfolio(
             )
 
         _copy_legacy_profits(database, state)
-        _close_candidate_snapshot(candidate)
+        _stabilize_candidate(candidate)
         _validate_candidate(candidate, len(products), expected_shares)
         counts = _database_counts(candidate)
 
@@ -118,7 +118,7 @@ def migrate_legacy_portfolio(
         backup_dir = _backup_legacy_inputs(
             state_path, target_path, backup_root
         )
-        os.replace(candidate, target_path)
+        _publish_candidate_no_overwrite(candidate, target_path)
         return MigrationReport(
             *counts,
             installed=True,
@@ -136,31 +136,35 @@ def _handle_v1_target(
     expected_shares,
     install,
 ):
-    _load_legacy_state(state_path)
+    state = _load_legacy_state(state_path)
+    list(_legacy_profit_rows(state))
+    if install:
+        counts = PortfolioDatabase(target_path).upgrade_v1_validated(
+            lambda conn: _validate_portfolio_connection(
+                conn,
+                {1},
+                expected_product_count,
+                expected_shares,
+            )
+        )
+        return MigrationReport(
+            *counts,
+            installed=False,
+            backup_dir="",
+        )
     candidate = target_path.with_name(
         f"{target_path.name}.migrating-{uuid4()}"
     )
     try:
         shutil.copy2(target_path, candidate)
         PortfolioDatabase(candidate).initialize()
-        _close_candidate_snapshot(candidate)
+        _stabilize_candidate(candidate)
         _validate_candidate(
             candidate,
             expected_product_count,
             expected_shares,
         )
         counts = _database_counts(candidate)
-        if install:
-            target_state = _inspect_target_schema(target_path)
-            if target_state is PortfolioTargetState.ACTIVE_SIDECARS:
-                raise ValueError(
-                    "active portfolio database sidecars are unsafe"
-                )
-            if target_state is not PortfolioTargetState.UPGRADEABLE_V1:
-                raise ValueError(
-                    "portfolio target changed during validation"
-                )
-            PortfolioDatabase(target_path).initialize()
         return MigrationReport(
             *counts,
             installed=False,
@@ -170,16 +174,37 @@ def _handle_v1_target(
         _delete_candidate(candidate)
 
 
-def _close_candidate_snapshot(candidate):
+def _stabilize_candidate(candidate):
     conn = sqlite3.connect(candidate)
     try:
         if conn.execute(
             "PRAGMA journal_mode"
         ).fetchone()[0].lower() == "wal":
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-            conn.execute("PRAGMA journal_mode = DELETE").fetchone()
+            checkpoint = conn.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+            _require_complete_checkpoint(tuple(checkpoint))
+        journal_mode = conn.execute(
+            "PRAGMA journal_mode = DELETE"
+        ).fetchone()[0].lower()
+        if journal_mode != "delete":
+            raise RuntimeError(
+                "candidate journal mode did not stabilize to DELETE"
+            )
     finally:
         conn.close()
+    if _has_active_sidecars(candidate):
+        raise RuntimeError(
+            "candidate database sidecars remain after stabilization"
+        )
+
+
+def _require_complete_checkpoint(result):
+    busy, log_frames, checkpointed_frames = result
+    if busy != 0 or log_frames != checkpointed_frames:
+        raise RuntimeError(
+            "candidate WAL checkpoint did not complete"
+        )
 
 
 def _legacy_products(cfg):
@@ -296,20 +321,10 @@ def _contains_current_schema(path: Path) -> bool:
 
 
 def _inspect_target_schema(path: Path) -> PortfolioTargetState:
+    if _has_active_sidecars(path):
+        return PortfolioTargetState.ACTIVE_SIDECARS
     if not path.is_file():
         return PortfolioTargetState.LEGACY_OR_MISSING
-    sidecars = (
-        path.with_name(f"{path.name}-wal"),
-        path.with_name(f"{path.name}-shm"),
-    )
-    try:
-        if any(
-            sidecar.is_file() and sidecar.stat().st_size
-            for sidecar in sidecars
-        ):
-            return PortfolioTargetState.ACTIVE_SIDECARS
-    except OSError:
-        return PortfolioTargetState.ACTIVE_SIDECARS
     try:
         with _read_only_connection(path) as conn:
             tables = {
@@ -355,50 +370,85 @@ def _inspect_target_schema(path: Path) -> PortfolioTargetState:
     return PortfolioTargetState.UNSUPPORTED_PORTFOLIO
 
 
+def _has_active_sidecars(path):
+    sidecars = (
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    )
+    try:
+        return any(
+            sidecar.is_file() and sidecar.stat().st_size
+            for sidecar in sidecars
+        )
+    except OSError:
+        return True
+
+
 def _validate_candidate(
     path: Path,
     expected_product_count: int,
     expected_shares: dict[str, Decimal],
 ) -> None:
     with _read_only_connection(path) as conn:
-        versions = {
-            row[0] for row in conn.execute(
-                "SELECT version FROM schema_migrations"
-            )
-        }
-        if versions != {SCHEMA_VERSION}:
-            raise ValueError("portfolio schema version mismatch")
+        _validate_portfolio_connection(
+            conn,
+            {SCHEMA_VERSION},
+            expected_product_count,
+            expected_shares,
+        )
 
-        product_count = conn.execute(
-            "SELECT COUNT(*) FROM products"
-        ).fetchone()[0]
-        if product_count != expected_product_count:
-            raise ValueError(
-                "portfolio product count mismatch: "
-                f"expected {expected_product_count}, got {product_count}"
-            )
 
-        rows = conn.execute(
-            """SELECT product_id, shares
-               FROM transactions
-               WHERE transaction_type = 'opening_position'
-                 AND status = 'confirmed'"""
-        ).fetchall()
-        if len(rows) != len(expected_shares):
-            raise ValueError(
-                "portfolio opening-position count mismatch: "
-                f"expected {len(expected_shares)}, got {len(rows)}"
-            )
+def _validate_portfolio_connection(
+    conn,
+    expected_versions,
+    expected_product_count,
+    expected_shares,
+):
+    versions = {
+        row[0] for row in conn.execute(
+            "SELECT version FROM schema_migrations"
+        )
+    }
+    if versions != expected_versions:
+        raise ValueError("portfolio schema version mismatch")
 
-        actual_shares = {}
-        for row in rows:
-            product_id = row["product_id"]
-            shares = Decimal(row["shares"])
-            actual_shares[product_id] = (
-                actual_shares.get(product_id, Decimal("0")) + shares
-            )
-        if actual_shares != expected_shares:
-            raise ValueError("portfolio opening-position share totals mismatch")
+    product_count = conn.execute(
+        "SELECT COUNT(*) FROM products"
+    ).fetchone()[0]
+    if product_count != expected_product_count:
+        raise ValueError(
+            "portfolio product count mismatch: "
+            f"expected {expected_product_count}, got {product_count}"
+        )
+
+    rows = conn.execute(
+        """SELECT product_id, shares
+           FROM transactions
+           WHERE transaction_type = 'opening_position'
+             AND status = 'confirmed'"""
+    ).fetchall()
+    if len(rows) != len(expected_shares):
+        raise ValueError(
+            "portfolio opening-position count mismatch: "
+            f"expected {len(expected_shares)}, got {len(rows)}"
+        )
+
+    actual_shares = {}
+    for row in rows:
+        product_id = row["product_id"]
+        shares = Decimal(row["shares"])
+        actual_shares[product_id] = (
+            actual_shares.get(product_id, Decimal("0")) + shares
+        )
+    if actual_shares != expected_shares:
+        raise ValueError("portfolio opening-position share totals mismatch")
+    return (
+        product_count,
+        len(rows),
+        conn.execute(
+            "SELECT COUNT(*) FROM legacy_profit_history"
+        ).fetchone()[0],
+    )
 
 
 def _database_counts(path: Path) -> tuple[int, int, int]:
@@ -448,6 +498,67 @@ def _backup_legacy_inputs(
         with destination.open("rb+") as copied:
             os.fsync(copied.fileno())
     return backup_dir
+
+
+def _publish_candidate_no_overwrite(candidate, target):
+    if _has_active_sidecars(target):
+        raise ValueError("active portfolio database sidecars are unsafe")
+    displaced = None
+    published = False
+    if target.is_file():
+        displaced = target.with_name(
+            f"{target.name}.displaced-{uuid4()}"
+        )
+        os.link(target, displaced)
+        if (
+            _has_active_sidecars(target)
+            or not target.is_file()
+            or not os.path.samefile(target, displaced)
+        ):
+            displaced.unlink(missing_ok=True)
+            raise ValueError(
+                "target changed during portfolio publication"
+            )
+        target.unlink()
+    try:
+        if _has_active_sidecars(target):
+            raise ValueError(
+                "active portfolio database sidecars are unsafe"
+            )
+        try:
+            os.link(candidate, target)
+        except FileExistsError as exc:
+            raise ValueError(
+                "target appeared during portfolio publication"
+            ) from exc
+        published = True
+        if _has_active_sidecars(target):
+            raise ValueError(
+                "active portfolio database sidecars are unsafe"
+            )
+        if not os.path.samefile(candidate, target):
+            raise ValueError(
+                "target changed during portfolio publication"
+            )
+        candidate.unlink()
+        published = False
+    except BaseException:
+        if (
+            published
+            and candidate.exists()
+            and target.is_file()
+            and os.path.samefile(candidate, target)
+        ):
+            target.unlink()
+        if displaced is not None and not target.exists():
+            try:
+                os.link(displaced, target)
+            except FileExistsError:
+                pass
+        raise
+    finally:
+        if displaced is not None:
+            displaced.unlink(missing_ok=True)
 
 
 def _delete_candidate(candidate: Path) -> None:

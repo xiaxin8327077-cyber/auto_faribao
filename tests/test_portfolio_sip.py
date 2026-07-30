@@ -131,6 +131,79 @@ def test_015736_exact_quote_confirms_fee_adjusted_shares(sip_services):
     assert settled[0].status == "confirmed"
     assert projector.calculate("fund").total_shares == expected
     assert projector.calculate("cash").total_shares == Decimal("1000")
+
+
+def test_pending_sip_pair_can_be_cancelled_atomically(sip_services):
+    repo, sip, projector = sip_services
+    seed_cash(repo, "cash", "3000")
+    seed_fund(repo, "fund", "015736")
+    plan = active_plan(sip, "fund", "cash", "2000", "0.00006")
+    execution = sip.ensure_intent(plan.id, TRADE_DATE)
+    purchase = repo.get_transaction_by_id(execution.transaction_id)
+    cash = repo.get_transaction_by_id(purchase.linked_transaction_id)
+
+    cancelled = sip.transaction_service.cancel_pending(
+        purchase.id,
+        "test:cancel-sip",
+        actor="operator",
+    )
+
+    assert cancelled.status is TransactionStatus.CANCELLED
+    assert repo.get_transaction_by_id(cash.id).status is TransactionStatus.CANCELLED
+    assert projector.calculate("cash").locked_shares == Decimal("0")
+
+
+def test_confirmed_sip_pair_reverses_from_cash_and_reversal_chain(
+    sip_services,
+):
+    repo, sip, projector = sip_services
+    seed_cash(repo, "cash", "3000")
+    seed_fund(repo, "fund", "015736")
+    seed_quote(repo, "fund", TRADE_DATE, "2")
+    plan = active_plan(sip, "fund", "cash", "2000", "0.00006")
+    execution = sip.ensure_intent(plan.id, TRADE_DATE)
+    sip.settle_pending(TRADE_DATE)
+    purchase = repo.get_transaction_by_id(execution.transaction_id)
+    cash = repo.get_transaction_by_id(purchase.linked_transaction_id)
+
+    cash_reversal = sip.transaction_service.reverse_confirmed(
+        cash.id,
+        "撤销定投",
+        "test:reverse-sip",
+        actor="operator",
+    )
+    first_reversals = [
+        row
+        for row in repo.list_transactions()
+        if row.transaction_type is TransactionType.REVERSAL
+    ]
+    purchase_reversal = next(
+        row for row in first_reversals
+        if row.linked_transaction_id == purchase.id
+    )
+    second_purchase_reversal = sip.transaction_service.reverse_confirmed(
+        purchase_reversal.id,
+        "恢复定投",
+        "test:reverse-sip-chain",
+        actor="operator",
+    )
+
+    assert cash_reversal.linked_transaction_id == cash.id
+    assert second_purchase_reversal.linked_transaction_id == purchase_reversal.id
+    assert repo.get_transaction_by_id(purchase.id).status is TransactionStatus.REVERSED
+    assert repo.get_transaction_by_id(cash.id).status is TransactionStatus.REVERSED
+    assert all(
+        repo.get_transaction_by_id(row.id).status is TransactionStatus.REVERSED
+        for row in first_reversals
+    )
+    assert len(
+        [
+            row
+            for row in repo.list_transactions()
+            if row.transaction_type is TransactionType.REVERSAL
+        ]
+    ) == 4
+    assert projector.calculate("cash").total_shares == Decimal("1000")
     assert execution.id == sip.ensure_intent(plan.id, TRADE_DATE).id
 
 
