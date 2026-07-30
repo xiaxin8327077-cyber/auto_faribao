@@ -80,11 +80,17 @@ def main():
     if args.dry_run:
         return _dry_run_report(cfg, args.message, args.date)
 
+    # 初始化组合账本运行时（迁移 + 校验），失败则只读不停写
+    from src.portfolio_runtime import initialize_portfolio
+
+    portfolio_runtime = initialize_portfolio(cfg)
+
     # Start scheduler for cookies check (17:00) and auto-submit (17:30)
     from src.scheduler import start as start_scheduler
-    start_scheduler(cfg)
 
-    app = create_app(cfg)
+    start_scheduler(cfg, portfolio_runtime=portfolio_runtime)
+
+    app = create_app(cfg, portfolio_runtime=portfolio_runtime)
     logger.info(f"Starting server on {cfg.host}:{cfg.port}")
     app.run(host=cfg.host, port=cfg.port, debug=False)
 
