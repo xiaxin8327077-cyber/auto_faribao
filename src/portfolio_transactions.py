@@ -386,7 +386,26 @@ class PortfolioTransactionService:
         return primary
 
     def _require_consistent_link(self, transaction, conn):
+        if transaction.transaction_type not in {
+            TransactionType.MANUAL_PURCHASE,
+            TransactionType.MANUAL_REDEMPTION,
+        }:
+            raise ValueError("inconsistent linked transaction")
         if not transaction.linked_transaction_id:
+            orphaned_cash_links = [
+                candidate
+                for candidate in self.repository.list_transactions(conn=conn)
+                if (
+                    candidate.linked_transaction_id == transaction.id
+                    and candidate.transaction_type
+                    in {
+                        TransactionType.CASH_TRANSFER_OUT,
+                        TransactionType.CASH_TRANSFER_IN,
+                    }
+                )
+            ]
+            if orphaned_cash_links:
+                raise ValueError("inconsistent linked transaction")
             return None
         linked = self.repository.get_transaction_by_id(
             transaction.linked_transaction_id, conn=conn
@@ -401,14 +420,130 @@ class PortfolioTransactionService:
             or linked.linked_transaction_id != transaction.id
             or linked.transaction_type is not expected_type
             or linked.status is not transaction.status
+            or linked.trade_date != transaction.trade_date
+            or linked.created_by != transaction.created_by
+            or linked.fee_amount is not None
+            or linked.fee_rate is not None
         ):
             raise ValueError("inconsistent linked transaction")
         linked_product = self.repository.require_product(
             linked.product_id, conn=conn
         )
         if linked_product.product_type is not ProductType.CASH_MANAGEMENT:
-            raise ValueError("linked transaction product must be cash_management")
+            raise ValueError("inconsistent linked transaction")
+        product = self.repository.require_product(
+            transaction.product_id, conn=conn
+        )
+        if transaction.transaction_type is TransactionType.MANUAL_PURCHASE:
+            consistent = self._purchase_link_is_consistent(
+                transaction, linked, product
+            )
+        else:
+            consistent = self._redemption_link_is_consistent(
+                transaction, linked, product
+            )
+        if not consistent:
+            raise ValueError("inconsistent linked transaction")
         return linked
+
+    @classmethod
+    def _purchase_link_is_consistent(cls, transaction, linked, product):
+        if (
+            not cls._is_finite_positive(transaction.amount)
+            or not cls._is_valid_fee_rate(transaction.fee_rate)
+            or linked.amount != transaction.amount
+            or linked.shares != transaction.amount
+        ):
+            return False
+        if transaction.status in _PENDING_STATUSES:
+            return (
+                product.product_type is not ProductType.CASH_MANAGEMENT
+                and transaction.shares is None
+                and transaction.fee_amount is None
+                and transaction.confirmation_nav is None
+                and transaction.confirmation_date is None
+                and linked.confirmation_nav is None
+                and linked.confirmation_date is None
+            )
+        if transaction.status is not TransactionStatus.CONFIRMED:
+            return False
+        if (
+            not cls._is_finite_positive(transaction.confirmation_nav)
+            or transaction.confirmation_date != transaction.trade_date
+            or transaction.fee_amount
+            != transaction.amount * transaction.fee_rate
+            or linked.confirmation_nav != ONE
+            or linked.confirmation_date != transaction.confirmation_date
+            or (
+                product.product_type is ProductType.CASH_MANAGEMENT
+                and transaction.confirmation_nav != ONE
+            )
+        ):
+            return False
+        expected_shares = (
+            transaction.amount
+            if product.product_type is ProductType.CASH_MANAGEMENT
+            else (
+                transaction.amount - transaction.fee_amount
+            ) / transaction.confirmation_nav
+        )
+        return (
+            cls._is_finite_positive(transaction.shares)
+            and transaction.shares == expected_shares
+        )
+
+    @classmethod
+    def _redemption_link_is_consistent(cls, transaction, linked, product):
+        if (
+            not cls._is_finite_positive(transaction.shares)
+            or transaction.fee_amount is not None
+            or transaction.fee_rate is not None
+        ):
+            return False
+        if transaction.status in _PENDING_STATUSES:
+            return (
+                product.product_type is not ProductType.CASH_MANAGEMENT
+                and transaction.amount is None
+                and transaction.confirmation_nav is None
+                and transaction.confirmation_date is None
+                and linked.amount is None
+                and linked.shares is None
+                and linked.confirmation_nav is None
+                and linked.confirmation_date is None
+            )
+        if transaction.status is not TransactionStatus.CONFIRMED:
+            return False
+        if (
+            not cls._is_finite_positive(transaction.amount)
+            or not cls._is_finite_positive(transaction.confirmation_nav)
+            or transaction.confirmation_date != transaction.trade_date
+            or transaction.amount
+            != transaction.shares * transaction.confirmation_nav
+            or linked.amount != transaction.amount
+            or linked.shares != transaction.amount
+            or linked.confirmation_nav != ONE
+            or linked.confirmation_date != transaction.confirmation_date
+        ):
+            return False
+        if product.product_type is ProductType.CASH_MANAGEMENT:
+            return transaction.confirmation_nav == ONE
+        return True
+
+    @staticmethod
+    def _is_finite_positive(value):
+        return (
+            isinstance(value, Decimal)
+            and value.is_finite()
+            and value > ZERO
+        )
+
+    @staticmethod
+    def _is_valid_fee_rate(value):
+        return (
+            isinstance(value, Decimal)
+            and value.is_finite()
+            and ZERO <= value < ONE
+        )
 
     def _rebuild_positions(self, product_ids, conn):
         positions = [

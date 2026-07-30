@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 import threading
@@ -84,6 +85,11 @@ def seed_quote(repository, product, quote_date, unit_nav):
 def linked_leg(repository, transaction):
     rows = repository.list_transactions()
     return next(row for row in rows if row.id == transaction.linked_transaction_id)
+
+
+def disable_confirmed_transaction_guard(repository):
+    with repository.database.connection() as conn:
+        conn.execute("DROP TRIGGER prevent_confirmed_transaction_mutation")
 
 
 def test_fund_purchase_waits_for_exact_quote_and_locks_source(services):
@@ -244,6 +250,71 @@ def test_purchase_idempotency_normalizes_equivalent_decimal_request(services):
 
     assert retry == original
     assert projector.calculate("cash").locked_shares == Decimal("1000")
+
+
+@pytest.mark.parametrize("field", ["amount", "shares"])
+def test_purchase_retry_rejects_corrupt_pending_cash_out_value(
+    services, field
+):
+    repository, transactions, _projector = services
+    seed_cash(repository, "cash", "3000")
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    purchase = transactions.record_purchase(
+        "fund",
+        Decimal("1000"),
+        TRADE_DATE,
+        "web:corrupt-cash-out",
+        source_cash_product_id="cash",
+        fee_rate=Decimal("0.01"),
+    )
+    cash_out = linked_leg(repository, purchase)
+    with repository.database.transaction() as conn:
+        conn.execute(
+            f"UPDATE transactions SET {field} = ? WHERE id = ?",
+            ("999", cash_out.id),
+        )
+
+    with pytest.raises(
+        ValueError, match="idempotency key conflicts with existing request"
+    ):
+        transactions.record_purchase(
+            "fund",
+            Decimal("1000"),
+            TRADE_DATE,
+            "web:corrupt-cash-out",
+            source_cash_product_id="cash",
+            fee_rate=Decimal("0.01"),
+        )
+
+
+def test_cash_purchase_retry_rejects_corrupt_confirmation_nav(services):
+    repository, transactions, _projector = services
+    seed_cash(repository, "source", "100")
+    seed_cash(repository, "target", "0")
+    purchase = transactions.record_purchase(
+        "target",
+        Decimal("20"),
+        TRADE_DATE,
+        "web:corrupt-cash-purchase-nav",
+        source_cash_product_id="source",
+    )
+    disable_confirmed_transaction_guard(repository)
+    with repository.database.connection() as conn:
+        conn.execute(
+            "UPDATE transactions SET confirmation_nav = ? WHERE id = ?",
+            ("2", purchase.id),
+        )
+
+    with pytest.raises(
+        ValueError, match="idempotency key conflicts with existing request"
+    ):
+        transactions.record_purchase(
+            "target",
+            Decimal("20"),
+            TRADE_DATE,
+            "web:corrupt-cash-purchase-nav",
+            source_cash_product_id="source",
+        )
 
 
 def test_purchase_source_must_be_cash_management(services):
@@ -484,6 +555,101 @@ def test_confirm_pending_purchase_updates_linked_leg_once(services):
 
 
 @pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("trade_date", "2026-07-29"),
+        ("created_by", "api"),
+        ("confirmation_nav", "1"),
+        ("confirmation_date", "2026-07-30"),
+        ("status", TransactionStatus.PENDING_CONFIRMATION.value),
+        ("product_id", "fund"),
+    ],
+)
+def test_confirm_pending_rejects_corrupt_cash_out_metadata(
+    services, column, value
+):
+    repository, transactions, _projector = services
+    seed_cash(repository, "cash", "1000")
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    pending = transactions.record_purchase(
+        "fund",
+        Decimal("600"),
+        TRADE_DATE,
+        "web:corrupt-cash-out-metadata",
+        source_cash_product_id="cash",
+    )
+    cash_out = linked_leg(repository, pending)
+    with repository.database.transaction() as conn:
+        conn.execute(
+            f"UPDATE transactions SET {column} = ? WHERE id = ?",
+            (value, cash_out.id),
+        )
+    quote = MarketQuote(
+        fund.code, TRADE_DATE, "test", "confirm", unit_nav=Decimal("2")
+    )
+
+    with pytest.raises(ValueError, match="inconsistent linked transaction"):
+        transactions.confirm_pending(pending.id, quote)
+
+
+def test_confirm_pending_rejects_orphaned_reverse_cash_link(services):
+    repository, transactions, _projector = services
+    seed_cash(repository, "cash", "1000")
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    pending = transactions.record_purchase(
+        "fund",
+        Decimal("600"),
+        TRADE_DATE,
+        "web:orphaned-reverse-link",
+        source_cash_product_id="cash",
+    )
+    with repository.database.transaction() as conn:
+        conn.execute(
+            "UPDATE transactions SET linked_transaction_id = NULL WHERE id = ?",
+            (pending.id,),
+        )
+    quote = MarketQuote(
+        fund.code, TRADE_DATE, "test", "confirm", unit_nav=Decimal("2")
+    )
+
+    with pytest.raises(ValueError, match="inconsistent linked transaction"):
+        transactions.confirm_pending(pending.id, quote)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("fee_amount", "99"),
+        ("shares", "1"),
+    ],
+)
+def test_confirmed_purchase_rejects_corrupt_fee_or_effective_shares(
+    services, column, value
+):
+    repository, transactions, _projector = services
+    seed_cash(repository, "cash", "1000")
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    quote = seed_quote(repository, fund, TRADE_DATE, Decimal("2"))
+    purchase = transactions.record_purchase(
+        "fund",
+        Decimal("600"),
+        TRADE_DATE,
+        "web:corrupt-purchase-financials",
+        source_cash_product_id="cash",
+        fee_rate=Decimal("0.01"),
+    )
+    disable_confirmed_transaction_guard(repository)
+    with repository.database.connection() as conn:
+        conn.execute(
+            f"UPDATE transactions SET {column} = ? WHERE id = ?",
+            (value, purchase.id),
+        )
+
+    with pytest.raises(ValueError, match="inconsistent linked transaction"):
+        transactions.confirm_pending(purchase.id, quote)
+
+
+@pytest.mark.parametrize(
     ("product_code", "quote_date", "unit_nav"),
     [
         ("WRONG", TRADE_DATE, Decimal("2")),
@@ -559,6 +725,41 @@ def test_confirm_pending_redemption_updates_destination_amount(services):
     assert cash_leg.shares == Decimal("30")
     assert projector.calculate("fund").total_shares == Decimal("75")
     assert projector.calculate("cash").total_shares == Decimal("40")
+
+
+def test_confirmed_redemption_rejects_corrupt_destination_amount(services):
+    repository, transactions, _projector = services
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    seed_opening_position(repository, "fund", "100")
+    seed_cash(repository, "cash", "0")
+    quote = seed_quote(repository, fund, TRADE_DATE, Decimal("1.2"))
+    redemption = transactions.record_redemption(
+        "fund",
+        Decimal("25"),
+        TRADE_DATE,
+        "web:corrupt-redemption-destination",
+        destination_cash_product_id="cash",
+    )
+    destination = linked_leg(repository, redemption)
+    disable_confirmed_transaction_guard(repository)
+    with repository.database.connection() as conn:
+        conn.execute(
+            "UPDATE transactions SET amount = ? WHERE id = ?",
+            ("999", destination.id),
+        )
+
+    with pytest.raises(
+        ValueError, match="idempotency key conflicts with existing request"
+    ):
+        transactions.record_redemption(
+            "fund",
+            Decimal("25"),
+            TRADE_DATE,
+            "web:corrupt-redemption-destination",
+            destination_cash_product_id="cash",
+        )
+    with pytest.raises(ValueError, match="inconsistent linked transaction"):
+        transactions.confirm_pending(redemption.id, quote)
 
 
 @pytest.mark.parametrize(
@@ -651,57 +852,92 @@ def test_concurrent_purchases_cannot_double_spend_one_cash_balance(services):
     seed_cash(repository, "target-a", "0")
     seed_cash(repository, "target-b", "0")
     database_path = repository.database.path
-    start = threading.Barrier(3)
-    results = []
-    errors = []
+    first_has_write_lock = threading.Event()
+    release_first = threading.Event()
+    second_attempting_transaction = threading.Event()
+    second_has_write_lock = threading.Event()
+    results = {}
+    errors = {}
 
-    def purchase(target_id, idempotency_key):
-        database = PortfolioDatabase(database_path)
+    class HoldingDatabase(PortfolioDatabase):
+        @contextmanager
+        def transaction(self):
+            with super().transaction() as conn:
+                first_has_write_lock.set()
+                if not release_first.wait(5):
+                    raise RuntimeError("timed out holding first write lock")
+                yield conn
+
+    class ObservedDatabase(PortfolioDatabase):
+        @contextmanager
+        def transaction(self):
+            second_attempting_transaction.set()
+            with super().transaction() as conn:
+                second_has_write_lock.set()
+                yield conn
+
+    def service_for(database):
         independent_repository = PortfolioRepository(database)
-        independent_projector = PositionProjector(independent_repository)
-        independent_service = PortfolioTransactionService(
-            independent_repository, independent_projector
+        return PortfolioTransactionService(
+            independent_repository,
+            PositionProjector(independent_repository),
         )
-        start.wait()
+
+    first_service = service_for(HoldingDatabase(database_path))
+    second_service = service_for(ObservedDatabase(database_path))
+
+    def purchase(label, service, target_id, idempotency_key):
         try:
-            results.append(
-                independent_service.record_purchase(
-                    target_id,
-                    Decimal("80"),
-                    TRADE_DATE,
-                    idempotency_key,
-                    source_cash_product_id="source",
-                )
+            results[label] = service.record_purchase(
+                target_id,
+                Decimal("80"),
+                TRADE_DATE,
+                idempotency_key,
+                source_cash_product_id="source",
             )
         except BaseException as exc:
-            errors.append(exc)
+            errors[label] = exc
 
-    threads = [
-        threading.Thread(
-            target=purchase, args=("target-a", "web:concurrent-a")
+    first_thread = threading.Thread(
+        target=purchase,
+        args=(
+            "first",
+            first_service,
+            "target-a",
+            "web:concurrent-a",
         ),
-        threading.Thread(
-            target=purchase, args=("target-b", "web:concurrent-b")
+    )
+    second_thread = threading.Thread(
+        target=purchase,
+        args=(
+            "second",
+            second_service,
+            "target-b",
+            "web:concurrent-b",
         ),
-    ]
-    for thread in threads:
-        thread.start()
-    start.wait()
-    for thread in threads:
+    )
+    first_thread.start()
+    try:
+        assert first_has_write_lock.wait(5)
+        second_thread.start()
+        assert second_attempting_transaction.wait(5)
+        assert not second_has_write_lock.wait(0.5)
+    finally:
+        release_first.set()
+
+    assert second_has_write_lock.wait(5)
+    for thread in (first_thread, second_thread):
         thread.join(10)
 
-    assert all(not thread.is_alive() for thread in threads)
-    assert len(results) == 1
-    assert len(errors) == 1
-    assert isinstance(errors[0], ValueError)
-    assert str(errors[0]) == "insufficient available shares"
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert set(results) == {"first"}
+    assert set(errors) == {"second"}
+    assert isinstance(errors["second"], ValueError)
+    assert str(errors["second"]) == "insufficient available shares"
     assert projector.calculate("source").total_shares == Decimal("20")
-    assert sorted(
-        [
-            projector.calculate("target-a").total_shares,
-            projector.calculate("target-b").total_shares,
-        ]
-    ) == [Decimal("0"), Decimal("80")]
+    assert projector.calculate("target-a").total_shares == Decimal("80")
+    assert projector.calculate("target-b").total_shares == Decimal("0")
 
 
 def test_linked_row_insert_failure_rolls_back_primary_and_positions(
