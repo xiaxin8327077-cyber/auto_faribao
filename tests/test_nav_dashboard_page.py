@@ -207,6 +207,8 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert "The trade will remain pending until a quote arrives." in page
     assert "等待交易日净值后自动确认" in page
     assert "String(rowValue(row, 'created_by')) !== 'wallet_migration'" in page
+    assert "申购资金来源：" in page
+    assert "赎回到账：" in page
 
 
 def test_positions_panel_uses_positive_position_rows_not_all_products():

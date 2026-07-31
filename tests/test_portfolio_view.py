@@ -119,6 +119,75 @@ def test_payload_keeps_overview_fields_and_cash_value_is_shares(portfolio_fixtur
     assert cash["latest_profit"] == "0.4475"
 
 
+def test_transactions_are_newest_first_and_show_cash_route(portfolio_fixture):
+    repository = portfolio_fixture
+    service = PortfolioTransactionService(
+        repository,
+        PositionProjector(repository),
+    )
+    purchase = service.record_purchase(
+        "fund",
+        Decimal("10"),
+        date(2026, 7, 30),
+        "web:purchase-with-source",
+        source_cash_product_id="cash",
+        trade_time="2026-07-30T14:00:00",
+    )
+    redemption = service.record_redemption(
+        "fund",
+        Decimal("5"),
+        date(2026, 7, 30),
+        "web:redemption-with-destination",
+        destination_cash_product_id="cash",
+        trade_time="2026-07-30T14:30:00",
+    )
+
+    rows = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 7, 30),
+    )["transactions"]
+    business_rows = [
+        row for row in rows if row["id"] in {purchase.id, redemption.id}
+    ]
+
+    assert [row["id"] for row in business_rows] == [
+        redemption.id,
+        purchase.id,
+    ]
+    assert business_rows[0]["redemption_destination"] == "现金管理"
+    assert business_rows[1]["funding_source"] == "现金管理"
+
+
+def test_external_cash_route_is_named_wallet(portfolio_fixture):
+    repository = portfolio_fixture
+    service = PortfolioTransactionService(
+        repository,
+        PositionProjector(repository),
+    )
+    purchase = service.record_purchase(
+        "fund",
+        Decimal("10"),
+        date(2026, 7, 30),
+        "web:purchase-from-wallet",
+        trade_time="2026-07-30T13:00:00",
+    )
+    redemption = service.record_redemption(
+        "fund",
+        Decimal("5"),
+        date(2026, 7, 30),
+        "web:redemption-to-wallet",
+        trade_time="2026-07-30T13:30:00",
+    )
+
+    rows = {
+        row["id"]: row
+        for row in build_portfolio_payload(repository)["transactions"]
+    }
+
+    assert rows[purchase.id]["funding_source"] == "钱包"
+    assert rows[redemption.id]["redemption_destination"] == "钱包"
+
+
 def test_confirmed_full_redemption_removes_product_from_positions_only(
     portfolio_fixture,
 ):

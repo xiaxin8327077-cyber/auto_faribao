@@ -37,13 +37,33 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
     ]
     profit_history = _profit_history(repository)
     summary = _summary(rows, profit_history, as_of)
+    transactions = repository.list_transactions()
+    transactions_by_id = {
+        transaction.id: transaction for transaction in transactions
+    }
+    ordered_transactions = [
+        transaction
+        for _index, transaction in sorted(
+            enumerate(transactions),
+            key=lambda item: (
+                item[1].trade_time
+                or f"{item[1].trade_date.isoformat()}T00:00:00",
+                item[0],
+            ),
+            reverse=True,
+        )
+    ]
     return {
         "summary": summary,
         "products": rows,
         "positions": positions,
         "transactions": [
-            _transaction_row(transaction, products_by_id)
-            for transaction in repository.list_transactions()
+            _transaction_row(
+                transaction,
+                products_by_id,
+                transactions_by_id,
+            )
+            for transaction in ordered_transactions
         ],
         "sip_plans": [
             _sip_plan_row(repository, plan, products_by_id)
@@ -229,8 +249,12 @@ def _summary(products, profit_history, as_of):
     }
 
 
-def _transaction_row(transaction, products_by_id):
+def _transaction_row(transaction, products_by_id, transactions_by_id):
     product = products_by_id.get(transaction.product_id)
+    linked = transactions_by_id.get(transaction.linked_transaction_id)
+    linked_product = (
+        products_by_id.get(linked.product_id) if linked is not None else None
+    )
     expected_confirmation_date = transaction.confirmation_date
     if (
         expected_confirmation_date is None
@@ -266,7 +290,7 @@ def _transaction_row(transaction, products_by_id):
         income_start_date = expected_confirmation_date
     elif transaction.transaction_type is TransactionType.MANUAL_REDEMPTION:
         income_stop_date = expected_confirmation_date
-    return {
+    row = {
         "id": transaction.id,
         "product_id": transaction.product_id,
         "product_name": product.name if product else "",
@@ -300,6 +324,18 @@ def _transaction_row(transaction, products_by_id):
         "note": transaction.note,
         "created_by": transaction.created_by,
     }
+    if transaction.transaction_type in {
+        TransactionType.MANUAL_PURCHASE,
+        TransactionType.SIP_PURCHASE,
+    }:
+        row["funding_source"] = (
+            linked_product.name if linked_product is not None else "钱包"
+        )
+    elif transaction.transaction_type is TransactionType.MANUAL_REDEMPTION:
+        row["redemption_destination"] = (
+            linked_product.name if linked_product is not None else "钱包"
+        )
+    return row
 
 
 def _sip_plan_row(repository, plan, products_by_id):

@@ -705,6 +705,7 @@
         const status = normalStatus(rowValue(row, 'status'));
         const title = rowValue(row, 'product_name', 'name', 'product_id') || '交易';
         const transactionType = rowValue(row, 'transaction_type', 'type');
+        const normalizedTransactionType = String(transactionType || '').toLowerCase();
         const confirmationDate = rowValue(row, 'confirmation_date');
         const expectedConfirmationDate = rowValue(row, 'expected_confirmation_date');
         const tradeTime = rowValue(row, 'trade_time');
@@ -716,7 +717,12 @@
         const submittedLine = tradeTime ? `提交时间：${esc(String(tradeTime).replace('T', ' ').slice(0, 16))}<br>` : '';
         const confirmationLine = confirmationDate ? `确认日期：${esc(confirmationDate)}` : `预计确认：${esc(expectedConfirmationDate || '等待行情')}`;
         const incomeLine = incomeStart ? `收益起算：确认份额后（${esc(incomeStart)}）` : incomeStop ? `收益停止：确认赎回后（${esc(incomeStop)}）` : '';
-        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="manage-meta">${esc(transactionTypeLabel(transactionType))} · ${transactionStatusLabel(status)}</div></div></div>${transactionValueHtml(row)}<div class="manage-meta">${submittedLine}有效交易日：${esc(effectiveTradeDate || '--')} · ${confirmationLine}${incomeLine ? `<br>${incomeLine}` : ''}${note ? `<br>备注：${esc(note)}` : ''}</div>${actions ? `<div class="row-actions">${actions}</div>` : ''}</article>`;
+        const routeLine = ['manual_purchase', 'sip_purchase'].includes(normalizedTransactionType)
+          ? `申购资金来源：${esc(rowValue(row, 'funding_source') || '钱包')}`
+          : normalizedTransactionType === 'manual_redemption'
+            ? `赎回到账：${esc(rowValue(row, 'redemption_destination') || '钱包')}`
+            : '';
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="manage-meta">${esc(transactionTypeLabel(transactionType))} · ${transactionStatusLabel(status)}</div></div></div>${transactionValueHtml(row)}<div class="manage-meta">${submittedLine}有效交易日：${esc(effectiveTradeDate || '--')} · ${confirmationLine}${incomeLine ? `<br>${incomeLine}` : ''}${routeLine ? `<br>${routeLine}` : ''}${note ? `<br>备注：${esc(note)}` : ''}</div>${actions ? `<div class="row-actions">${actions}</div>` : ''}</article>`;
       }).join('') : '<div class="empty">当前筛选条件下暂无交易记录。</div>';
       updateWriteControls();
     }
