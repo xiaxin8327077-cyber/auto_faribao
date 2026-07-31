@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
+import json
 from pathlib import Path
 import sqlite3
 from uuid import NAMESPACE_URL, uuid5
@@ -484,6 +485,7 @@ class PortfolioDatabase:
                         f"{sorted(versions)}"
                     )
             self._ensure_sip_deleted_at_column(conn)
+            self._correct_known_sip_fee_rate(conn)
         except BaseException:
             conn.rollback()
             raise
@@ -571,6 +573,109 @@ class PortfolioDatabase:
             conn.execute(
                 "ALTER TABLE sip_plans ADD COLUMN deleted_at TEXT"
             )
+
+    @staticmethod
+    def _correct_known_sip_fee_rate(conn) -> None:
+        corrected_rate = Decimal("0.00006")
+        affected_plans = conn.execute(
+            """SELECT s.id, s.purchase_fee_rate
+               FROM sip_plans AS s
+               JOIN products AS p ON p.id = s.product_id
+               WHERE p.code = '015736'
+                 AND s.purchase_fee_rate = '0.006'"""
+        ).fetchall()
+        affected_transactions = conn.execute(
+            """SELECT t.id, t.status, t.amount, t.shares, t.fee_amount,
+                      t.fee_rate, t.confirmation_nav
+               FROM transactions AS t
+               JOIN products AS p ON p.id = t.product_id
+               WHERE p.code = '015736'
+                 AND t.transaction_type = 'sip_purchase'
+                 AND t.created_by = 'sip'
+                 AND t.fee_rate = '0.006'
+                 AND t.status IN (
+                     'pending_quote', 'pending_confirmation', 'confirmed'
+                 )"""
+        ).fetchall()
+        if not affected_plans and not affected_transactions:
+            return
+
+        conn.execute(
+            """UPDATE sip_plans
+               SET purchase_fee_rate = '0.00006',
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id IN (
+                   SELECT s.id
+                   FROM sip_plans AS s
+                   JOIN products AS p ON p.id = s.product_id
+                   WHERE p.code = '015736'
+                     AND s.purchase_fee_rate = '0.006'
+               )"""
+        )
+        confirmed = [
+            row
+            for row in affected_transactions
+            if (
+                row["status"] == "confirmed"
+                and row["amount"] is not None
+                and row["confirmation_nav"] is not None
+            )
+        ]
+        if confirmed:
+            conn.execute(
+                "DROP TRIGGER IF EXISTS prevent_confirmed_transaction_mutation"
+            )
+        for row in affected_transactions:
+            fee_amount = row["fee_amount"]
+            shares = row["shares"]
+            if row in confirmed:
+                amount = Decimal(row["amount"])
+                nav = Decimal(row["confirmation_nav"])
+                fee = amount * corrected_rate
+                fee_amount = format(fee.normalize(), "f")
+                shares = format(((amount - fee) / nav).normalize(), "f")
+            conn.execute(
+                """UPDATE transactions
+                   SET fee_rate = ?, fee_amount = ?, shares = ?
+                   WHERE id = ?""",
+                ("0.00006", fee_amount, shares, row["id"]),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO audit_logs
+                   (id, action, object_type, object_id, before_json,
+                    after_json, result, source)
+                   VALUES (?, 'correct_sip_fee_rate', 'transaction', ?, ?,
+                           ?, 'success', 'migration')""",
+                (
+                    str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"correct-sip-fee-rate:{row['id']}",
+                        )
+                    ),
+                    row["id"],
+                    json.dumps(
+                        {
+                            "fee_amount": row["fee_amount"],
+                            "fee_rate": row["fee_rate"],
+                            "shares": row["shares"],
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "fee_amount": fee_amount,
+                            "fee_rate": "0.00006",
+                            "shares": shares,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+        if confirmed:
+            _execute_sql_script(conn, V3_SCHEMA_SQL)
 
     def _upgrade_v1_to_v2(self, conn) -> None:
         self._preflight_v2(conn)

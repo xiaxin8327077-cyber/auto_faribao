@@ -105,6 +105,50 @@ def test_current_database_adds_missing_sip_soft_delete_column(tmp_path):
     assert "deleted_at" in columns
 
 
+def test_initialize_corrects_known_015736_sip_fee_rate_and_confirmed_trade(
+    tmp_path,
+):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('fund', 'changsheng_fund', '015736', '基金D',
+                       'public_fund', 'active')"""
+        )
+        conn.execute(
+            """INSERT INTO sip_plans
+               (id, product_id, daily_amount, purchase_fee_rate, status,
+                start_date)
+               VALUES ('plan', 'fund', '2000', '0.006', 'active',
+                       '2026-07-30')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date,
+                confirmation_date, amount, shares, fee_amount, fee_rate,
+                confirmation_nav, plan_id, idempotency_key, created_by)
+               VALUES ('purchase', 'fund', 'sip_purchase', 'confirmed',
+                       '2026-07-30', '2026-07-31', '2000', '1988', '12',
+                       '0.006', '1', 'plan', 'sip:wrong-fee', 'sip')"""
+        )
+
+    db.initialize()
+
+    with db.connection() as conn:
+        plan = conn.execute(
+            """SELECT purchase_fee_rate FROM sip_plans
+               WHERE id = 'plan'"""
+        ).fetchone()
+        purchase = conn.execute(
+            """SELECT fee_rate, fee_amount, shares FROM transactions
+               WHERE id = 'purchase'"""
+        ).fetchone()
+    assert plan["purchase_fee_rate"] == "0.00006"
+    assert tuple(purchase) == ("0.00006", "0.12", "1999.88")
+
+
 def test_clean_populated_v1_upgrades_to_v2_atomically_and_repeat_safely(
     tmp_path,
 ):

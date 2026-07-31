@@ -446,7 +446,7 @@
 
   <dialog class="management-dialog" id="sipDialog" aria-labelledby="sipDialogTitle">
     <form id="sipForm" method="dialog"><header class="dialog-head"><h2 id="sipDialogTitle">定投计划</h2><button class="icon-button" type="button" data-close-dialog="sipDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <label class="form-field">产品<select name="product_id" id="sipProduct" required></select></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
+      <label class="form-field">产品<select name="product_id" id="sipProduct" required></select></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存计划</button></div>
     </div></form>
   </dialog>
@@ -714,7 +714,7 @@
         const edit = `<button class="row-action" type="button" data-write-operation="sip-edit" data-sip-id="${esc(id)}">修改计划</button>`;
         const remove = `<button class="row-action" type="button" data-write-operation="sip-delete" data-sip-id="${esc(id)}">删除计划</button>`;
         const statusLabel = ({draft: '草稿', active: '执行中', paused: '已暂停'})[status] || status;
-        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${esc(rowValue(row, 'amount', 'daily_amount') || '--')} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'fee_rate', 'purchase_fee_rate') || '--')}</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}${remove}</div></article>`;
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${esc(rowValue(row, 'amount', 'daily_amount') || '--')} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'purchase_fee_rate_percent') || '--')}%</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}${remove}</div></article>`;
       }).join('') : '<div class="empty">暂无定投计划。</div>';
       updateWriteControls();
     }
@@ -996,6 +996,7 @@
         'product_id': '产品',
         'daily_amount': '每期金额（元）',
         'purchase_fee_rate': '申购费率',
+        'purchase_fee_rate_percent': '申购费率（%）',
         'source_cash_product_id': '扣款产品',
         'start_date': '首次扣款日',
         'activate': '保存后启用',
@@ -1185,7 +1186,11 @@
         form.amount.value = rowValue(existing, 'amount', 'daily_amount');
         form.start_date.value = rowValue(existing, 'start_date');
         form.source.value = rowValue(existing, 'source_cash_product_id', 'fund_source');
-        form.fee_rate.value = rowValue(existing, 'fee_rate', 'purchase_fee_rate');
+        form.fee_rate.value = rowValue(
+          existing,
+          'purchase_fee_rate_percent',
+          'fee_rate'
+        ) || number(rowValue(existing, 'purchase_fee_rate')) * 100;
         form.dataset.sipId = sipId;
       } else {
         delete form.dataset.sipId;

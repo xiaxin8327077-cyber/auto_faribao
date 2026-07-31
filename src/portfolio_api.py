@@ -904,11 +904,20 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             "daily_amount",
             positive=True,
         )
-        fee_rate = _decimal(
-            body.get("purchase_fee_rate", body.get("fee_rate", "0")),
-            "purchase_fee_rate",
-            nonnegative=True,
-        )
+        stored_fee_rate = body.get("purchase_fee_rate")
+        if stored_fee_rate not in (None, ""):
+            fee_rate = _decimal(
+                stored_fee_rate,
+                "purchase_fee_rate",
+                nonnegative=True,
+            )
+        else:
+            fee_rate_percent = _decimal(
+                body.get("fee_rate", "0"),
+                "fee_rate",
+                nonnegative=True,
+            )
+            fee_rate = fee_rate_percent / Decimal("100")
         if fee_rate >= 1:
             raise ValueError("purchase_fee_rate must be between 0 and 1")
         source_id = str(
@@ -950,6 +959,9 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             "product_id": product_id,
             "daily_amount": decimal_text(amount),
             "purchase_fee_rate": decimal_text(fee_rate),
+            "purchase_fee_rate_percent": decimal_text(
+                fee_rate * Decimal("100")
+            ),
             "source_cash_product_id": source_id,
             "start_date": start_date.isoformat(),
             "activate": activate,

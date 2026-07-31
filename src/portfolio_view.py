@@ -315,6 +315,9 @@ def _sip_plan_row(repository, plan, products_by_id):
         "source": source.name if source else "",
         "daily_amount": decimal_text(plan.daily_amount),
         "purchase_fee_rate": decimal_text(plan.purchase_fee_rate),
+        "purchase_fee_rate_percent": decimal_text(
+            plan.purchase_fee_rate * Decimal("100")
+        ),
         "status": plan.status.value,
         "start_date": plan.start_date.isoformat(),
         "last_execution": (

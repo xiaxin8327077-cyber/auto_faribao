@@ -926,6 +926,31 @@ def test_sip_create_defaults_to_draft_and_edits_existing_plan_in_place(api_setup
     assert repository.get_plan(active_id).daily_amount == Decimal("40")
 
 
+def test_sip_web_fee_rate_is_a_percentage_not_a_decimal_fraction(
+    api_setup,
+):
+    client, _, repository, _ = api_setup
+
+    response = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="sip-percent-fee"),
+        json={
+            "product_id": "fund",
+            "daily_amount": "2000",
+            "fee_rate": "0.006",
+            "source_cash_product_id": "cash",
+            "start_date": "2026-07-30",
+        },
+    )
+
+    payload = response.get_json()
+    plan = repository.get_plan(payload["sip_plan"]["id"])
+    assert response.status_code == 201
+    assert payload["preview"]["purchase_fee_rate"] == "0.00006"
+    assert payload["preview"]["purchase_fee_rate_percent"] == "0.006"
+    assert plan.purchase_fee_rate == Decimal("0.00006")
+
+
 def test_sip_plan_delete_hides_schedule_but_preserves_archived_record(
     api_setup,
 ):

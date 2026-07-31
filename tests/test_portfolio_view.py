@@ -8,6 +8,8 @@ from src.portfolio_models import (
     MarketQuote,
     Product,
     ProductType,
+    SipPlan,
+    SipPlanStatus,
     Transaction,
     TransactionStatus,
     TransactionType,
@@ -308,3 +310,37 @@ def test_profit_calibration_sets_baseline_then_future_nav_profit_continues(
 
     assert calibrated["holding_profit"] == "25"
     assert advanced["holding_profit"] == "35"
+
+
+def test_sip_view_exposes_fee_rate_in_percent_units(tmp_path):
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    repository.add_product(
+        Product(
+            "fund",
+            "changsheng_fund",
+            "015736",
+            "基金D",
+            ProductType.PUBLIC_FUND,
+        )
+    )
+    repository.save_plan(
+        SipPlan(
+            id="plan",
+            product_id="fund",
+            daily_amount=Decimal("2000"),
+            purchase_fee_rate=Decimal("0.00006"),
+            source_cash_product_id="",
+            status=SipPlanStatus.DRAFT,
+            start_date=date(2026, 7, 30),
+        )
+    )
+
+    plan = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 7, 30),
+    )["sip_plans"][0]
+
+    assert plan["purchase_fee_rate"] == "0.00006"
+    assert plan["purchase_fee_rate_percent"] == "0.006"

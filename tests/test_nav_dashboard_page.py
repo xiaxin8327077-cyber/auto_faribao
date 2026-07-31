@@ -88,6 +88,14 @@ def test_sip_plan_can_be_deleted_after_preview():
     assert "operation.replace('sip-', '')" in html
 
 
+def test_sip_fee_rate_field_and_display_use_percent_units():
+    html = _read_page()
+
+    assert "申购费率（%）" in html
+    assert "'purchase_fee_rate_percent'" in html
+    assert "purchase_fee_rate_percent') || '--')}%" in html
+
+
 def test_public_fund_position_shares_show_two_decimal_places():
     html = _read_page()
 
