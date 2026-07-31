@@ -273,7 +273,7 @@
     .manage-value { flex: 0 0 auto; color: var(--blue); font-size: 15px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
     .manage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
     .manage-stat { padding: 9px; border-radius: 7px; background: var(--bg); }
-    .manage-stat span { display: block; color: var(--muted); font-size: 10px; }
+    .manage-stat > span { display: block; color: var(--muted); font-size: 10px; }
     .manage-stat b { display: block; margin-top: 4px; overflow: hidden; font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
     .manage-subvalue { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; }
     .product-history { margin-top: 4px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
@@ -580,7 +580,7 @@
     const number = value => Number(value || 0);
     const money = value => number(value).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
     const signedMoney = value => `${number(value) > 0 ? '+' : ''}${money(value)}`;
-    const signedPercent = value => `${number(value) > 0 ? '+' : ''}${number(value).toFixed(4)}%`;
+    const signedPercent = value => `${number(value) > 0 ? '+' : ''}${number(value).toFixed(2)}%`;
     const tone = value => number(value) > 0 ? 'positive' : number(value) < 0 ? 'negative' : '';
     const shortDate = value => value ? value.slice(5) : '--';
     const shortName = value => String(value || '--').replace(/慧盈象固收增强/g, '慧盈象').replace(/持有期/g, '');

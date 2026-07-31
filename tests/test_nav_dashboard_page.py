@@ -146,6 +146,8 @@ def test_all_position_shares_show_two_decimal_places():
 def test_position_card_merges_quote_date_and_change_below_non_cash_nav():
     html = _read_page()
 
+    assert ".manage-stat > span { display: block;" in html
+    assert ".manage-stat span { display: block;" not in html
     assert (
         "const quoteDate = row.quote?.date || "
         "rowValue(row, 'nav_date', 'quote_date');"
@@ -218,10 +220,10 @@ def test_stale_product_detail_request_cannot_overwrite_newer_dialog():
     assert "if (requestId !== productDetailRequestId) return;" in html
 
 
-def test_change_percent_uses_independent_red_up_green_down_tone_and_four_decimals():
+def test_change_percent_uses_independent_red_up_green_down_tone_and_two_decimals():
     html = _read_page()
 
-    assert "number(value).toFixed(4)" in html
+    assert "number(value).toFixed(2)" in html
     assert ".change-value.positive { color: var(--positive); }" in html
     assert ".change-value.negative { color: var(--negative); }" in html
     assert 'class="change change-value ${tone(item.change_pct)}"' in html
