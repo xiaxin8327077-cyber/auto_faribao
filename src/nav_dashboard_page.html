@@ -435,8 +435,7 @@
   <dialog class="management-dialog" id="tradeDialog" aria-labelledby="tradeDialogTitle">
     <form id="tradeForm" method="dialog"><header class="dialog-head"><h2 id="tradeDialogTitle">新建交易</h2><button class="icon-button" type="button" data-close-dialog="tradeDialog" aria-label="关闭">×</button></header><div class="dialog-body">
       <label class="form-field">产品类型<select id="tradeProductType" required><option value="wealth_nav">理财</option><option value="cash_management">现金</option><option value="public_fund">公募基金</option></select></label>
-      <label class="form-field">已有产品<select name="product_id" id="tradeProduct"></select></label>
-      <label class="form-field" id="tradeFundCodeField" hidden>或输入新公募基金代码<input name="new_fund_code" id="tradeFundCode" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="例如：000001" autocomplete="off" disabled></label>
+      <label class="form-field">搜索并选择产品<input id="tradeProductQuery" list="tradeProductSuggestions" placeholder="输入产品代码或中文名称" autocomplete="off" required><datalist id="tradeProductSuggestions"></datalist><input name="product_id" id="tradeProduct" type="hidden"><input name="new_fund_code" id="tradeFundCode" type="hidden" disabled></label>
       <label class="form-field">交易类型<select name="transaction_type" id="tradeKind"><option value="purchase">申购</option><option value="redemption">赎回</option></select></label>
       <label class="form-field" id="tradeValueLabel">申购金额（元）<input id="tradeValueInput" name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label>
       <label class="form-field" id="tradeFeeRateField" hidden>申购费率（%）<input name="fee_rate_percent" id="tradeFeeRateInput" type="number" min="0" max="100" step="0.0001" inputmode="decimal" required disabled></label>
@@ -457,7 +456,7 @@
 
   <dialog class="management-dialog" id="sipDialog" aria-labelledby="sipDialogTitle">
     <form id="sipForm" method="dialog"><header class="dialog-head"><h2 id="sipDialogTitle">定投计划</h2><button class="icon-button" type="button" data-close-dialog="sipDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <label class="form-field">已有公募基金<select name="product_id" id="sipProduct"></select></label><label class="form-field">或输入新公募基金代码<input name="new_fund_code" id="sipFundCode" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="例如：000001" autocomplete="off"></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
+      <label class="form-field">搜索并选择公募基金<input id="sipProductQuery" list="sipProductSuggestions" placeholder="输入基金代码或中文名称" autocomplete="off" required><datalist id="sipProductSuggestions"></datalist><input name="product_id" id="sipProduct" type="hidden"><input name="new_fund_code" id="sipFundCode" type="hidden"></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存计划</button></div>
     </div></form>
   </dialog>
@@ -617,20 +616,84 @@
     function positionTypeLabel(value) {
       return ({wealth_nav: '净值型理财', cash_management: '现金管理', public_fund: '公募基金'})[value] || '其他产品';
     }
-    function productOptions(selectId, productType = '') {
-      const select = $(selectId);
-      const rows = portfolioRows('products', []).filter(row => (
+    const PRODUCT_SEARCH_CONTROLS = {
+      trade: {
+        query: 'tradeProductQuery',
+        list: 'tradeProductSuggestions',
+        product: 'tradeProduct',
+        fundCode: 'tradeFundCode',
+      },
+      sip: {
+        query: 'sipProductQuery',
+        list: 'sipProductSuggestions',
+        product: 'sipProduct',
+        fundCode: 'sipFundCode',
+      },
+    };
+    function productSearchRows(productType = '') {
+      return portfolioRows('products', []).filter(row => (
         String(rowValue(row, 'status') || 'active') === 'active'
         && (
           !productType
           || String(rowValue(row, 'product_type', 'type')) === productType
         )
       ));
-      select.innerHTML = `<option value="">请选择产品</option>${rows.map(row => {
-        const id = rowValue(row, 'product_id', 'id', 'code');
-        const label = rowValue(row, 'name', 'product_name', 'code') || '未命名产品';
-        return `<option value="${esc(id)}">${esc(label)}</option>`;
-      }).join('')}`;
+    }
+    function productSearchProviderLabel(row) {
+      const provider = String(rowValue(row, 'provider') || '').toLowerCase();
+      return ({
+        nanyin_wealth: '南银理财',
+        citic_wealth: '信银理财',
+        changsheng_fund: '长盛基金',
+      })[provider] || rowValue(row, 'provider') || '';
+    }
+    function productSearchText(row) {
+      const code = rowValue(row, 'code', 'product_code');
+      const name = rowValue(row, 'name', 'product_name');
+      const provider = productSearchProviderLabel(row);
+      const identity = [code, name].filter(Boolean).join(' ');
+      return provider ? `${identity}（${provider}）` : identity;
+    }
+    function fillProductSearch(scope, productType) {
+      const controls = PRODUCT_SEARCH_CONTROLS[scope];
+      const rows = productSearchRows(productType);
+      $(controls.list).innerHTML = rows.map(
+        row => `<option value="${esc(productSearchText(row))}"></option>`
+      ).join('');
+      syncProductSearch(scope, productType);
+    }
+    function syncProductSearch(scope, productType, complete = false) {
+      const controls = PRODUCT_SEARCH_CONTROLS[scope];
+      const input = $(controls.query);
+      const rawQuery = String(input.value || '').trim();
+      const query = rawQuery.toLowerCase();
+      const rows = productSearchRows(productType);
+      const exact = rows.find(row => {
+        const id = String(rowValue(row, 'id', 'product_id') || '').toLowerCase();
+        const code = String(rowValue(row, 'code', 'product_code') || '').toLowerCase();
+        const name = String(rowValue(row, 'name', 'product_name') || '').toLowerCase();
+        const display = productSearchText(row).toLowerCase();
+        return query && [id, code, name, display].includes(query);
+      });
+      const matches = query ? rows.filter(row => {
+        const code = String(rowValue(row, 'code', 'product_code') || '').toLowerCase();
+        const name = String(rowValue(row, 'name', 'product_name') || '').toLowerCase();
+        const provider = String(productSearchProviderLabel(row)).toLowerCase();
+        return code.includes(query) || name.includes(query) || provider.includes(query);
+      }) : [];
+      const product = exact || (matches.length === 1 ? matches[0] : null);
+      $(controls.product).value = product
+        ? rowValue(product, 'id', 'product_id', 'code')
+        : '';
+      const newFundCode = (
+        !product
+        && productType === 'public_fund'
+        && /^\d{6}$/.test(rawQuery)
+      ) ? rawQuery : '';
+      $(controls.fundCode).disabled = productType !== 'public_fund';
+      $(controls.fundCode).value = newFundCode;
+      if (product && complete) input.value = productSearchText(product);
+      return product;
     }
     function fillSipSource() {
       const select = $('sipSource');
@@ -1272,7 +1335,10 @@
         'type'
       ) || 'wealth_nav';
       updateTradeProductType();
-      $('tradeProduct').value = productId;
+      if (selectedProduct) {
+        $('tradeProductQuery').value = productSearchText(selectedProduct);
+        syncProductSearch('trade', $('tradeProductType').value, true);
+      }
       fillTradeCashOptions();
       const now = new Date();
       $('tradeTimeInput').value = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -1281,11 +1347,7 @@
     }
     function updateTradeProductType() {
       const productType = $('tradeProductType').value;
-      const publicFund = productType === 'public_fund';
-      productOptions('tradeProduct', productType);
-      $('tradeFundCodeField').hidden = !publicFund;
-      $('tradeFundCode').disabled = !publicFund;
-      if (!publicFund) $('tradeFundCode').value = '';
+      fillProductSearch('trade', productType);
       updateTradeValueField();
     }
     function updateTradeValueField() {
@@ -1307,13 +1369,20 @@
     }
     function openSip(sipId = '') {
       if (!state.writeEnabled) return;
-      productOptions('sipProduct', 'public_fund');
-      fillSipSource();
       const existing = portfolioRows('sip_plans', portfolioRows('sips', [])).find(row => String(rowValue(row, 'id', 'sip_id')) === String(sipId));
       const form = $('sipForm');
       form.reset();
+      fillProductSearch('sip', 'public_fund');
+      fillSipSource();
       if (existing) {
-        form.product_id.value = rowValue(existing, 'product_id');
+        const productId = rowValue(existing, 'product_id');
+        const product = productSearchRows('public_fund').find(
+          row => String(rowValue(row, 'id', 'product_id', 'code')) === String(productId)
+        );
+        $('sipProductQuery').value = product
+          ? productSearchText(product)
+          : productId;
+        syncProductSearch('sip', 'public_fund', true);
         form.amount.value = number(rowValue(existing, 'amount', 'daily_amount')).toFixed(2);
         form.start_date.value = rowValue(existing, 'start_date');
         form.source.value = rowValue(existing, 'source_cash_product_id', 'fund_source');
@@ -1453,7 +1522,22 @@
     }
     $('refreshButton').addEventListener('click', refresh);
     $('tradeKind').addEventListener('change', updateTradeValueField);
-    $('tradeProductType').addEventListener('change', updateTradeProductType);
+    $('tradeProductType').addEventListener('change', () => {
+      $('tradeProductQuery').value = '';
+      updateTradeProductType();
+    });
+    $('tradeProductQuery').addEventListener('input', () => {
+      syncProductSearch('trade', $('tradeProductType').value);
+    });
+    $('tradeProductQuery').addEventListener('change', () => {
+      syncProductSearch('trade', $('tradeProductType').value, true);
+    });
+    $('sipProductQuery').addEventListener('input', () => {
+      syncProductSearch('sip', 'public_fund');
+    });
+    $('sipProductQuery').addEventListener('change', () => {
+      syncProductSearch('sip', 'public_fund', true);
+    });
     $('cumulativeProfitTrigger').addEventListener('click', openDailyProfits);
     $('dailyProfitClose').addEventListener('click', closeDailyProfits);
     document.querySelectorAll('[data-profit-view]').forEach(tab => {
@@ -1507,6 +1591,7 @@
     $('tradeForm').addEventListener('submit', async event => {
       event.preventDefault();
       try {
+        syncProductSearch('trade', $('tradeProductType').value, true);
         const payload = formPayload(event.currentTarget);
         if (payload.fee_rate_percent !== undefined) {
           payload.fee_rate = String(number(payload.fee_rate_percent) / 100);
@@ -1530,6 +1615,7 @@
       if (!state.writeEnabled) return;
       const form = event.currentTarget;
       try {
+        syncProductSearch('sip', 'public_fund', true);
         const payload = await ensureInlineFund(
           form,
           {...formPayload(form), activate: true, sip_id: form.dataset.sipId || undefined}

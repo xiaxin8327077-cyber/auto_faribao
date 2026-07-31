@@ -176,11 +176,31 @@ def test_products_are_added_inline_from_trade_or_sip_dialog_only():
     assert 'id="productDialog"' not in html
     assert 'id="productForm"' not in html
     assert 'name="new_fund_code"' in html
-    assert 'id="tradeFundCode"' in html
-    assert 'id="sipFundCode"' in html
+    assert 'name="new_fund_code" id="tradeFundCode" type="hidden"' in html
+    assert 'name="new_fund_code" id="sipFundCode" type="hidden"' in html
     assert "async function ensureInlineFund" in html
     assert "await ensureInlineFund" in html
-    assert "productOptions('sipProduct', 'public_fund')" in html
+    assert "fillProductSearch('sip', 'public_fund')" in html
+
+
+def test_trade_and_sip_use_one_searchable_product_field():
+    html = _read_page()
+
+    assert 'id="tradeProductQuery" list="tradeProductSuggestions"' in html
+    assert 'id="tradeProductSuggestions"' in html
+    assert 'id="sipProductQuery" list="sipProductSuggestions"' in html
+    assert 'id="sipProductSuggestions"' in html
+    assert '<select name="product_id" id="tradeProduct">' not in html
+    assert '<select name="product_id" id="sipProduct">' not in html
+    assert "function fillProductSearch(scope, productType)" in html
+    assert "function syncProductSearch(scope, productType, complete = false)" in html
+    assert "code.includes(query) || name.includes(query)" in html
+    assert "function productSearchProviderLabel(row)" in html
+    assert "nanyin_wealth: '南银理财'" in html
+    assert "citic_wealth: '信银理财'" in html
+    assert "provider.includes(query)" in html
+    assert "syncProductSearch('trade', $('tradeProductType').value, true);" in html
+    assert "syncProductSearch('sip', 'public_fund', true);" in html
 
 
 def test_product_create_preserves_preview_identity_for_submit():
@@ -247,7 +267,7 @@ def test_trade_form_filters_products_and_shows_type_specific_fields():
     page = _read_page()
 
     assert ".form-field[hidden] { display: none; }" in page
-    assert 'id="tradeFundCodeField"' in page
+    assert 'id="tradeFundCodeField"' not in page
     assert 'id="tradeFeeRateField"' in page
     assert 'name="fee_rate_percent"' in page
     assert 'id="tradeSourceField"' in page
@@ -255,8 +275,7 @@ def test_trade_form_filters_products_and_shows_type_specific_fields():
     assert 'id="tradeDestinationField"' in page
     assert 'name="destination_cash_product_id"' in page
     assert '<option value="">钱包</option>' in page
-    assert "productOptions('tradeProduct', productType);" in page
-    assert "$('tradeFundCodeField').hidden = !publicFund;" in page
+    assert "fillProductSearch('trade', productType);" in page
     assert "$('tradeFeeRateField').hidden = !(publicFund && !redemption);" in page
     assert "$('tradeSourceField').hidden = redemption;" in page
     assert "$('tradeSource').disabled = redemption;" in page
