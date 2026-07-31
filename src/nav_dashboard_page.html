@@ -504,9 +504,10 @@
 
   <dialog class="management-dialog" id="tradeDialog" aria-labelledby="tradeDialogTitle">
     <form id="tradeForm" method="dialog"><header class="dialog-head"><h2 id="tradeDialogTitle">新建交易</h2><button class="icon-button" type="button" data-close-dialog="tradeDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <label class="form-field">产品类型<select id="tradeProductType" required><option value="wealth_nav">理财</option><option value="cash_management">现金</option><option value="public_fund">公募基金</option></select></label>
-      <div class="form-field"><label for="tradeProductQuery">搜索并选择产品</label><div class="product-search-control"><input id="tradeProductQuery" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="tradeProductSuggestions" placeholder="输入产品代码或中文名称" autocomplete="off" required><div class="product-suggestion-panel" id="tradeProductSuggestions" role="listbox" hidden></div></div><input name="product_id" id="tradeProduct" type="hidden"><input name="new_fund_code" id="tradeFundCode" type="hidden" disabled><span class="product-search-status" id="tradeProductSearchStatus" aria-live="polite"></span></div>
       <label class="form-field">交易类型<select name="transaction_type" id="tradeKind"><option value="purchase">申购</option><option value="redemption">赎回</option></select></label>
+      <label class="form-field" id="tradeProductTypeField">产品类型<select id="tradeProductType" required><option value="wealth_nav">理财</option><option value="cash_management">现金</option><option value="public_fund">公募基金</option></select></label>
+      <label class="form-field" id="tradeHoldingField" hidden>选择持仓产品<select name="holding_product_id" id="tradeHoldingProduct" disabled><option value="">请选择持仓产品</option></select></label>
+      <div class="form-field" id="tradeSearchField"><label for="tradeProductQuery">搜索并选择产品</label><div class="product-search-control"><input id="tradeProductQuery" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="tradeProductSuggestions" placeholder="输入产品代码或中文名称" autocomplete="off" required><div class="product-suggestion-panel" id="tradeProductSuggestions" role="listbox" hidden></div></div><input name="product_id" id="tradeProduct" type="hidden"><input name="new_fund_code" id="tradeFundCode" type="hidden" disabled><span class="product-search-status" id="tradeProductSearchStatus" aria-live="polite"></span></div>
       <label class="form-field" id="tradeValueLabel">申购金额（元）<input id="tradeValueInput" name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label>
       <label class="form-field" id="tradeFeeRateField" hidden>申购费率（%）<input name="fee_rate_percent" id="tradeFeeRateInput" type="number" min="0" max="100" step="0.0001" inputmode="decimal" required disabled></label>
       <label class="form-field" id="tradeSourceField">申购资金来源<select name="source_cash_product_id" id="tradeSource"><option value="">钱包</option></select></label>
@@ -1895,6 +1896,23 @@
       $('tradeDestination').disabled = !redemption;
       $('tradeSettlementField').hidden = !redemption;
       $('tradeSettlementInput').disabled = !redemption;
+      // 赎回:显示持仓产品下拉,隐藏搜索;申购:显示搜索,隐藏持仓下拉
+      $('tradeProductTypeField').hidden = redemption;
+      $('tradeSearchField').hidden = redemption;
+      $('tradeHoldingField').hidden = !redemption;
+      $('tradeHoldingProduct').disabled = !redemption;
+      if (redemption) fillHoldingProducts();
+    }
+    function fillHoldingProducts() {
+      const select = $('tradeHoldingProduct');
+      const positions = portfolioRows('positions', []);
+      const products = portfolioRows('products', []);
+      const options = positions.filter(p => Number(rowValue(p, 'total_shares', 'shares')) > 0).map(p => {
+        const pid = rowValue(p, 'product_id', 'id', 'code');
+        const product = products.find(pr => rowValue(pr, 'id') === pid);
+        return `<option value="${esc(pid)}">${esc(rowValue(product, 'name', 'code') || '未命名')} (${rowValue(p, 'code', pid)})</option>`;
+      });
+      select.innerHTML = '<option value="">请选择持仓产品</option>' + options.join('');
     }
     function openSip(sipId = '') {
       if (!state.writeEnabled) return;
@@ -2188,16 +2206,25 @@
     $('tradeForm').addEventListener('submit', async event => {
       event.preventDefault();
       try {
-        syncProductSearch('trade', $('tradeProductType').value, true);
+        const redemption = $('tradeKind').value === 'redemption';
         const payload = formPayload(event.currentTarget);
+        // 赎回时用持仓产品ID覆盖product_id
+        if (redemption && payload.holding_product_id) {
+          payload.product_id = payload.holding_product_id;
+        }
+        delete payload.holding_product_id;
         if (payload.fee_rate_percent !== undefined) {
           payload.fee_rate = String(number(payload.fee_rate_percent) / 100);
         }
         delete payload.fee_rate_percent;
-        const normalizedPayload = await ensureInlineFund(
-          event.currentTarget,
-          payload
-        );
+        let normalizedPayload = payload;
+        // 申购才需要 ensureInlineFund(注册新公募产品)
+        if (!redemption) {
+          normalizedPayload = await ensureInlineFund(
+            event.currentTarget,
+            payload
+          );
+        }
         previewAction({previewPath: '/api/portfolio/transactions/preview', submitPath: '/api/portfolio/transactions', payload: normalizedPayload, originDialog: 'tradeDialog'});
       } catch (error) {
         showFormError(event.currentTarget, error);
