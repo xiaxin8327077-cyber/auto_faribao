@@ -248,7 +248,7 @@
     .management-tab[aria-selected="true"] { background: var(--blue); color: #fff; box-shadow: 0 3px 9px rgba(31, 111, 209, .28); }
     .management-tab:focus-visible, .action-button:focus-visible { outline: 3px solid rgba(31, 111, 209, .24); outline-offset: 2px; }
     .management-panel[hidden] { display: none; }
-    .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 2px 0; }
+    .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 2px 14px; }
     .panel-heading h2 { font-size: 20px; }
     .action-button { min-height: 36px; padding: 0 12px; border: 1px solid var(--blue); border-radius: 7px; background: var(--blue); color: #fff; font-size: 13px; font-weight: 800; cursor: pointer; }
     .action-button.secondary { border-color: var(--line); background: var(--panel); color: var(--blue); }
@@ -419,9 +419,9 @@
       </section>
 
       <section class="card metrics" aria-label="组合指标">
+        <div class="metric"><div class="metric-label">总资产(元)</div><div class="metric-value" id="totalAssets">--</div></div>
         <div class="metric"><div class="metric-label">估算市值(元)</div><div class="metric-value" id="marketValue">--</div></div>
-        <div class="metric"><div class="metric-label">已设份额</div><div class="metric-value" id="sharesCount">0/0</div></div>
-        <div class="metric"><div class="metric-label">今日披露</div><div class="metric-value" id="disclosedCount">0/0</div></div>
+        <div class="metric"><div class="metric-label">今日披露</div><div class="metric-value" id="disclosedCount">--</div></div>
       </section>
 
       <section class="card section" aria-label="组合类型与待处理事项">
@@ -1453,9 +1453,16 @@
       $('currentMonthProfit').textContent = `${signedMoney(currentMonthProfit)} 元`;
       $('currentMonthProfit').className = `month-value ${tone(currentMonthProfit)}`;
       $('basis').textContent = `自 ${data.base_date || '2026-07-01'} 起按收益流水累计`;
-      $('marketValue').textContent = money(data.market_value);
+      const pfList = data.portfolio?.products || [];
+      const pfTxList = data.portfolio?.transactions || [];
+      const holdingsValue = pfList.reduce((sum, p) => sum + number(rowValue(p, 'market_value', 'value', 'holding_value')), 0);
+      const pendingBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase'))
+        .reduce((sum, t) => sum + number(rowValue(t, 'amount')), 0);
+      const pendingSell = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('redemption'))
+        .reduce((sum, t) => sum + number(rowValue(t, 'amount')), 0);
+      $('totalAssets').textContent = money(holdingsValue + pendingBuy - pendingSell);
+      $('marketValue').textContent = money(holdingsValue);
       const totalConfigured = (data.products || []).length;
-      $('sharesCount').textContent = `${data.shares_count || 0}/${totalConfigured}`;
       $('disclosedCount').textContent = `${data.today_disclosed_count || 0}/${totalConfigured}`;
       const positives = data.positive_rankings || [];
       const negatives = data.negative_rankings || [];
