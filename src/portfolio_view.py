@@ -274,6 +274,13 @@ def _summary(products, profit_history, as_of):
     }
 
 
+def _parse_trade_time(trade_time: str, trade_date: date) -> datetime:
+    """兼容两种 trade_time 格式: HH:MM:SS 和 YYYY-MM-DDTHH:MM:SS"""
+    if trade_time and 'T' in trade_time:
+        return datetime.fromisoformat(trade_time)
+    return datetime.combine(trade_date, time.fromisoformat(trade_time))
+
+
 def _transaction_row(transaction, products_by_id, transactions_by_id):
     product = products_by_id.get(transaction.product_id)
     linked = transactions_by_id.get(transaction.linked_transaction_id)
@@ -299,7 +306,7 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
             product,
             transaction.transaction_type,
             (
-                datetime.combine(transaction.trade_date, time.fromisoformat(transaction.trade_time))
+                _parse_trade_time(transaction.trade_time, transaction.trade_date)
                 if transaction.trade_time
                 else datetime.combine(
                     transaction.trade_date, datetime.min.time()
