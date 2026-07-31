@@ -190,9 +190,10 @@ def _latest_product_profit(repository, product, as_of):
         )
         if previous is None or previous.unit_nav is None:
             return None
+        # 用最新日持仓(确认份额) × 净值差,与累计收益算法保持一致
         eligible_shares = PositionProjector(
             repository
-        ).calculate_confirmed_as_of(product.id, previous.quote_date).total_shares
+        ).calculate_confirmed_as_of(product.id, latest.quote_date).total_shares
         return eligible_shares * (latest.unit_nav - previous.unit_nav)
     entries = [
         transaction.amount or _ZERO

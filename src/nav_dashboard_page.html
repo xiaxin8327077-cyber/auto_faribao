@@ -1532,9 +1532,9 @@
       const pfTxList = data.portfolio?.transactions || [];
       const roundCent = v => Math.round(number(v) * 100) / 100;
       const holdingsValue = pfList.reduce((sum, p) => sum + roundCent(rowValue(p, 'market_value', 'value', 'holding_value')), 0);
-      // 合并 portfolio 系统的产品到 data.products(按 code 去重,portfolio 字段优先)
+      // 合并 portfolio 系统的产品到 data.products(按 code 去重,portfolio 字段优先;inactive 不并入)
       const baseProducts = Array.isArray(data.products) ? data.products : [];
-      const portfolioByCode = new Map(pfList.map(p => [String(rowValue(p, 'code', '')), p]));
+      const portfolioByCode = new Map(pfList.filter(p => String(p.status || 'active').toLowerCase() === 'active').map(p => [String(rowValue(p, 'code', '')), p]));
       data.products = baseProducts.map(item => {
         const code = String(rowValue(item, 'code', ''));
         const pf = portfolioByCode.get(code);
