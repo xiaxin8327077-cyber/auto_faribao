@@ -661,7 +661,11 @@ def _get_portfolio_runtime():
         return None
 
 
-def _merge_overview_products(legacy_products, ledger_products):
+def _merge_overview_products(
+    legacy_products,
+    ledger_products,
+    ledger_positions=None,
+):
     merged = []
     index_by_key = {}
 
@@ -673,20 +677,33 @@ def _merge_overview_products(legacy_products, ledger_products):
             str(row.get("id") or row.get("product_id") or ""),
         )
 
-    inactive_ledger_keys = {
+    position_rows = (
+        ledger_products
+        if ledger_positions is None
+        else ledger_positions
+    )
+    active_position_keys = {
+        product_key(row)
+        for row in position_rows or []
+        if str(row.get("status") or "active").lower() == "active"
+    }
+    hidden_ledger_keys = {
         product_key(row)
         for row in ledger_products or []
-        if str(row.get("status") or "active").lower() != "active"
+        if (
+            str(row.get("status") or "active").lower() != "active"
+            or product_key(row) not in active_position_keys
+        )
     }
     for row in legacy_products or []:
         item = dict(row)
         key = product_key(item)
-        if key in inactive_ledger_keys:
+        if key in hidden_ledger_keys:
             continue
         index_by_key[key] = len(merged)
         merged.append(item)
 
-    for row in ledger_products or []:
+    for row in position_rows or []:
         if str(row.get("status") or "active").lower() != "active":
             continue
         quote = row.get("quote") if isinstance(row.get("quote"), dict) else {}
@@ -722,12 +739,15 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
     if not write_enabled:
         portfolio["write_disabled_reason"] = "portfolio_migration_failed"
     # The overview still consumes the legacy root fields while management
-    # tabs read this nested ledger projection through portfolioRows(). Merge
-    # ledger-created products into the root list so both views stay in sync.
+    # tabs read the nested ledger projection. Use the position projection as
+    # the authoritative holdings list so fully redeemed products disappear
+    # from both views, while the product catalog still suppresses stale legacy
+    # rows for known products that no longer have a position.
     payload["portfolio"] = portfolio
     payload["products"] = _merge_overview_products(
         payload.get("products", []),
         portfolio.get("products", []),
+        portfolio.get("positions"),
     )
     payload["configured_count"] = len(payload["products"])
     payload["shares_count"] = sum(

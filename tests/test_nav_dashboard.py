@@ -96,20 +96,20 @@ def test_dashboard_overview_includes_products_created_in_portfolio_ledger(
 ):
     import src.nav_dashboard as dashboard
 
+    fund_position = {
+        "id": "fund-id",
+        "provider": "changsheng_fund",
+        "code": "003103",
+        "name": "长盛盛裕纯债C",
+        "status": "active",
+        "shares": "100",
+        "latest_nav": "1.2345",
+        "quote": {"date": "2026-07-30"},
+    }
     portfolio = {
         "summary": {},
-        "products": [
-            {
-                "id": "fund-id",
-                "provider": "changsheng_fund",
-                "code": "003103",
-                "name": "长盛盛裕纯债C",
-                "status": "active",
-                "shares": "100",
-                "latest_nav": "1.2345",
-                "quote": {"date": "2026-07-30"},
-            }
-        ],
+        "products": [fund_position],
+        "positions": [fund_position],
         "transactions": [],
         "sip_plans": [],
         "profit_history": [],
@@ -210,6 +210,70 @@ def test_dashboard_overview_hides_legacy_product_disabled_by_ledger(
     payload = get_dashboard_payload(cfg, state_path=tmp_path / "state.json")
 
     assert [row["code"] for row in payload["products"]] == ["WALLETPLUS"]
+
+
+def test_dashboard_overview_hides_fully_redeemed_ledger_position(
+    tmp_path, monkeypatch
+):
+    import src.nav_dashboard as dashboard
+
+    redeemed = {
+        "id": "redeemed-wealth",
+        "provider": "nanyin_wealth",
+        "code": "A32069",
+        "name": "南银理财悦稳最低持有91天3号-B份额",
+        "status": "active",
+        "shares": "0",
+        "available_shares": "0",
+        "in_transit_amount": "0",
+    }
+    wallet = {
+        "id": "wallet-plus",
+        "provider": "wallet_plus",
+        "code": "WALLETPLUS",
+        "name": "钱包Plus",
+        "status": "active",
+        "shares": "100",
+    }
+    portfolio = {
+        "summary": {},
+        "products": [redeemed, wallet],
+        "positions": [wallet],
+        "transactions": [],
+        "sip_plans": [],
+        "profit_history": [],
+    }
+    monkeypatch.setattr(
+        dashboard,
+        "_get_portfolio_runtime",
+        lambda: SimpleNamespace(repository=object(), write_enabled=True),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "build_portfolio_payload",
+        lambda repository: portfolio,
+    )
+    cfg = Config(
+        {
+            "nav_monitor": {
+                "products": [
+                    {
+                        "provider": "nanyin_wealth",
+                        "code": "A32069",
+                        "name": "南银理财悦稳最低持有91天3号-B份额",
+                        "shares": "100",
+                    }
+                ]
+            }
+        }
+    )
+    store = NavDashboardStore(tmp_path / "state.json")
+    store.sync_portfolio(cfg, _dt("2026-07-31 10:00"))
+
+    payload = get_dashboard_payload(cfg, state_path=tmp_path / "state.json")
+
+    assert [row["code"] for row in payload["products"]] == ["WALLETPLUS"]
+    assert payload["configured_count"] == 1
 
 
 def test_dashboard_keeps_legacy_payload_readonly_after_migration_failure(
