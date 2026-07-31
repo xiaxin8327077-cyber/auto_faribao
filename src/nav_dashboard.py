@@ -764,6 +764,13 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
     )
     legacy_cumulative = Decimal(str(payload.get("cumulative_profit") or "0"))
     payload["cumulative_profit"] = str(legacy_cumulative + pf_profit)
+    # 合并 portfolio 产品的最新日收益
+    pf_latest = sum(
+        (Decimal(str(p.get("latest_profit") or "0")) for p in portfolio.get("products", [])),
+        Decimal("0"),
+    )
+    legacy_latest = Decimal(str(payload.get("latest_profit") or "0"))
+    payload["latest_profit"] = str(legacy_latest + pf_latest)
     payload["write_enabled"] = write_enabled
     if not write_enabled:
         payload["write_disabled_reason"] = "portfolio_migration_failed"

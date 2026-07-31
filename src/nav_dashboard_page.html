@@ -1205,9 +1205,6 @@
         inTransitSell > 0 ? `赎回在途 ${money(inTransitSell)} 元` : '',
       ].filter(Boolean).join('，');
       if (!rows.length) { list.innerHTML = '<div class="empty">暂无持仓，可在交易或定投中添加产品。</div>'; return; }
-      if (inTransitText) {
-        list.insertAdjacentHTML('beforebegin', `<div class="in-transit-hint">${inTransitText}</div>`);
-      }
       list.innerHTML = groups.map(group => {
         const groupRows = rows.filter(row => rowValue(row, 'wealth_type', 'type', 'category', 'product_type') === group);
         if (!groupRows.length) return '';
