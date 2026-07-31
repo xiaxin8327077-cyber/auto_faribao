@@ -664,12 +664,9 @@
           const shares = rowValue(row, 'shares', 'share');
           const availableShares = rowValue(row, 'available_shares');
           const inTransitAmount = rowValue(row, 'in_transit_amount');
-          const sharesDisplay = group === 'public_fund'
-            ? number(shares).toFixed(2)
-            : shares;
-          const availableSharesDisplay = group === 'public_fund'
-            ? number(availableShares).toFixed(2)
-            : availableShares;
+          const quoteDate = row.quote?.date || rowValue(row, 'nav_date', 'quote_date');
+          const sharesDisplay = money(shares);
+          const availableSharesDisplay = money(availableShares);
           const holdingProfit = rowValue(row, 'holding_profit', 'cumulative_profit');
           const cashYield = rowValue(row, 'per_10k_yield', 'per_ten_thousand_yield');
           const sevenDay = rowValue(row, 'seven_day_yield', 'seven_day_annualized_yield');
@@ -677,7 +674,7 @@
           const shareStats = `<div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div><div class="manage-stat"><span>可用份额</span><b>${esc(availableSharesDisplay || '--')}</b></div><div class="manage-stat"><span>在途资金</span><b>${money(inTransitAmount || 0)} 元</b></div>`;
           const navStat = group === 'cash_management'
             ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b></div>`
-            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div>`;
+            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div><div class="manage-stat"><span>净值日期</span><b>${esc(quoteDate || '--')}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
           return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">详情</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
         }).join('')}</section>`;
@@ -714,7 +711,7 @@
       const shares = rowValue(row, 'shares');
       const items = [];
       if (amount !== '') items.push(`<div class="transaction-metric"><span>交易金额</span><b>${esc(money(amount))} 元</b></div>`);
-      if (shares !== '') items.push(`<div class="transaction-metric"><span>交易份额</span><b>${esc(number(shares).toLocaleString('zh-CN', {maximumFractionDigits: 4}))} 份</b></div>`);
+      if (shares !== '') items.push(`<div class="transaction-metric"><span>交易份额</span><b>${esc(money(shares))} 份</b></div>`);
       return items.length
         ? `<div class="transaction-summary${items.length === 1 ? ' single' : ''}">${items.join('')}</div>`
         : '<div class="manage-meta">金额和份额将在确认后生成</div>';
@@ -782,7 +779,7 @@
         const edit = `<button class="row-action" type="button" data-write-operation="sip-edit" data-sip-id="${esc(id)}">修改计划</button>`;
         const remove = `<button class="row-action" type="button" data-write-operation="sip-delete" data-sip-id="${esc(id)}">删除计划</button>`;
         const statusLabel = ({draft: '草稿', active: '执行中', paused: '已暂停'})[status] || status;
-        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${esc(rowValue(row, 'amount', 'daily_amount') || '--')} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'purchase_fee_rate_percent') || '--')}%</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}${remove}</div></article>`;
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${money(rowValue(row, 'amount', 'daily_amount') || 0)} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'purchase_fee_rate_percent') || '--')}%</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}${remove}</div></article>`;
       }).join('') : '<div class="empty">暂无定投计划。</div>';
       updateWriteControls();
     }
@@ -1095,6 +1092,20 @@
       const product = portfolioRows('products', []).find(row => String(rowValue(row, 'id', 'product_id')) === String(value));
       return product ? rowValue(product, 'name', 'product_name', 'code') : value;
     }
+    function previewFieldRequiresTwoDecimals(path) {
+      const field = path.split('.').slice(-1)[0];
+      return [
+        'amount',
+        'share',
+        'shares',
+        'profit',
+        'fee',
+        'difference',
+        'balance',
+        'value',
+        'cost_basis',
+      ].some(suffix => field === suffix || field.endsWith(`_${suffix}`));
+    }
     function previewValue(path, value) {
       const text = String(value);
       const translations = {
@@ -1118,6 +1129,9 @@
       if (translations[text]) return translations[text];
       if (path === 'normalized_input.fee_rate') return `${number(text) * 100}%`;
       if (path.endsWith('product_id') || path.endsWith('_cash_product_id')) return previewProductName(text);
+      if (previewFieldRequiresTwoDecimals(path) && Number.isFinite(number(text))) {
+        return money(text);
+      }
       if (path === 'source_impact' || path === 'destination_impact') {
         const pending = text.match(/^(.+):pending_quote$/);
         if (pending) {
@@ -1128,7 +1142,9 @@
         if (match) {
           const target = match[1] === 'external_cash' ? '钱包' : previewProductName(match[1]);
           const action = match[2] === '-' ? '扣减' : '增加';
-          const quantity = match[3] === 'pending_quote' ? '待净值确认' : match[3];
+          const quantity = Number.isFinite(number(match[3]))
+            ? money(match[3])
+            : match[3] === 'pending_quote' ? '待净值确认' : match[3];
           return `${target} ${action} ${quantity}`;
         }
       }
@@ -1278,7 +1294,7 @@
       form.reset();
       if (existing) {
         form.product_id.value = rowValue(existing, 'product_id');
-        form.amount.value = rowValue(existing, 'amount', 'daily_amount');
+        form.amount.value = number(rowValue(existing, 'amount', 'daily_amount')).toFixed(2);
         form.start_date.value = rowValue(existing, 'start_date');
         form.source.value = rowValue(existing, 'source_cash_product_id', 'fund_source');
         form.fee_rate.value = rowValue(
@@ -1308,10 +1324,7 @@
         'type',
         'category'
       );
-      const publicFund = productType === 'public_fund';
-      const shareText = value => publicFund
-        ? number(value).toFixed(2)
-        : number(value).toLocaleString('zh-CN', {maximumFractionDigits: 4});
+      const shareText = value => money(value);
       const fields = [
         ['产品代码', rowValue(product, 'code', 'product_code') || '--'],
         ['产品类型', positionTypeLabel(productType)],

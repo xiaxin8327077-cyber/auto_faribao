@@ -96,15 +96,43 @@ def test_sip_fee_rate_field_and_display_use_percent_units():
     assert "purchase_fee_rate_percent') || '--')}%" in html
 
 
-def test_public_fund_position_shares_show_two_decimal_places():
+def test_all_position_shares_show_two_decimal_places():
     html = _read_page()
 
-    assert "const sharesDisplay = group === 'public_fund'" in html
-    assert "number(shares).toFixed(2)" in html
+    assert "const sharesDisplay = money(shares);" in html
+    assert "const availableSharesDisplay = money(availableShares);" in html
     assert "const availableShares = rowValue(row, 'available_shares');" in html
     assert "const inTransitAmount = rowValue(row, 'in_transit_amount');" in html
     assert "<span>可用份额</span>" in html
     assert "<span>在途资金</span>" in html
+
+
+def test_position_card_shows_quote_date_next_to_non_cash_nav():
+    html = _read_page()
+
+    assert (
+        "const quoteDate = row.quote?.date || "
+        "rowValue(row, 'nav_date', 'quote_date');"
+    ) in html
+    assert "<span>净值日期</span>" in html
+
+
+def test_non_nav_amounts_and_shares_use_two_decimal_display():
+    html = _read_page()
+
+    assert "function previewFieldRequiresTwoDecimals(path)" in html
+    assert "return money(text);" in html
+    assert "const quantity = Number.isFinite(number(match[3]))" in html
+    assert "<span>交易份额</span><b>${esc(money(shares))} 份</b>" in html
+    assert "const shareText = value => money(value);" in html
+    assert (
+        "form.amount.value = number("
+        "rowValue(existing, 'amount', 'daily_amount')).toFixed(2);"
+    ) in html
+    assert (
+        '<div class="manage-value">${money('
+        "rowValue(row, 'amount', 'daily_amount') || 0)} 元</div>"
+    ) in html
 
 
 def test_position_detail_opens_a_real_dialog():
