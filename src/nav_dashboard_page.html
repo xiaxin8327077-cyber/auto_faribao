@@ -243,11 +243,12 @@
     .daily-profit-amount { font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; }
     .daily-profit-amount.positive { color: var(--positive); }
     .daily-profit-amount.negative { color: var(--negative); }
-    .management-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 0 -2px 14px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 5px 16px rgba(38, 72, 112, .06); }
+    .management-tabs { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 100; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 -5px 20px rgba(38, 72, 112, .14); }
     .management-tab { min-height: 38px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 800; cursor: pointer; }
     .management-tab[aria-selected="true"] { background: var(--blue); color: #fff; box-shadow: 0 3px 9px rgba(31, 111, 209, .28); }
     .management-tab:focus-visible, .action-button:focus-visible { outline: 3px solid rgba(31, 111, 209, .24); outline-offset: 2px; }
     .management-panel[hidden] { display: none; }
+    .management-panel { padding-bottom: 64px; }
     .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 2px 14px; }
     .panel-heading h2 { font-size: 20px; }
     .metric-sub { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 14px; }
