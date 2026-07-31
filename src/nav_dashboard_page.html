@@ -1455,12 +1455,13 @@
       $('basis').textContent = `自 ${data.base_date || '2026-07-01'} 起按收益流水累计`;
       const pfList = data.portfolio?.products || [];
       const pfTxList = data.portfolio?.transactions || [];
-      const holdingsValue = pfList.reduce((sum, p) => sum + number(rowValue(p, 'market_value', 'value', 'holding_value')), 0);
+      const roundCent = v => Math.round(number(v) * 100) / 100;
+      const holdingsValue = pfList.reduce((sum, p) => sum + roundCent(rowValue(p, 'market_value', 'value', 'holding_value')), 0);
       const pendingBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase'))
-        .reduce((sum, t) => sum + number(rowValue(t, 'amount')), 0);
+        .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
       const pendingSell = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('redemption'))
-        .reduce((sum, t) => sum + number(rowValue(t, 'amount')), 0);
-      $('totalAssets').textContent = money(holdingsValue + pendingBuy - pendingSell);
+        .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
+      $('totalAssets').textContent = money(roundCent(holdingsValue + pendingBuy - pendingSell));
       $('marketValue').textContent = money(holdingsValue);
       const totalConfigured = (data.products || []).length;
       $('disclosedCount').textContent = `${data.today_disclosed_count || 0}/${totalConfigured}`;
