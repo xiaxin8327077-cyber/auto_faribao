@@ -1306,10 +1306,12 @@
       const positions = portfolioRows('positions', portfolioRows('products', []));
       const transactions = portfolioRows('transactions');
       const pendingRows = transactions.filter(row => normalStatus(rowValue(row, 'status')) === 'pending');
-      const pendingIds = new Set(pendingRows.map(t => rowValue(t, 'id')));
+      const seenPlans = new Set();
       const dedupedPending = pendingRows.filter(t => {
-        const linkId = rowValue(t, 'linked_transaction_id');
-        return !linkId || !pendingIds.has(linkId);
+        const planId = rowValue(t, 'plan_id');
+        if (planId && seenPlans.has(planId)) return false;
+        if (planId) seenPlans.add(planId);
+        return true;
       });
       $('pendingStatus').textContent = `待处理 ${dedupedPending.length} 笔`;
       $('typeSummary').innerHTML = ['wealth_nav', 'cash_management', 'public_fund'].map(group => {
