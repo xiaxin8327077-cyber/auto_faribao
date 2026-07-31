@@ -19,6 +19,14 @@ _LEDGER_PROFIT_TYPES = {
     TransactionType.CASH_DIVIDEND,
     TransactionType.PROFIT_ADJUSTMENT,
 }
+_PENDING_STATUSES = {
+    TransactionStatus.PENDING_QUOTE,
+    TransactionStatus.PENDING_CONFIRMATION,
+}
+_PURCHASE_TYPES = {
+    TransactionType.MANUAL_PURCHASE,
+    TransactionType.SIP_PURCHASE,
+}
 
 
 def build_portfolio_payload(repository, as_of=None) -> dict:
@@ -33,7 +41,10 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
     positions = [
         row
         for row in rows
-        if Decimal(row["shares"]) > _ZERO
+        if (
+            Decimal(row["shares"]) > _ZERO
+            or Decimal(row["in_transit_amount"]) > _ZERO
+        )
     ]
     profit_history = _profit_history(repository)
     summary = _summary(rows, profit_history, as_of)
@@ -79,6 +90,19 @@ def _product_row(repository, product, as_of):
     quote = repository.latest_quote(product.id, on_or_before=as_of)
     quote_payload = _quote_payload(product.product_type, quote)
     market_value = _market_value(product.product_type, position.total_shares, quote)
+    in_transit_amount = sum(
+        (
+            transaction.amount or _ZERO
+            for transaction in repository.list_transactions(
+                product_id=product.id,
+            )
+            if (
+                transaction.status in _PENDING_STATUSES
+                and transaction.transaction_type in _PURCHASE_TYPES
+            )
+        ),
+        _ZERO,
+    )
     latest_profit = _latest_product_profit(repository, product, as_of)
     holding_profit = calculate_holding_profit(
         repository,
@@ -100,6 +124,7 @@ def _product_row(repository, product, as_of):
         "shares": decimal_text(position.total_shares),
         "available_shares": decimal_text(position.available_shares),
         "locked_shares": decimal_text(position.locked_shares),
+        "in_transit_amount": decimal_text(in_transit_amount),
         "cost_basis": decimal_text(position.cost_basis),
         "market_value": _optional_decimal_text(market_value),
         "latest_profit": _optional_decimal_text(latest_profit),

@@ -188,6 +188,99 @@ def test_external_cash_route_is_named_wallet(portfolio_fixture):
     assert rows[redemption.id]["redemption_destination"] == "钱包"
 
 
+def test_position_row_shows_available_shares_and_pending_purchase_amount(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    for transaction in (
+        Transaction(
+            id="pending-manual-purchase",
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.PENDING_QUOTE,
+            trade_date=date(2026, 7, 30),
+            idempotency_key="pending-manual-purchase",
+            amount=Decimal("25"),
+        ),
+        Transaction(
+            id="pending-sip-purchase",
+            product_id="fund",
+            transaction_type=TransactionType.SIP_PURCHASE,
+            status=TransactionStatus.PENDING_CONFIRMATION,
+            trade_date=date(2026, 7, 30),
+            idempotency_key="pending-sip-purchase",
+            amount=Decimal("10"),
+        ),
+        Transaction(
+            id="pending-redemption",
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_REDEMPTION,
+            status=TransactionStatus.PENDING_CONFIRMATION,
+            trade_date=date(2026, 7, 30),
+            idempotency_key="pending-redemption",
+            shares=Decimal("5"),
+        ),
+        Transaction(
+            id="cancelled-purchase",
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.CANCELLED,
+            trade_date=date(2026, 7, 30),
+            idempotency_key="cancelled-purchase",
+            amount=Decimal("99"),
+        ),
+    ):
+        repository.create_transaction(transaction)
+    PositionProjector(repository).rebuild("fund")
+
+    row = next(
+        item
+        for item in build_portfolio_payload(repository)["positions"]
+        if item["product_id"] == "fund"
+    )
+
+    assert row["shares"] == "100"
+    assert row["available_shares"] == "95"
+    assert row["locked_shares"] == "5"
+    assert row["in_transit_amount"] == "35"
+
+
+def test_pending_purchase_without_confirmed_shares_is_visible_as_position(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    repository.add_product(
+        Product(
+            "pending-fund",
+            "fund",
+            "400030",
+            "东方添益债券",
+            ProductType.PUBLIC_FUND,
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="pending-only-purchase",
+            product_id="pending-fund",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.PENDING_CONFIRMATION,
+            trade_date=date(2026, 7, 30),
+            idempotency_key="pending-only-purchase",
+            amount=Decimal("50000"),
+        )
+    )
+
+    row = next(
+        item
+        for item in build_portfolio_payload(repository)["positions"]
+        if item["product_id"] == "pending-fund"
+    )
+
+    assert row["shares"] == "0"
+    assert row["available_shares"] == "0"
+    assert row["in_transit_amount"] == "50000"
+
+
 def test_confirmed_full_redemption_removes_product_from_positions_only(
     portfolio_fixture,
 ):

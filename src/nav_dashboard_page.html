@@ -265,6 +265,7 @@
     .manage-stat { padding: 9px; border-radius: 7px; background: var(--bg); }
     .manage-stat span { display: block; color: var(--muted); font-size: 10px; }
     .manage-stat b { display: block; margin-top: 4px; overflow: hidden; font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+    .position-stat-grid .manage-stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
     .row-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
     .row-action { min-height: 31px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--blue); font-size: 12px; font-weight: 750; cursor: pointer; }
     .transaction-filters { display: flex; overflow-x: auto; gap: 7px; margin-top: 12px; padding-bottom: 2px; scrollbar-width: none; }
@@ -656,18 +657,24 @@
           const nav = rowValue(row, 'unit_nav', 'latest_nav', 'nav');
           const holding = rowValue(row, 'market_value', 'value', 'holding_value');
           const shares = rowValue(row, 'shares', 'share');
+          const availableShares = rowValue(row, 'available_shares');
+          const inTransitAmount = rowValue(row, 'in_transit_amount');
           const sharesDisplay = group === 'public_fund'
             ? number(shares).toFixed(2)
             : shares;
+          const availableSharesDisplay = group === 'public_fund'
+            ? number(availableShares).toFixed(2)
+            : availableShares;
           const holdingProfit = rowValue(row, 'holding_profit', 'cumulative_profit');
           const cashYield = rowValue(row, 'per_10k_yield', 'per_ten_thousand_yield');
           const sevenDay = rowValue(row, 'seven_day_yield', 'seven_day_annualized_yield');
           const sevenDayDisplay = sevenDay === '' ? '--' : `${(number(sevenDay) * 100).toFixed(2)}%`;
+          const shareStats = `<div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div><div class="manage-stat"><span>可用份额</span><b>${esc(availableSharesDisplay || '--')}</b></div><div class="manage-stat"><span>在途资金</span><b>${money(inTransitAmount || 0)} 元</b></div>`;
           const navStat = group === 'cash_management'
             ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b></div>`
-            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div><div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div>`;
+            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
-          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid">${navStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">查看</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
+          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">查看</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
         }).join('')}</section>`;
       }).join('') || '<div class="empty">暂无可展示的分类持仓。</div>';
     }

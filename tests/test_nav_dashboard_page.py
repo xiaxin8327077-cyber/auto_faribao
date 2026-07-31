@@ -101,6 +101,10 @@ def test_public_fund_position_shares_show_two_decimal_places():
 
     assert "const sharesDisplay = group === 'public_fund'" in html
     assert "number(shares).toFixed(2)" in html
+    assert "const availableShares = rowValue(row, 'available_shares');" in html
+    assert "const inTransitAmount = rowValue(row, 'in_transit_amount');" in html
+    assert "<span>可用份额</span>" in html
+    assert "<span>在途资金</span>" in html
 
 
 def test_products_are_added_inline_from_trade_or_sip_dialog_only():
