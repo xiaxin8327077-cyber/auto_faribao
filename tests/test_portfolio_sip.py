@@ -309,6 +309,36 @@ def test_missing_calendar_year_never_deducts_sip_cash(sip_services):
     assert projector.calculate("cash").available_shares == Decimal("1000")
 
 
+def test_backfill_rechecks_old_before_start_skip_and_updates_holdings(
+    sip_services,
+):
+    repo, sip, projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    seed_quote(repo, "fund", date(2026, 7, 30), "1")
+    plan = active_plan(
+        sip,
+        "fund",
+        "cash",
+        "100",
+        "0",
+        start_date=date(2026, 7, 31),
+    )
+    skipped = sip.ensure_intent(plan.id, date(2026, 7, 30))
+    repo.save_plan(replace(plan, start_date=date(2026, 7, 30)))
+
+    executions = sip.backfill_plan(plan.id, date(2026, 7, 31))
+
+    execution_by_date = {
+        execution.intended_trade_date: execution
+        for execution in executions
+    }
+    assert skipped.reason == "before_start_date"
+    assert execution_by_date[date(2026, 7, 30)].status == "confirmed"
+    assert execution_by_date[date(2026, 7, 31)].status == "pending_quote"
+    assert projector.calculate("fund").total_shares == Decimal("100")
+
+
 def test_pause_does_not_cancel_pending_and_resume_does_not_backfill(sip_services):
     repo, sip, _projector = sip_services
     seed_cash(repo, "cash", "1000")

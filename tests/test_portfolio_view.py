@@ -116,6 +116,39 @@ def test_payload_keeps_overview_fields_and_cash_value_is_shares(portfolio_fixtur
     assert cash["latest_profit"] == "0.4475"
 
 
+def test_confirmed_full_redemption_removes_product_from_positions_only(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    repository.create_transaction(
+        Transaction(
+            id="redeem-all:wealth",
+            product_id="wealth",
+            transaction_type=TransactionType.MANUAL_REDEMPTION,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 30),
+            confirmation_date=date(2026, 7, 30),
+            idempotency_key="redeem-all:wealth",
+            amount=Decimal("107.8"),
+            shares=Decimal("100"),
+            confirmation_nav=Decimal("1.078"),
+        )
+    )
+    PositionProjector(repository).rebuild()
+
+    payload = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 7, 30),
+    )
+
+    assert "wealth" in {
+        row["product_id"] for row in payload["products"]
+    }
+    assert "wealth" not in {
+        row["product_id"] for row in payload["positions"]
+    }
+
+
 def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
     database = PortfolioDatabase(tmp_path / "portfolio.db")
     database.initialize()

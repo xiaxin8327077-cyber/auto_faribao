@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -126,17 +126,34 @@ class SipService:
                 conn,
             )
 
-    def ensure_intent(self, plan_id, intended_date) -> PlanExecution:
+    def ensure_intent(
+        self,
+        plan_id,
+        intended_date,
+        *,
+        recheck_schedule=False,
+    ) -> PlanExecution:
         should_notify = False
         with self.repository.database.transaction() as conn:
+            plan = self._require_plan(plan_id, conn)
+            reason = self._skip_reason(plan, intended_date)
             existing = self.repository.get_plan_execution(
                 plan_id, intended_date, conn=conn
             )
-            if existing is not None:
+            retryable_schedule_skip = (
+                recheck_schedule
+                and existing is not None
+                and existing.status == "skipped"
+                and existing.reason
+                in {
+                    "before_start_date",
+                    "plan_not_active",
+                }
+                and not reason
+            )
+            if existing is not None and not retryable_schedule_skip:
                 return existing
 
-            plan = self._require_plan(plan_id, conn)
-            reason = self._skip_reason(plan, intended_date)
             if reason:
                 execution = self._new_execution(
                     plan.id, intended_date, "skipped", reason
@@ -200,6 +217,31 @@ class SipService:
         if should_notify:
             self._deliver_notification(execution)
         return execution
+
+    def backfill_plan(
+        self,
+        plan_id,
+        through_date,
+        *,
+        settle=True,
+    ) -> list[PlanExecution]:
+        if not isinstance(through_date, date):
+            raise ValueError("through_date is required")
+        plan = self._require_plan(plan_id)
+        if plan.status is not SipPlanStatus.ACTIVE:
+            return self.list_executions(plan.id, through_date)
+
+        intended_date = plan.start_date
+        while intended_date <= through_date:
+            self.ensure_intent(
+                plan.id,
+                intended_date,
+                recheck_schedule=True,
+            )
+            intended_date += timedelta(days=1)
+        if settle:
+            self.settle_pending(through_date)
+        return self.list_executions(plan.id, through_date)
 
     def settle_pending(self, as_of_date) -> list[PlanExecution]:
         settled = []
@@ -509,7 +551,7 @@ class SipService:
             return "source_inactive"
         return ""
 
-    def _require_plan(self, plan_id, conn):
+    def _require_plan(self, plan_id, conn=None):
         plan = self.repository.get_plan(plan_id, conn=conn)
         if plan is None:
             raise ValueError("plan not found")

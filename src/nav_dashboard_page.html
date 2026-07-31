@@ -583,7 +583,7 @@
     }
     function productOptions(selectId) {
       const select = $(selectId);
-      const rows = portfolioRows('positions', portfolioRows('products', []));
+      const rows = portfolioRows('products', []);
       select.innerHTML = `<option value="">请选择产品</option>${rows.map(row => {
         const id = rowValue(row, 'product_id', 'id', 'code');
         const label = rowValue(row, 'name', 'product_name', 'code') || '未命名产品';
@@ -605,15 +605,8 @@
       });
     }
     function renderPositions() {
-      const products = portfolioRows('products', []);
       const positions = portfolioRows('positions', []);
-      const posById = {};
-      positions.forEach(p => { const pid = rowValue(p, 'product_id', 'id', 'code'); if (pid) posById[pid] = p; });
-      const rows = products.map(p => {
-        const pid = rowValue(p, 'product_id', 'id', 'code');
-        const pos = posById[pid] || {};
-        return {...p, ...pos, _id: pid || rowValue(p, 'id')};
-      });
+      const rows = positions;
       const groups = ['wealth_nav', 'cash_management', 'public_fund'];
       const list = $('positionsList');
       if (!rows.length) { list.innerHTML = '<div class="empty">暂无持仓，请先添加产品。</div>'; return; }

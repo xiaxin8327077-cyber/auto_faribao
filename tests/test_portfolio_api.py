@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -924,6 +924,44 @@ def test_sip_create_defaults_to_draft_and_edits_existing_plan_in_place(api_setup
     assert paused_edit.status_code == 200
     assert paused_edit.get_json()["sip_plan"]["status"] == "paused"
     assert repository.get_plan(active_id).daily_amount == Decimal("40")
+
+
+def test_active_backdated_sip_immediately_updates_confirmed_holdings(
+    api_setup,
+    monkeypatch,
+):
+    client, _, repository, _ = api_setup
+    repository.upsert_quote(
+        "fund",
+        MarketQuote(
+            "fund",
+            date(2026, 7, 30),
+            "official",
+            "fund:2026-07-30",
+            unit_nav=Decimal("1"),
+        ),
+        "2026-07-30T18:00:00+08:00",
+    )
+    monkeypatch.setattr(
+        "src.portfolio_api.beijing_now",
+        lambda: datetime(2026, 7, 31, 12),
+    )
+
+    response = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="sip-backdated"),
+        json={
+            "product_id": "fund",
+            "daily_amount": "100",
+            "purchase_fee_rate": "0",
+            "source_cash_product_id": "cash",
+            "start_date": "2026-07-30",
+            "activate": True,
+        },
+    )
+
+    assert response.status_code == 201
+    assert repository.get_position("fund").total_shares == Decimal("100")
 
 
 def test_mobile_compatibility_preview_and_adjustment_routes_are_not_404(client):

@@ -1598,6 +1598,12 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                     status,
                     conn=conn,
                 )
+            if plan.status is SipPlanStatus.ACTIVE:
+                _, _, _, sip = services()
+                sip.backfill_plan(
+                    plan.id,
+                    beijing_now().date(),
+                )
             return jsonify(payload), status
         except ValueError as exc:
             return business_error(

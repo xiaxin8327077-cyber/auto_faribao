@@ -28,11 +28,17 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
         _product_row(repository, product, as_of)
         for product in products
     ]
+    positions = [
+        row
+        for row in rows
+        if Decimal(row["shares"]) > _ZERO
+    ]
     profit_history = _profit_history(repository)
     summary = _summary(rows, profit_history, as_of)
     return {
         "summary": summary,
         "products": rows,
+        "positions": positions,
         "transactions": [
             _transaction_row(transaction, products_by_id)
             for transaction in repository.list_transactions()

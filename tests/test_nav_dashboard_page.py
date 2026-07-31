@@ -141,6 +141,13 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert "manual_redemption: '手工赎回'" in page
     assert "opening_position: '初始持仓'" in page
     assert "function previewFieldLabel(path)" in page
+
+
+def test_positions_panel_uses_positive_position_rows_not_all_products():
+    page = PAGE_PATH.read_text(encoding="utf-8")
+
+    assert "const rows = positions;" in page
+    assert "const rows = products.map" not in page
     assert "'normalized_input.amount': '申购金额（元）'" in page
     assert "'status_prediction': '预计状态'" in page
     assert "The trade will remain pending until a quote arrives." in page
