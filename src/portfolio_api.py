@@ -846,7 +846,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
     def sip_preview(body):
         repo, _, _, _ = services()
         operation = str(body.get("operation") or "").strip().lower()
-        if operation in {"pause", "resume", "activate"}:
+        if operation in {"pause", "resume", "activate", "delete"}:
             plan_id = _required_text(
                 body.get("sip_id") or body.get("plan_id"), "sip_id"
             )
@@ -1530,11 +1530,13 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 cached = replay(action, idem, body, conn=conn)
                 if cached:
                     return cached
-                if operation in {"pause", "resume", "activate"}:
+                if operation in {"pause", "resume", "activate", "delete"}:
                     plan = repo.get_plan(preview["sip_id"], conn=conn)
                     if plan is None:
                         raise ValueError("plan not found")
-                    if operation == "activate":
+                    if operation == "delete":
+                        repo.delete_plan(plan.id, conn=conn)
+                    elif operation == "activate":
                         if plan.status is not SipPlanStatus.DRAFT:
                             raise ValueError("only draft plans can be activated")
                         require_executable_sip_products(
@@ -1613,11 +1615,14 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                             conn=conn,
                         )
                     status = 200 if existing is not None else 201
-                repo.save_plan(plan, conn=conn)
+                if operation != "delete":
+                    repo.save_plan(plan, conn=conn)
                 payload = {
                     "sip_plan": _json_value(plan),
                     "preview": preview,
                 }
+                if operation == "delete":
+                    payload["deleted"] = True
                 audit(
                     "portfolio_sip_write",
                     "sip_plan",
@@ -1635,7 +1640,10 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                     status,
                     conn=conn,
                 )
-            if plan.status is SipPlanStatus.ACTIVE:
+            if (
+                operation != "delete"
+                and plan.status is SipPlanStatus.ACTIVE
+            ):
                 _, _, _, sip = services()
                 sip.backfill_plan(
                     plan.id,

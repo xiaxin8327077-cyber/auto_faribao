@@ -84,6 +84,27 @@ def test_database_initializes_versioned_schema_with_wal_and_foreign_keys(tmp_pat
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
 
+def test_current_database_adds_missing_sip_soft_delete_column(tmp_path):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+    with db.connection() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(sip_plans)")
+        }
+        if "deleted_at" in columns:
+            conn.execute("ALTER TABLE sip_plans DROP COLUMN deleted_at")
+
+    db.initialize()
+
+    with db.connection() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(sip_plans)")
+        }
+    assert "deleted_at" in columns
+
+
 def test_clean_populated_v1_upgrades_to_v2_atomically_and_repeat_safely(
     tmp_path,
 ):

@@ -483,6 +483,7 @@ class PortfolioDatabase:
                         "unsupported portfolio schema version set: "
                         f"{sorted(versions)}"
                     )
+            self._ensure_sip_deleted_at_column(conn)
         except BaseException:
             conn.rollback()
             raise
@@ -558,6 +559,17 @@ class PortfolioDatabase:
             conn.execute(
                 """ALTER TABLE transactions
                    ADD COLUMN trade_time TEXT NOT NULL DEFAULT ''"""
+            )
+
+    @staticmethod
+    def _ensure_sip_deleted_at_column(conn) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(sip_plans)")
+        }
+        if "deleted_at" not in columns:
+            conn.execute(
+                "ALTER TABLE sip_plans ADD COLUMN deleted_at TEXT"
             )
 
     def _upgrade_v1_to_v2(self, conn) -> None:

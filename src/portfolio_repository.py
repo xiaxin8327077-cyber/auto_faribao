@@ -483,8 +483,12 @@ class PortfolioRepository:
         self,
         plan_id: str,
         conn: sqlite3.Connection | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> SipPlan | None:
         query = f"SELECT {_PLAN_COLUMNS} FROM sip_plans WHERE id = ?"
+        if not include_deleted:
+            query += " AND deleted_at IS NULL"
         if conn is None:
             with self.database.connection() as owned:
                 row = owned.execute(query, (plan_id,)).fetchone()
@@ -495,14 +499,40 @@ class PortfolioRepository:
     def list_plans(
         self,
         conn: sqlite3.Connection | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[SipPlan]:
-        query = f"SELECT {_PLAN_COLUMNS} FROM sip_plans ORDER BY created_at, id"
+        query = f"SELECT {_PLAN_COLUMNS} FROM sip_plans"
+        if not include_deleted:
+            query += " WHERE deleted_at IS NULL"
+        query += " ORDER BY created_at, id"
         if conn is None:
             with self.database.connection() as owned:
                 rows = owned.execute(query).fetchall()
         else:
             rows = conn.execute(query).fetchall()
         return [self._plan_from_row(row) for row in rows]
+
+    def delete_plan(
+        self,
+        plan_id: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        if conn is None:
+            with self.database.transaction() as owned:
+                self.delete_plan(plan_id, owned)
+            return
+        cursor = conn.execute(
+            """UPDATE sip_plans
+               SET status = 'paused',
+                   paused_at = COALESCE(paused_at, CURRENT_TIMESTAMP),
+                   deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP),
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND deleted_at IS NULL""",
+            (plan_id,),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("plan not found")
 
     def save_plan_execution(
         self,

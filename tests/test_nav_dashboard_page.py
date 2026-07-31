@@ -80,6 +80,21 @@ def test_sip_save_is_draft_and_activation_is_an_explicit_operation():
     assert "form.start_date.value = rowValue(existing, 'start_date')" in html
 
 
+def test_sip_plan_can_be_deleted_after_preview():
+    html = _read_page()
+
+    assert 'data-write-operation="sip-delete"' in html
+    assert "operation === 'sip-delete'" in html
+    assert "operation.replace('sip-', '')" in html
+
+
+def test_public_fund_position_shares_show_two_decimal_places():
+    html = _read_page()
+
+    assert "const sharesDisplay = group === 'public_fund'" in html
+    assert "number(shares).toFixed(2)" in html
+
+
 def test_product_create_preserves_preview_identity_for_submit():
     html = _read_page()
     # 服务器契约：previewAction 统一从 previewData.product 取产品身份。

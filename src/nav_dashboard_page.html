@@ -624,12 +624,15 @@
           const nav = rowValue(row, 'unit_nav', 'latest_nav', 'nav');
           const holding = rowValue(row, 'market_value', 'value', 'holding_value');
           const shares = rowValue(row, 'shares', 'share');
+          const sharesDisplay = group === 'public_fund'
+            ? number(shares).toFixed(2)
+            : shares;
           const holdingProfit = rowValue(row, 'holding_profit', 'cumulative_profit');
           const cashYield = rowValue(row, 'per_10k_yield', 'per_ten_thousand_yield');
           const sevenDay = rowValue(row, 'seven_day_yield', 'seven_day_annualized_yield');
           const navStat = group === 'cash_management'
             ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDay || '--')}</b></div>`
-            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div><div class="manage-stat"><span>持有份额</span><b>${esc(shares || '--')}</b></div>`;
+            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div><div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
           return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid">${navStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">查看</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
         }).join('')}</section>`;
@@ -709,8 +712,9 @@
               ? `<button class="row-action" type="button" data-write-operation="sip-pause" data-sip-id="${esc(id)}">暂停</button>`
               : '';
         const edit = `<button class="row-action" type="button" data-write-operation="sip-edit" data-sip-id="${esc(id)}">修改计划</button>`;
+        const remove = `<button class="row-action" type="button" data-write-operation="sip-delete" data-sip-id="${esc(id)}">删除计划</button>`;
         const statusLabel = ({draft: '草稿', active: '执行中', paused: '已暂停'})[status] || status;
-        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${esc(rowValue(row, 'amount', 'daily_amount') || '--')} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'fee_rate', 'purchase_fee_rate') || '--')}</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}</div></article>`;
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${esc(rowValue(row, 'amount', 'daily_amount') || '--')} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'fee_rate', 'purchase_fee_rate') || '--')}</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}${remove}</div></article>`;
       }).join('') : '<div class="empty">暂无定投计划。</div>';
       updateWriteControls();
     }
@@ -1025,7 +1029,7 @@
     function previewValue(path, value) {
       const text = String(value);
       const translations = {
-        purchase: '申购', redemption: '赎回', cancel: '取消交易', reverse: '冲正交易',
+        purchase: '申购', redemption: '赎回', cancel: '取消交易', reverse: '冲正交易', delete: '删除计划',
         pause: '暂停', resume: '恢复', activate: '启用',
         confirmed: '立即确认', pending_quote: '等待交易日净值后自动确认',
         pending_confirmation: '待确认', cancelled: '已取消', reversed: '已冲正',
@@ -1037,6 +1041,7 @@
         'SIP plan will be updated': '将保存定投计划修改，计划状态保持不变。',
         'SIP plan will be activated': '将保存并启用定投计划。',
         'SIP plan will be saved as draft': '将定投计划保存为草稿。',
+        'SIP plan will be deleted': '将删除定投计划；已产生的交易记录仍会保留。',
         'holding will be calibrated to the confirmed share count': '将按已确认的真实份额校准持仓。',
         true: '是', false: '否',
       };
@@ -1203,7 +1208,7 @@
     }
     async function simpleOperation(operation, id) {
       if (!state.writeEnabled) return;
-      const isSipOperation = operation === 'sip-activate' || operation === 'sip-pause' || operation === 'sip-resume';
+      const isSipOperation = operation === 'sip-activate' || operation === 'sip-pause' || operation === 'sip-resume' || operation === 'sip-delete';
       await previewAction({
         previewPath: isSipOperation ? '/api/portfolio/sip-plans/preview' : '/api/portfolio/transactions/preview',
         submitPath: isSipOperation ? '/api/portfolio/sip-plans' : '/api/portfolio/transactions',
@@ -1253,7 +1258,7 @@
         originDialog: 'confirmDialog',
       });
       if (operation === 'sip-edit') openSip(control.dataset.sipId);
-      if (operation === 'sip-activate' || operation === 'sip-pause' || operation === 'sip-resume') simpleOperation(operation, control.dataset.sipId);
+      if (operation === 'sip-activate' || operation === 'sip-pause' || operation === 'sip-resume' || operation === 'sip-delete') simpleOperation(operation, control.dataset.sipId);
       if (operation === 'disable-product') previewAction({
         previewPath: '/api/portfolio/products/preview', submitPath: '/api/portfolio/products',
         payload: {operation: 'disable', product_id: control.dataset.productId}, originDialog: 'confirmDialog',

@@ -245,7 +245,7 @@ class SipService:
 
     def settle_pending(self, as_of_date) -> list[PlanExecution]:
         settled = []
-        for plan in self.repository.list_plans():
+        for plan in self.repository.list_plans(include_deleted=True):
             for execution in self.repository.list_plan_executions(plan.id):
                 if (
                     execution.status != "pending_quote"

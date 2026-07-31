@@ -926,6 +926,48 @@ def test_sip_create_defaults_to_draft_and_edits_existing_plan_in_place(api_setup
     assert repository.get_plan(active_id).daily_amount == Decimal("40")
 
 
+def test_sip_plan_delete_hides_schedule_but_preserves_archived_record(
+    api_setup,
+):
+    client, _, repository, _ = api_setup
+    created = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="sip-create-for-delete"),
+        json={
+            "product_id": "fund",
+            "daily_amount": "10",
+            "purchase_fee_rate": "0",
+            "source_cash_product_id": "cash",
+            "start_date": "2026-07-30",
+        },
+    )
+    plan_id = created.get_json()["sip_plan"]["id"]
+    delete_body = {"operation": "delete", "sip_id": plan_id}
+
+    preview = client.post(
+        "/api/portfolio/sip-plans/preview",
+        headers=write_headers(idem="sip-delete-preview"),
+        json=delete_body,
+    )
+    deleted = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="sip-delete"),
+        json=delete_body,
+    )
+    retried = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="sip-delete"),
+        json=delete_body,
+    )
+
+    assert preview.status_code == 200
+    assert deleted.status_code == 200
+    assert retried.status_code == 200
+    assert repository.get_plan(plan_id) is None
+    assert repository.get_plan(plan_id, include_deleted=True) is not None
+    assert all(plan.id != plan_id for plan in repository.list_plans())
+
+
 def test_active_backdated_sip_immediately_updates_confirmed_holdings(
     api_setup,
     monkeypatch,
