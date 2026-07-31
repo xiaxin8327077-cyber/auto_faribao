@@ -756,6 +756,14 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
     ledger_market_value = portfolio.get("summary", {}).get("market_value")
     if ledger_market_value not in (None, ""):
         payload["market_value"] = ledger_market_value
+    # 合并 portfolio 产品的累计持有收益到总览累计收益
+    from decimal import Decimal
+    pf_profit = sum(
+        (Decimal(str(p.get("holding_profit") or "0")) for p in portfolio.get("products", [])),
+        Decimal("0"),
+    )
+    legacy_cumulative = Decimal(str(payload.get("cumulative_profit") or "0"))
+    payload["cumulative_profit"] = str(legacy_cumulative + pf_profit)
     payload["write_enabled"] = write_enabled
     if not write_enabled:
         payload["write_disabled_reason"] = "portfolio_migration_failed"
