@@ -273,7 +273,14 @@
     .transaction-filter[aria-pressed="true"] { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); }
     .transaction-card { padding: 12px 13px; }
     .transaction-card .manage-card-head { align-items: center; }
+    .transaction-card.purchase { border-left: 4px solid #1f6fd1; }
+    .transaction-card.redemption { border-left: 4px solid #e46a18; }
+    .transaction-card.adjustment { border-left: 4px solid #7857b8; }
     .transaction-head-actions { display: flex; flex: 0 0 auto; align-items: center; }
+    .transaction-subhead { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .transaction-kind { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 11px; background: var(--blue-soft); color: var(--blue); font-size: 11px; font-weight: 850; }
+    .transaction-kind.redemption { background: #fff0e6; color: #b84a00; }
+    .transaction-kind.adjustment { background: #f1ebff; color: #6340a4; }
     .transaction-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
     .transaction-summary.single { grid-template-columns: minmax(0, 1fr); }
     .transaction-metric { min-width: 0; padding: 9px 10px; border-radius: 7px; background: var(--bg); }
@@ -293,6 +300,9 @@
     .form-field[hidden] { display: none; }
     .form-field input, .form-field select, .form-field textarea { width: 100%; min-height: 39px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--text); font: inherit; font-size: 14px; }
     .form-field textarea { min-height: 72px; resize: vertical; }
+    .product-search-status { min-height: 16px; color: var(--muted); font-size: 11px; font-weight: 650; line-height: 1.4; }
+    .product-search-status.success { color: #087a4b; }
+    .product-search-status.error { color: #b91c1c; }
     .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
     .preview-result { display: grid; gap: 9px; padding: 12px; border-radius: 8px; background: var(--bg); font-size: 13px; line-height: 1.5; }
     .preview-result p { margin: 0; }
@@ -435,7 +445,7 @@
   <dialog class="management-dialog" id="tradeDialog" aria-labelledby="tradeDialogTitle">
     <form id="tradeForm" method="dialog"><header class="dialog-head"><h2 id="tradeDialogTitle">新建交易</h2><button class="icon-button" type="button" data-close-dialog="tradeDialog" aria-label="关闭">×</button></header><div class="dialog-body">
       <label class="form-field">产品类型<select id="tradeProductType" required><option value="wealth_nav">理财</option><option value="cash_management">现金</option><option value="public_fund">公募基金</option></select></label>
-      <label class="form-field">搜索并选择产品<input id="tradeProductQuery" list="tradeProductSuggestions" placeholder="输入产品代码或中文名称" autocomplete="off" required><datalist id="tradeProductSuggestions"></datalist><input name="product_id" id="tradeProduct" type="hidden"><input name="new_fund_code" id="tradeFundCode" type="hidden" disabled></label>
+      <label class="form-field">搜索并选择产品<input id="tradeProductQuery" list="tradeProductSuggestions" placeholder="输入产品代码或中文名称" autocomplete="off" required><datalist id="tradeProductSuggestions"></datalist><input name="product_id" id="tradeProduct" type="hidden"><input name="new_fund_code" id="tradeFundCode" type="hidden" disabled><span class="product-search-status" id="tradeProductSearchStatus" aria-live="polite"></span></label>
       <label class="form-field">交易类型<select name="transaction_type" id="tradeKind"><option value="purchase">申购</option><option value="redemption">赎回</option></select></label>
       <label class="form-field" id="tradeValueLabel">申购金额（元）<input id="tradeValueInput" name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label>
       <label class="form-field" id="tradeFeeRateField" hidden>申购费率（%）<input name="fee_rate_percent" id="tradeFeeRateInput" type="number" min="0" max="100" step="0.0001" inputmode="decimal" required disabled></label>
@@ -456,7 +466,7 @@
 
   <dialog class="management-dialog" id="sipDialog" aria-labelledby="sipDialogTitle">
     <form id="sipForm" method="dialog"><header class="dialog-head"><h2 id="sipDialogTitle">定投计划</h2><button class="icon-button" type="button" data-close-dialog="sipDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <label class="form-field">搜索并选择公募基金<input id="sipProductQuery" list="sipProductSuggestions" placeholder="输入基金代码或中文名称" autocomplete="off" required><datalist id="sipProductSuggestions"></datalist><input name="product_id" id="sipProduct" type="hidden"><input name="new_fund_code" id="sipFundCode" type="hidden"></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
+      <label class="form-field">搜索并选择公募基金<input id="sipProductQuery" list="sipProductSuggestions" placeholder="输入基金代码或中文名称" autocomplete="off" required><datalist id="sipProductSuggestions"></datalist><input name="product_id" id="sipProduct" type="hidden"><input name="new_fund_code" id="sipFundCode" type="hidden"><span class="product-search-status" id="sipProductSearchStatus" aria-live="polite"></span></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存计划</button></div>
     </div></form>
   </dialog>
@@ -622,14 +632,19 @@
         list: 'tradeProductSuggestions',
         product: 'tradeProduct',
         fundCode: 'tradeFundCode',
+        status: 'tradeProductSearchStatus',
       },
       sip: {
         query: 'sipProductQuery',
         list: 'sipProductSuggestions',
         product: 'sipProduct',
         fundCode: 'sipFundCode',
+        status: 'sipProductSearchStatus',
       },
     };
+    const fundSearchPreviewCache = new Map();
+    const fundSearchTimers = {};
+    const fundSearchSequence = {};
     function productSearchRows(productType = '') {
       return portfolioRows('products', []).filter(row => (
         String(rowValue(row, 'status') || 'active') === 'active'
@@ -662,10 +677,28 @@
       ).join('');
       syncProductSearch(scope, productType);
     }
+    function setProductSearchStatus(scope, message = '', tone = '') {
+      const status = $(PRODUCT_SEARCH_CONTROLS[scope].status);
+      status.textContent = message;
+      status.className = `product-search-status${tone ? ` ${tone}` : ''}`;
+    }
     function syncProductSearch(scope, productType, complete = false) {
       const controls = PRODUCT_SEARCH_CONTROLS[scope];
       const input = $(controls.query);
       const rawQuery = String(input.value || '').trim();
+      let resolvedCode = input.dataset.resolvedFundCode || '';
+      let resolvedText = input.dataset.resolvedFundText || '';
+      if (
+        resolvedCode
+        && rawQuery !== resolvedCode
+        && rawQuery !== resolvedText
+      ) {
+        delete input.dataset.resolvedFundCode;
+        delete input.dataset.resolvedFundName;
+        delete input.dataset.resolvedFundText;
+        resolvedCode = '';
+        resolvedText = '';
+      }
       const query = rawQuery.toLowerCase();
       const rows = productSearchRows(productType);
       const exact = rows.find(row => {
@@ -685,15 +718,83 @@
       $(controls.product).value = product
         ? rowValue(product, 'id', 'product_id', 'code')
         : '';
+      const typedFundCode = /^\d{6}$/.test(rawQuery) ? rawQuery : '';
       const newFundCode = (
         !product
         && productType === 'public_fund'
-        && /^\d{6}$/.test(rawQuery)
-      ) ? rawQuery : '';
+      ) ? (typedFundCode || (rawQuery === resolvedText ? resolvedCode : '')) : '';
       $(controls.fundCode).disabled = productType !== 'public_fund';
       $(controls.fundCode).value = newFundCode;
       if (product && complete) input.value = productSearchText(product);
+      if (product) {
+        setProductSearchStatus(scope, `已选择：${productSearchText(product)}`, 'success');
+      } else if (resolvedCode && rawQuery === resolvedText) {
+        setProductSearchStatus(
+          scope,
+          `已识别：${input.dataset.resolvedFundName}（${resolvedCode}）`,
+          'success'
+        );
+      } else if (!rawQuery) {
+        setProductSearchStatus(scope);
+      } else if (productType !== 'public_fund' && complete) {
+        setProductSearchStatus(scope, '请选择候选列表中的已有产品。', 'error');
+      }
       return product;
+    }
+    async function resolvePublicFundSearch(scope) {
+      const controls = PRODUCT_SEARCH_CONTROLS[scope];
+      const input = $(controls.query);
+      const code = String($(controls.fundCode).value || '').trim();
+      if (!/^\d{6}$/.test(code) || $(controls.product).value) return;
+      const sequence = (fundSearchSequence[scope] || 0) + 1;
+      fundSearchSequence[scope] = sequence;
+      setProductSearchStatus(scope, `正在查询基金 ${code}...`);
+      try {
+        const previewResult = fundSearchPreviewCache.get(code) || await requestJson(
+          '/api/portfolio/products/preview',
+          {code, product_type: 'public_fund'},
+          newIdempotencyKey()
+        );
+        fundSearchPreviewCache.set(code, previewResult);
+        if (
+          sequence !== fundSearchSequence[scope]
+          || String($(controls.fundCode).value || '') !== code
+        ) return;
+        const preview = previewResult?.preview || previewResult || {};
+        const identity = preview.product;
+        if (!identity?.code || !identity?.name) {
+          throw new Error('基金身份信息不完整');
+        }
+        const display = `${identity.code} ${identity.name}`;
+        input.dataset.resolvedFundCode = identity.code;
+        input.dataset.resolvedFundName = identity.name;
+        input.dataset.resolvedFundText = display;
+        input.value = display;
+        $(controls.fundCode).value = identity.code;
+        setProductSearchStatus(
+          scope,
+          `已识别：${identity.name}（${identity.code}）`,
+          'success'
+        );
+      } catch (error) {
+        if (sequence !== fundSearchSequence[scope]) return;
+        setProductSearchStatus(
+          scope,
+          `未能识别该基金：${error.message}`,
+          'error'
+        );
+      }
+    }
+    function schedulePublicFundSearch(scope, delay = 350) {
+      clearTimeout(fundSearchTimers[scope]);
+      const controls = PRODUCT_SEARCH_CONTROLS[scope];
+      const code = String($(controls.fundCode).value || '').trim();
+      if (!/^\d{6}$/.test(code) || $(controls.product).value) return;
+      setProductSearchStatus(scope, `准备查询基金 ${code}...`);
+      fundSearchTimers[scope] = setTimeout(
+        () => resolvePublicFundSearch(scope),
+        delay
+      );
     }
     function fillSipSource() {
       const select = $('sipSource');
@@ -786,12 +887,28 @@
         reversal: '交易冲正',
       })[String(value || '').toLowerCase()] || '其他交易';
     }
-    function transactionValueHtml(row) {
+    function transactionKindMeta(value) {
+      const type = String(value || '').toLowerCase();
+      if (['manual_purchase', 'sip_purchase'].includes(type)) {
+        return {label: '申购', className: 'purchase'};
+      }
+      if (type === 'manual_redemption') {
+        return {label: '赎回', className: 'redemption'};
+      }
+      if (['holding_adjustment', 'profit_adjustment'].includes(type)) {
+        return {label: '校准', className: 'adjustment'};
+      }
+      return {label: '其他', className: 'other'};
+    }
+    function transactionValueHtml(row, kind) {
       const amount = rowValue(row, 'amount');
       const shares = rowValue(row, 'shares');
+      const amountLabel = kind.className === 'purchase' ? '申购金额'
+        : kind.className === 'redemption' ? '赎回金额' : '交易金额';
+      const sharesLabel = kind.className === 'purchase' ? '确认份额' : kind.className === 'redemption' ? '赎回份额' : '交易份额';
       const items = [];
-      if (amount !== '') items.push(`<div class="transaction-metric"><span>交易金额</span><b>${esc(money(amount))} 元</b></div>`);
-      if (shares !== '') items.push(`<div class="transaction-metric"><span>交易份额</span><b>${esc(money(shares))} 份</b></div>`);
+      if (amount !== '') items.push(`<div class="transaction-metric"><span>${amountLabel}</span><b>${esc(money(amount))} 元</b></div>`);
+      if (shares !== '') items.push(`<div class="transaction-metric"><span>${sharesLabel}</span><b>${esc(money(shares))} 份</b></div>`);
       return items.length
         ? `<div class="transaction-summary${items.length === 1 ? ' single' : ''}">${items.join('')}</div>`
         : '<div class="manage-meta">金额和份额将在确认后生成</div>';
@@ -839,8 +956,9 @@
         const title = rowValue(row, 'product_name', 'name', 'product_id') || '交易';
         const transactionType = rowValue(row, 'transaction_type', 'type');
         const normalizedTransactionType = String(transactionType || '').toLowerCase();
+        const kind = transactionKindMeta(normalizedTransactionType);
         const actions = status === 'pending' ? `<button class="row-action" type="button" data-write-operation="cancel" data-transaction-id="${esc(id)}">取消</button>` : '';
-        return `<article class="manage-card transaction-card"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="manage-meta">${esc(transactionTypeLabel(transactionType))} · ${transactionStatusLabel(status)}</div></div><div class="transaction-head-actions">${actions}</div></div>${transactionValueHtml(row)}${transactionDetailsHtml(row, normalizedTransactionType)}</article>`;
+        return `<article class="manage-card transaction-card ${kind.className}"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="transaction-subhead"><span class="transaction-kind ${kind.className}">${kind.label}</span><span class="manage-meta">${esc(transactionTypeLabel(transactionType))} · ${transactionStatusLabel(status)}</span></div></div><div class="transaction-head-actions">${actions}</div></div>${transactionValueHtml(row, kind)}${transactionDetailsHtml(row, normalizedTransactionType)}</article>`;
       }).join('') : '<div class="empty">当前筛选条件下暂无交易记录。</div>';
       updateWriteControls();
     }
@@ -1466,11 +1584,11 @@
 
       const productPayload = {code, product_type: 'public_fund'};
       const idempotencyKey = newIdempotencyKey();
-      const previewResult = await requestJson(
-        '/api/portfolio/products/preview',
-        productPayload,
-        idempotencyKey
-      );
+      const previewResult = fundSearchPreviewCache.get(code) || await requestJson(
+          '/api/portfolio/products/preview',
+          productPayload,
+          idempotencyKey
+        );
       const preview = previewResult?.preview || previewResult || {};
       const identity = preview.product;
       if (!identity?.registration_code || !preview.identity_fingerprint) {
@@ -1528,15 +1646,23 @@
     });
     $('tradeProductQuery').addEventListener('input', () => {
       syncProductSearch('trade', $('tradeProductType').value);
+      if ($('tradeProductType').value === 'public_fund') {
+        schedulePublicFundSearch('trade');
+      }
     });
     $('tradeProductQuery').addEventListener('change', () => {
       syncProductSearch('trade', $('tradeProductType').value, true);
+      if ($('tradeProductType').value === 'public_fund') {
+        schedulePublicFundSearch('trade', 0);
+      }
     });
     $('sipProductQuery').addEventListener('input', () => {
       syncProductSearch('sip', 'public_fund');
+      schedulePublicFundSearch('sip');
     });
     $('sipProductQuery').addEventListener('change', () => {
       syncProductSearch('sip', 'public_fund', true);
+      schedulePublicFundSearch('sip', 0);
     });
     $('cumulativeProfitTrigger').addEventListener('click', openDailyProfits);
     $('dailyProfitClose').addEventListener('click', closeDailyProfits);

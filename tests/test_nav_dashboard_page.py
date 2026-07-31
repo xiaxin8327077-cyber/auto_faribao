@@ -133,7 +133,7 @@ def test_non_nav_amounts_and_shares_use_two_decimal_display():
     assert "function previewFieldRequiresTwoDecimals(path)" in html
     assert "return money(text);" in html
     assert "const quantity = Number.isFinite(number(match[3]))" in html
-    assert "<span>交易份额</span><b>${esc(money(shares))} 份</b>" in html
+    assert "<span>${sharesLabel}</span><b>${esc(money(shares))} 份</b>" in html
     assert "const shareText = value => money(value);" in html
     assert (
         "form.amount.value = number("
@@ -201,6 +201,21 @@ def test_trade_and_sip_use_one_searchable_product_field():
     assert "provider.includes(query)" in html
     assert "syncProductSearch('trade', $('tradeProductType').value, true);" in html
     assert "syncProductSearch('sip', 'public_fund', true);" in html
+
+
+def test_unknown_six_digit_fund_code_resolves_name_before_submit():
+    html = _read_page()
+
+    assert 'id="tradeProductSearchStatus"' in html
+    assert 'id="sipProductSearchStatus"' in html
+    assert "async function resolvePublicFundSearch(scope)" in html
+    assert "function schedulePublicFundSearch(scope, delay = 350)" in html
+    assert "'/api/portfolio/products/preview'" in html
+    assert "product_type: 'public_fund'" in html
+    assert "已识别：${identity.name}（${identity.code}）" in html
+    assert "input.dataset.resolvedFundCode = identity.code;" in html
+    assert "const fundSearchPreviewCache = new Map();" in html
+    assert "fundSearchPreviewCache.get(code) || await requestJson(" in html
 
 
 def test_product_create_preserves_preview_identity_for_submit():
@@ -301,9 +316,22 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert "赎回到账：" in page
     assert ".transaction-summary.single { grid-template-columns: minmax(0, 1fr); }" in page
     assert ".transaction-details { display: grid;" in page
-    assert 'class="manage-card transaction-card"' in page
+    assert 'class="manage-card transaction-card ${kind.className}"' in page
     assert 'class="transaction-head-actions"' in page
     assert "function transactionDetailsHtml(" in page
+
+
+def test_transaction_cards_visually_distinguish_purchase_and_redemption():
+    page = _read_page()
+
+    assert "function transactionKindMeta(value)" in page
+    assert "label: '申购', className: 'purchase'" in page
+    assert "label: '赎回', className: 'redemption'" in page
+    assert ".transaction-card.purchase" in page
+    assert ".transaction-card.redemption" in page
+    assert 'class="transaction-kind ${kind.className}"' in page
+    assert "const amountLabel = kind.className === 'purchase' ? '申购金额'" in page
+    assert "kind.className === 'redemption' ? '赎回份额' : '交易份额'" in page
 
 
 def test_positions_panel_uses_positive_position_rows_not_all_products():
