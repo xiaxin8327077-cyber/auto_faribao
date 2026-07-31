@@ -661,6 +661,43 @@ def _get_portfolio_runtime():
         return None
 
 
+def _merge_overview_products(legacy_products, ledger_products):
+    merged = []
+    index_by_key = {}
+
+    def product_key(row):
+        provider = str(row.get("provider") or "").strip().lower()
+        code = str(row.get("code") or "").strip().upper()
+        return (provider, code) if provider and code else (
+            "id",
+            str(row.get("id") or row.get("product_id") or ""),
+        )
+
+    for row in legacy_products or []:
+        item = dict(row)
+        index_by_key[product_key(item)] = len(merged)
+        merged.append(item)
+
+    for row in ledger_products or []:
+        if str(row.get("status") or "active").lower() != "active":
+            continue
+        quote = row.get("quote") if isinstance(row.get("quote"), dict) else {}
+        ledger_item = {
+            **row,
+            "nav_date": row.get("nav_date") or quote.get("date") or "",
+        }
+        key = product_key(ledger_item)
+        if key not in index_by_key:
+            index_by_key[key] = len(merged)
+            merged.append(ledger_item)
+            continue
+        target = merged[index_by_key[key]]
+        for field, value in ledger_item.items():
+            if value not in (None, ""):
+                target[field] = value
+    return merged
+
+
 def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
     payload = NavDashboardStore(state_path).payload(cfg)
     runtime = _get_portfolio_runtime()
@@ -677,8 +714,20 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
     if not write_enabled:
         portfolio["write_disabled_reason"] = "portfolio_migration_failed"
     # The overview still consumes the legacy root fields while management
-    # tabs read this nested ledger projection through portfolioRows().
+    # tabs read this nested ledger projection through portfolioRows(). Merge
+    # ledger-created products into the root list so both views stay in sync.
     payload["portfolio"] = portfolio
+    payload["products"] = _merge_overview_products(
+        payload.get("products", []),
+        portfolio.get("products", []),
+    )
+    payload["configured_count"] = len(payload["products"])
+    payload["shares_count"] = sum(
+        1 for item in payload["products"] if item.get("shares") not in (None, "")
+    )
+    ledger_market_value = portfolio.get("summary", {}).get("market_value")
+    if ledger_market_value not in (None, ""):
+        payload["market_value"] = ledger_market_value
     payload["write_enabled"] = write_enabled
     if not write_enabled:
         payload["write_disabled_reason"] = "portfolio_migration_failed"

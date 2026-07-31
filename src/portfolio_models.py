@@ -109,6 +109,7 @@ class Transaction:
     status: TransactionStatus
     trade_date: date
     idempotency_key: str
+    trade_time: str = ""
     amount: Optional[Decimal] = None
     shares: Optional[Decimal] = None
     fee_amount: Optional[Decimal] = None

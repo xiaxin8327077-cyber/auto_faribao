@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -11,6 +11,11 @@ from src.portfolio_models import (
     Transaction,
     TransactionStatus,
     TransactionType,
+)
+from src.portfolio_confirmation import (
+    MissingTradingCalendarError,
+    confirmation_schedule,
+    is_trading_day,
 )
 
 
@@ -255,6 +260,16 @@ class SipService:
             ):
                 return None
             purchase, cash = self._pending_pair(execution, conn)
+            product = self.repository.require_product(
+                purchase.product_id, conn=conn
+            )
+            confirmed_on = confirmation_schedule(
+                product,
+                TransactionType.SIP_PURCHASE,
+                datetime.combine(execution.intended_trade_date, time.min),
+            ).confirmation_date
+            if as_of_date < confirmed_on:
+                return None
             quote = self.repository.get_quote(
                 purchase.product_id,
                 execution.intended_trade_date,
@@ -274,7 +289,7 @@ class SipService:
                         shares=shares,
                         fee_amount=fee_amount,
                         confirmation_nav=nav,
-                        confirmation_date=execution.intended_trade_date,
+                        confirmation_date=confirmed_on,
                     ),
                     conn,
                 )
@@ -283,7 +298,7 @@ class SipService:
                         cash,
                         status=TransactionStatus.CONFIRMED,
                         confirmation_nav=ONE,
-                        confirmation_date=execution.intended_trade_date,
+                        confirmation_date=confirmed_on,
                     ),
                     conn,
                 )
@@ -448,7 +463,11 @@ class SipService:
     def _skip_reason(self, plan, intended_date):
         if intended_date < plan.start_date:
             return "before_start_date"
-        if intended_date.weekday() >= 5:
+        try:
+            trading_day = is_trading_day(intended_date)
+        except MissingTradingCalendarError:
+            return "calendar_unavailable"
+        if not trading_day:
             return "non_trading_day"
         if plan.status is SipPlanStatus.PAUSED:
             return "plan_paused"

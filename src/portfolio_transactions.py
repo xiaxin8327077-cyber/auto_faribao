@@ -1,9 +1,14 @@
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import json
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from src.portfolio_db import canonical_idempotency_key
+from src.portfolio_confirmation import (
+    confirmation_schedule,
+    normalize_market_datetime,
+)
 from src.portfolio_models import (
     ProductType,
     Transaction,
@@ -36,6 +41,7 @@ class PortfolioTransactionService:
         created_by="web",
         note="",
         audit_id=None,
+        trade_time="",
     ) -> Transaction:
         idempotency_key = self._nonempty_text(
             idempotency_key, "idempotency_key"
@@ -47,6 +53,14 @@ class PortfolioTransactionService:
             self._reject_operation_audit_collision(
                 idempotency_key, conn
             )
+            product = self.repository.require_product(product_id, conn=conn)
+            trade_time = self._trade_time(trade_time)
+            if trade_time:
+                trade_date = confirmation_schedule(
+                    product,
+                    TransactionType.MANUAL_PURCHASE,
+                    datetime.fromisoformat(trade_time),
+                ).trade_date
             existing = self.repository.get_transaction_by_idempotency(
                 idempotency_key, conn=conn
             )
@@ -60,10 +74,10 @@ class PortfolioTransactionService:
                     fee_rate=fee_rate,
                     created_by=created_by,
                     note=note,
+                    trade_time=trade_time,
                     conn=conn,
                 )
 
-            product = self.repository.require_product(product_id, conn=conn)
             source = None
             if source_cash_product_id:
                 source = self.repository.require_product(
@@ -75,7 +89,9 @@ class PortfolioTransactionService:
                 if source_position.available_shares < amount:
                     raise ValueError("insufficient available shares")
 
-            status, nav = self._status_and_nav(product, trade_date, conn)
+            status, nav = self._status_and_nav(
+                product, trade_date, conn, trade_time=trade_time
+            )
             fee_amount = amount * fee_rate if nav is not None else None
             shares = None
             if nav is not None:
@@ -93,12 +109,17 @@ class PortfolioTransactionService:
                 status=status,
                 trade_date=trade_date,
                 idempotency_key=idempotency_key,
+                trade_time=trade_time,
                 amount=amount,
                 shares=shares,
                 fee_amount=fee_amount,
                 fee_rate=fee_rate,
                 confirmation_nav=nav,
-                confirmation_date=trade_date if nav is not None else None,
+                confirmation_date=(
+                    trade_date
+                    if status is TransactionStatus.CONFIRMED
+                    else None
+                ),
                 note=note,
                 created_by=created_by,
             )
@@ -113,10 +134,15 @@ class PortfolioTransactionService:
                         status=status,
                         trade_date=trade_date,
                         idempotency_key=f"linked:{purchase.id}",
+                        trade_time=trade_time,
                         amount=amount,
                         shares=amount,
                         confirmation_nav=ONE if nav is not None else None,
-                        confirmation_date=trade_date if nav is not None else None,
+                        confirmation_date=(
+                            trade_date
+                            if status is TransactionStatus.CONFIRMED
+                            else None
+                        ),
                         linked_transaction_id=purchase.id,
                         created_by=created_by,
                     ),
@@ -165,6 +191,7 @@ class PortfolioTransactionService:
         created_by="web",
         note="",
         audit_id=None,
+        trade_time="",
     ) -> Transaction:
         idempotency_key = self._nonempty_text(
             idempotency_key, "idempotency_key"
@@ -175,6 +202,14 @@ class PortfolioTransactionService:
             self._reject_operation_audit_collision(
                 idempotency_key, conn
             )
+            product = self.repository.require_product(product_id, conn=conn)
+            trade_time = self._trade_time(trade_time)
+            if trade_time:
+                trade_date = confirmation_schedule(
+                    product,
+                    TransactionType.MANUAL_REDEMPTION,
+                    datetime.fromisoformat(trade_time),
+                ).trade_date
             existing = self.repository.get_transaction_by_idempotency(
                 idempotency_key, conn=conn
             )
@@ -189,10 +224,10 @@ class PortfolioTransactionService:
                     ),
                     created_by=created_by,
                     note=note,
+                    trade_time=trade_time,
                     conn=conn,
                 )
 
-            product = self.repository.require_product(product_id, conn=conn)
             destination = None
             if destination_cash_product_id:
                 destination = self.repository.require_product(
@@ -205,7 +240,9 @@ class PortfolioTransactionService:
             if position.available_shares < shares:
                 raise ValueError("insufficient available shares")
 
-            status, nav = self._status_and_nav(product, trade_date, conn)
+            status, nav = self._status_and_nav(
+                product, trade_date, conn, trade_time=trade_time
+            )
             amount = shares * nav if nav is not None else None
             if amount is not None:
                 self._require_finite_positive(amount, "amount")
@@ -216,10 +253,15 @@ class PortfolioTransactionService:
                 status=status,
                 trade_date=trade_date,
                 idempotency_key=idempotency_key,
+                trade_time=trade_time,
                 amount=amount,
                 shares=shares,
                 confirmation_nav=nav,
-                confirmation_date=trade_date if nav is not None else None,
+                confirmation_date=(
+                    trade_date
+                    if status is TransactionStatus.CONFIRMED
+                    else None
+                ),
                 note=note,
                 created_by=created_by,
             )
@@ -234,10 +276,15 @@ class PortfolioTransactionService:
                         status=status,
                         trade_date=trade_date,
                         idempotency_key=f"linked:{redemption.id}",
+                        trade_time=trade_time,
                         amount=amount,
                         shares=amount,
                         confirmation_nav=ONE if nav is not None else None,
-                        confirmation_date=trade_date if nav is not None else None,
+                        confirmation_date=(
+                            trade_date
+                            if status is TransactionStatus.CONFIRMED
+                            else None
+                        ),
                         linked_transaction_id=redemption.id,
                         created_by=created_by,
                     ),
@@ -401,7 +448,9 @@ class PortfolioTransactionService:
             )
             return dividend
 
-    def confirm_pending(self, transaction_id, quote) -> Transaction:
+    def confirm_pending(
+        self, transaction_id, quote, as_of_date=None
+    ) -> Transaction:
         with self.repository.database.transaction() as conn:
             transaction = self.repository.get_transaction_by_id(
                 transaction_id, conn=conn
@@ -429,6 +478,14 @@ class PortfolioTransactionService:
             if quote.quote_date != transaction.trade_date:
                 raise ValueError("quote date does not match")
             nav = self._quote_nav(quote)
+            confirmed_on = self._confirmation_date(
+                product,
+                transaction.transaction_type,
+                transaction.trade_time,
+                transaction.trade_date,
+            )
+            if as_of_date is not None and as_of_date < confirmed_on:
+                raise ValueError("transaction confirmation date has not arrived")
 
             linked = self._require_consistent_link(transaction, conn)
             if transaction.transaction_type is TransactionType.MANUAL_PURCHASE:
@@ -443,7 +500,7 @@ class PortfolioTransactionService:
                     shares=shares,
                     fee_amount=fee_amount,
                     confirmation_nav=nav,
-                    confirmation_date=quote.quote_date,
+                    confirmation_date=confirmed_on,
                 )
                 linked_amount = amount
             else:
@@ -455,7 +512,7 @@ class PortfolioTransactionService:
                     status=TransactionStatus.CONFIRMED,
                     amount=amount,
                     confirmation_nav=nav,
-                    confirmation_date=quote.quote_date,
+                    confirmation_date=confirmed_on,
                 )
                 linked_amount = amount
 
@@ -468,7 +525,7 @@ class PortfolioTransactionService:
                     amount=linked_amount,
                     shares=linked_amount,
                     confirmation_nav=ONE,
-                    confirmation_date=quote.quote_date,
+                    confirmation_date=confirmed_on,
                 )
                 self.repository.update_pending_transaction(
                     confirmed_linked, conn
@@ -477,6 +534,46 @@ class PortfolioTransactionService:
 
             self._rebuild_positions(affected_product_ids, conn)
             return confirmed
+
+    def settle_pending(self, as_of_date) -> list[Transaction]:
+        """Confirm due manual trades once their trade-date quote is available."""
+        settled = []
+        pending = self.repository.list_transactions(
+            statuses=_PENDING_STATUSES,
+        )
+        for transaction in pending:
+            if (
+                transaction.transaction_type
+                not in {
+                    TransactionType.MANUAL_PURCHASE,
+                    TransactionType.MANUAL_REDEMPTION,
+                }
+                or transaction.trade_date > as_of_date
+            ):
+                continue
+            quote = self.repository.get_quote(
+                transaction.product_id,
+                transaction.trade_date,
+            )
+            if quote is None or quote.unit_nav is None:
+                continue
+            product = self.repository.require_product(transaction.product_id)
+            confirmed_on = self._confirmation_date(
+                product,
+                transaction.transaction_type,
+                transaction.trade_time,
+                transaction.trade_date,
+            )
+            if confirmed_on > as_of_date:
+                continue
+            settled.append(
+                self.confirm_pending(
+                    transaction.id,
+                    quote,
+                    as_of_date=as_of_date,
+                )
+            )
+        return settled
 
     def cancel_pending(
         self,
@@ -1531,6 +1628,7 @@ class PortfolioTransactionService:
         fee_rate,
         created_by,
         note,
+        trade_time,
         conn,
     ):
         if (
@@ -1541,6 +1639,7 @@ class PortfolioTransactionService:
             or (existing.fee_rate or ZERO) != fee_rate
             or existing.created_by != created_by
             or existing.note != note
+            or existing.trade_time != trade_time
             or self._linked_product_id(existing, conn)
             != source_cash_product_id
         ):
@@ -1559,6 +1658,7 @@ class PortfolioTransactionService:
         destination_cash_product_id,
         created_by,
         note,
+        trade_time,
         conn,
     ):
         if (
@@ -1568,6 +1668,7 @@ class PortfolioTransactionService:
             or existing.trade_date != trade_date
             or existing.created_by != created_by
             or existing.note != note
+            or existing.trade_time != trade_time
             or self._linked_product_id(existing, conn)
             != destination_cash_product_id
         ):
@@ -1602,20 +1703,50 @@ class PortfolioTransactionService:
             ) from exc
         if (
             transaction.confirmation_nav != nav
-            or transaction.confirmation_date != quote.quote_date
+            or transaction.confirmation_date
+            != self._confirmation_date(
+                product,
+                transaction.transaction_type,
+                transaction.trade_time,
+                transaction.trade_date,
+            )
         ):
             raise ValueError(
                 "confirmation quote conflicts with original confirmation"
             )
         self._require_consistent_link(transaction, conn)
 
-    def _status_and_nav(self, product, trade_date, conn):
+    def _status_and_nav(self, product, trade_date, conn, trade_time=""):
         if product.product_type is ProductType.CASH_MANAGEMENT:
             return TransactionStatus.CONFIRMED, ONE
         quote = self.repository.get_quote(product.id, trade_date, conn=conn)
         if quote is None or quote.unit_nav is None:
             return TransactionStatus.PENDING_QUOTE, None
+        if trade_time:
+            return TransactionStatus.PENDING_CONFIRMATION, self._quote_nav(quote)
         return TransactionStatus.CONFIRMED, self._quote_nav(quote)
+
+    @staticmethod
+    def _trade_time(value) -> str:
+        if value in (None, ""):
+            return ""
+        parsed = normalize_market_datetime(value)
+        return parsed.isoformat(timespec="seconds")
+
+    @staticmethod
+    def _confirmation_date(
+        product,
+        transaction_type,
+        trade_time,
+        trade_date,
+    ):
+        if not trade_time or product.product_type is ProductType.CASH_MANAGEMENT:
+            return trade_date
+        return confirmation_schedule(
+            product,
+            transaction_type,
+            datetime.fromisoformat(trade_time),
+        ).confirmation_date
 
     def _create_linked_pair(self, primary, linked, conn):
         initial_status = (
@@ -1746,6 +1877,21 @@ class PortfolioTransactionService:
             *_PENDING_STATUSES,
             TransactionStatus.CANCELLED,
         }:
+            if transaction.confirmation_nav is not None:
+                expected_fee = (
+                    transaction.amount * transaction.fee_rate
+                )
+                expected_shares = (
+                    transaction.amount - expected_fee
+                ) / transaction.confirmation_nav
+                return (
+                    product.product_type is not ProductType.CASH_MANAGEMENT
+                    and transaction.confirmation_date is None
+                    and transaction.fee_amount == expected_fee
+                    and transaction.shares == expected_shares
+                    and linked.confirmation_nav == ONE
+                    and linked.confirmation_date is None
+                )
             return (
                 product.product_type is not ProductType.CASH_MANAGEMENT
                 and transaction.shares is None
@@ -1762,7 +1908,8 @@ class PortfolioTransactionService:
             return False
         if (
             not cls._is_finite_positive(transaction.confirmation_nav)
-            or transaction.confirmation_date != transaction.trade_date
+            or transaction.confirmation_date is None
+            or transaction.confirmation_date < transaction.trade_date
             or transaction.fee_amount
             != transaction.amount * transaction.fee_rate
             or linked.confirmation_nav != ONE
@@ -1797,6 +1944,19 @@ class PortfolioTransactionService:
             *_PENDING_STATUSES,
             TransactionStatus.CANCELLED,
         }:
+            if transaction.confirmation_nav is not None:
+                expected_amount = (
+                    transaction.shares * transaction.confirmation_nav
+                )
+                return (
+                    product.product_type is not ProductType.CASH_MANAGEMENT
+                    and transaction.confirmation_date is None
+                    and transaction.amount == expected_amount
+                    and linked.amount == expected_amount
+                    and linked.shares == expected_amount
+                    and linked.confirmation_nav == ONE
+                    and linked.confirmation_date is None
+                )
             return (
                 product.product_type is not ProductType.CASH_MANAGEMENT
                 and transaction.amount is None
@@ -1815,7 +1975,8 @@ class PortfolioTransactionService:
         if (
             not cls._is_finite_positive(transaction.amount)
             or not cls._is_finite_positive(transaction.confirmation_nav)
-            or transaction.confirmation_date != transaction.trade_date
+            or transaction.confirmation_date is None
+            or transaction.confirmation_date < transaction.trade_date
             or transaction.amount
             != transaction.shares * transaction.confirmation_nav
             or linked.amount != transaction.amount

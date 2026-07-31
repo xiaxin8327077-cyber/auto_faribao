@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from src.portfolio_models import (
@@ -8,6 +8,8 @@ from src.portfolio_models import (
     TransactionType,
     decimal_text,
 )
+from src.portfolio_confirmation import confirmation_schedule
+from src.portfolio_positions import PositionProjector
 
 
 _ZERO = Decimal("0")
@@ -119,7 +121,19 @@ def _market_value(product_type, shares, quote):
 
 def _latest_product_profit(repository, product, as_of):
     if product.product_type is not ProductType.CASH_MANAGEMENT:
-        return None
+        latest = repository.latest_quote(product.id, on_or_before=as_of)
+        if latest is None or latest.unit_nav is None:
+            return None
+        previous = repository.latest_quote(
+            product.id,
+            on_or_before=latest.quote_date - timedelta(days=1),
+        )
+        if previous is None or previous.unit_nav is None:
+            return None
+        eligible_shares = PositionProjector(
+            repository
+        ).calculate_confirmed_as_of(product.id, previous.quote_date).total_shares
+        return eligible_shares * (latest.unit_nav - previous.unit_nav)
     entries = [
         transaction.amount or _ZERO
         for transaction in repository.list_transactions(product_id=product.id)
@@ -202,6 +216,41 @@ def _summary(products, profit_history, as_of):
 
 def _transaction_row(transaction, products_by_id):
     product = products_by_id.get(transaction.product_id)
+    expected_confirmation_date = transaction.confirmation_date
+    if (
+        expected_confirmation_date is None
+        and product is not None
+        and transaction.transaction_type
+        in {
+            TransactionType.MANUAL_PURCHASE,
+            TransactionType.MANUAL_REDEMPTION,
+            TransactionType.SIP_PURCHASE,
+        }
+        and (
+            transaction.trade_time
+            or transaction.transaction_type is TransactionType.SIP_PURCHASE
+        )
+    ):
+        expected_confirmation_date = confirmation_schedule(
+            product,
+            transaction.transaction_type,
+            (
+                datetime.fromisoformat(transaction.trade_time)
+                if transaction.trade_time
+                else datetime.combine(
+                    transaction.trade_date, datetime.min.time()
+                )
+            ),
+        ).confirmation_date
+    income_start_date = None
+    income_stop_date = None
+    if transaction.transaction_type in {
+        TransactionType.MANUAL_PURCHASE,
+        TransactionType.SIP_PURCHASE,
+    }:
+        income_start_date = expected_confirmation_date
+    elif transaction.transaction_type is TransactionType.MANUAL_REDEMPTION:
+        income_stop_date = expected_confirmation_date
     return {
         "id": transaction.id,
         "product_id": transaction.product_id,
@@ -210,6 +259,18 @@ def _transaction_row(transaction, products_by_id):
         "transaction_type": transaction.transaction_type.value,
         "status": transaction.status.value,
         "trade_date": transaction.trade_date.isoformat(),
+        "trade_time": transaction.trade_time or None,
+        "effective_trade_date": transaction.trade_date.isoformat(),
+        "expected_confirmation_date": (
+            expected_confirmation_date.isoformat()
+            if expected_confirmation_date else None
+        ),
+        "income_start_date": (
+            income_start_date.isoformat() if income_start_date else None
+        ),
+        "income_stop_date": (
+            income_stop_date.isoformat() if income_stop_date else None
+        ),
         "confirmation_date": (
             transaction.confirmation_date.isoformat()
             if transaction.confirmation_date else None

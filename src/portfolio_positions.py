@@ -53,7 +53,20 @@ class PositionProjector:
     def calculate(self, product_id: str) -> Position:
         return self._calculate(product_id)
 
-    def _calculate(self, product_id: str, conn=None) -> Position:
+    def calculate_confirmed_as_of(self, product_id: str, as_of) -> Position:
+        return self._calculate(
+            product_id,
+            as_of=as_of,
+            use_confirmation_date=True,
+        )
+
+    def _calculate(
+        self,
+        product_id: str,
+        conn=None,
+        as_of=None,
+        use_confirmation_date=False,
+    ) -> Position:
         total_shares = ZERO
         locked_shares = ZERO
         cost_basis = ZERO
@@ -65,6 +78,13 @@ class PositionProjector:
 
         for transaction in transactions:
             if transaction.id in neutralized_event_ids:
+                continue
+            effective_date = (
+                transaction.confirmation_date or transaction.trade_date
+                if use_confirmation_date
+                else transaction.trade_date
+            )
+            if as_of is not None and effective_date > as_of:
                 continue
             shares = transaction.shares or ZERO
             if (

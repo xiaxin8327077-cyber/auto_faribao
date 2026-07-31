@@ -123,7 +123,8 @@ def test_015736_exact_quote_confirms_fee_adjusted_shares(sip_services):
     assert execution.status == "pending_quote"
     assert projector.calculate("cash").locked_shares == Decimal("2000")
     seed_quote(repo, "fund", TRADE_DATE, "1.0331")
-    settled = sip.settle_pending(TRADE_DATE)
+    assert sip.settle_pending(TRADE_DATE) == []
+    settled = sip.settle_pending(date(2026, 7, 31))
 
     expected = (
         Decimal("2000")
@@ -144,7 +145,8 @@ def test_003103_zero_fee_uses_the_same_general_sip_mechanism(sip_services):
 
     pending = sip.ensure_intent(plan.id, TRADE_DATE)
     seed_quote(repo, "fund", TRADE_DATE, "1.25")
-    settled = sip.settle_pending(TRADE_DATE)
+    assert sip.settle_pending(TRADE_DATE) == []
+    settled = sip.settle_pending(date(2026, 7, 31))
 
     assert settled == [
         type(pending)(
@@ -272,6 +274,41 @@ def test_weekend_is_skipped_without_transactions(sip_services):
     assert plan_transactions(repo, plan.id) == []
 
 
+def test_exchange_holiday_is_skipped_without_deducting_cash(sip_services):
+    repo, sip, projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(sip, "fund", "cash", "100", "0")
+
+    execution = sip.ensure_intent(plan.id, date(2026, 10, 1))
+
+    assert execution.status == "skipped"
+    assert execution.reason == "non_trading_day"
+    assert plan_transactions(repo, plan.id) == []
+    assert projector.calculate("cash").available_shares == Decimal("1000")
+
+
+def test_missing_calendar_year_never_deducts_sip_cash(sip_services):
+    repo, sip, projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(
+        sip,
+        "fund",
+        "cash",
+        "100",
+        "0",
+        start_date=date(2026, 7, 1),
+    )
+
+    execution = sip.ensure_intent(plan.id, date(2027, 1, 4))
+
+    assert execution.status == "skipped"
+    assert execution.reason == "calendar_unavailable"
+    assert plan_transactions(repo, plan.id) == []
+    assert projector.calculate("cash").available_shares == Decimal("1000")
+
+
 def test_pause_does_not_cancel_pending_and_resume_does_not_backfill(sip_services):
     repo, sip, _projector = sip_services
     seed_cash(repo, "cash", "1000")
@@ -371,7 +408,7 @@ def test_settlement_uses_persisted_transaction_snapshot_after_plan_edit(
     )
     seed_quote(repo, "original-fund", TRADE_DATE, "1.1")
 
-    settled = sip.settle_pending(TRADE_DATE)
+    settled = sip.settle_pending(date(2026, 7, 31))
 
     assert settled[0].id == pending.id
     assert settled[0].status == "confirmed"

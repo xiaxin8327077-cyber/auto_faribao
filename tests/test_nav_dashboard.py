@@ -87,7 +87,67 @@ def test_dashboard_embeds_initialized_portfolio_runtime_payload(tmp_path, monkey
 
     assert payload["portfolio"] is portfolio
     assert payload["portfolio"]["products"][0]["market_value"] == "100"
+    assert payload["market_value"] == "100"
     assert payload["write_enabled"] is True
+
+
+def test_dashboard_overview_includes_products_created_in_portfolio_ledger(
+    tmp_path, monkeypatch
+):
+    import src.nav_dashboard as dashboard
+
+    portfolio = {
+        "summary": {},
+        "products": [
+            {
+                "id": "fund-id",
+                "provider": "changsheng_fund",
+                "code": "003103",
+                "name": "长盛盛裕纯债C",
+                "status": "active",
+                "shares": "100",
+                "latest_nav": "1.2345",
+                "quote": {"date": "2026-07-30"},
+            }
+        ],
+        "transactions": [],
+        "sip_plans": [],
+        "profit_history": [],
+    }
+    monkeypatch.setattr(
+        dashboard,
+        "_get_portfolio_runtime",
+        lambda: SimpleNamespace(repository=object(), write_enabled=True),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "build_portfolio_payload",
+        lambda repository: portfolio,
+    )
+
+    cfg = Config(
+        {
+            "nav_monitor": {
+                "products": [
+                    {
+                        "provider": "changsheng_fund",
+                        "code": "003103",
+                        "name": "旧配置名称",
+                        "shares": "999",
+                    }
+                ]
+            }
+        }
+    )
+    store = NavDashboardStore(tmp_path / "state.json")
+    store.sync_portfolio(cfg, _dt("2026-07-30 10:00"))
+    payload = get_dashboard_payload(cfg, state_path=tmp_path / "state.json")
+
+    assert [row["code"] for row in payload["products"]] == ["003103"]
+    assert payload["products"][0]["shares"] == "100"
+    assert payload["products"][0]["nav_date"] == "2026-07-30"
+    assert payload["configured_count"] == 1
+    assert payload["shares_count"] == 1
 
 
 def test_dashboard_keeps_legacy_payload_readonly_after_migration_failure(

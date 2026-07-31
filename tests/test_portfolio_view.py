@@ -114,3 +114,85 @@ def test_payload_keeps_overview_fields_and_cash_value_is_shares(portfolio_fixtur
     assert cash["latest_nav"] is None
     assert cash["market_value"] == "100.4475"
     assert cash["latest_profit"] == "0.4475"
+
+
+def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    product = Product(
+        "fund",
+        "changsheng_fund",
+        "003103",
+        "公募基金",
+        ProductType.PUBLIC_FUND,
+    )
+    repository.add_product(product)
+    for transaction in (
+        Transaction(
+            id="manual",
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 29),
+            confirmation_date=date(2026, 7, 30),
+            idempotency_key="manual",
+            amount=Decimal("100"),
+            shares=Decimal("100"),
+        ),
+        Transaction(
+            id="sip",
+            product_id="fund",
+            transaction_type=TransactionType.SIP_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 30),
+            confirmation_date=date(2026, 7, 31),
+            idempotency_key="sip",
+            amount=Decimal("50"),
+            shares=Decimal("50"),
+        ),
+        Transaction(
+            id="redeem",
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_REDEMPTION,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 31),
+            confirmation_date=date(2026, 8, 3),
+            idempotency_key="redeem",
+            amount=Decimal("20"),
+            shares=Decimal("20"),
+        ),
+    ):
+        repository.create_transaction(transaction)
+    for quote_date, nav in (
+        (date(2026, 7, 30), "1.0"),
+        (date(2026, 7, 31), "1.1"),
+        (date(2026, 8, 3), "1.2"),
+        (date(2026, 8, 4), "1.3"),
+    ):
+        repository.upsert_quote(
+            "fund",
+            MarketQuote(
+                "003103",
+                quote_date,
+                "official",
+                f"quote:{quote_date}",
+                unit_nav=Decimal(nav),
+            ),
+            "2026-08-04T20:00:00",
+        )
+    PositionProjector(repository).rebuild()
+
+    profit_on_sip_confirmation = build_portfolio_payload(
+        repository, as_of=date(2026, 7, 31)
+    )["products"][0]["latest_profit"]
+    profit_on_redemption_confirmation = build_portfolio_payload(
+        repository, as_of=date(2026, 8, 3)
+    )["products"][0]["latest_profit"]
+    profit_after_redemption = build_portfolio_payload(
+        repository, as_of=date(2026, 8, 4)
+    )["products"][0]["latest_profit"]
+
+    assert profit_on_sip_confirmation == "10"
+    assert profit_on_redemption_confirmation == "15"
+    assert profit_after_redemption == "13"

@@ -77,8 +77,10 @@ def test_sip_save_is_draft_and_activation_is_an_explicit_operation():
     # 服务器契约：激活 SIP 显式携带 activate: true，暂停/恢复/激活均为独立写操作。
     assert "activate: true" in html
     assert "data-write-operation=\"sip-activate\"" in html
-    assert "if (existingStatus !== 'draft')" in html
+    assert "if (existingStatus !== 'draft')" not in html
     assert "sip_id: form.dataset.sipId || undefined" in html
+    assert 'name="start_date"' in html
+    assert "form.start_date.value = rowValue(existing, 'start_date')" in html
 
 
 def test_product_create_preserves_preview_identity_for_submit():
@@ -114,6 +116,35 @@ def test_product_template_contains_holding_node():
     assert "holding" in page
     # holding 在 .income 之后、</article> 之前（article 级别子节点）
     assert "</div>${(() => { const h = formatHolding" in page or "</div>${(() => {" in page
+
+
+def test_overview_count_uses_merged_root_product_list_without_double_counting():
+    page = _read_page()
+    assert "const totalConfigured = (data.products || []).length;" in page
+    assert "(data.configured_count || 0) + pfProducts.length" not in page
+
+
+def test_trade_form_switches_between_purchase_amount_and_redemption_shares():
+    page = _read_page()
+    assert 'id="tradeKind"' in page
+    assert 'id="tradeValueLabel"' in page
+    assert 'id="tradeValueInput"' in page
+    assert 'name="trade_time"' in page
+    assert "input.name = redemption ? 'shares' : 'amount';" in page
+    assert "label.firstChild.textContent = redemption ? '赎回份额' : '申购金额（元）';" in page
+    assert "$('tradeTimeLabel').firstChild.textContent = redemption ? '赎回时间' : '申购时间';" in page
+
+
+def test_transactions_and_preview_use_chinese_business_labels():
+    page = _read_page()
+    assert "function transactionTypeLabel(value)" in page
+    assert "manual_redemption: '手工赎回'" in page
+    assert "opening_position: '初始持仓'" in page
+    assert "function previewFieldLabel(path)" in page
+    assert "'normalized_input.amount': '申购金额（元）'" in page
+    assert "'status_prediction': '预计状态'" in page
+    assert "The trade will remain pending until a quote arrives." in page
+    assert "等待交易日净值后自动确认" in page
 
 
 def test_top_metrics_unchanged():

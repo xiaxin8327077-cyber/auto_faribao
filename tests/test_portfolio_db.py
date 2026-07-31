@@ -31,6 +31,16 @@ def initialize_v1_database(db):
         )
 
 
+def initialize_v2_database(db):
+    with db.connection() as conn:
+        conn.executescript(BASE_SCHEMA_SQL)
+        conn.executescript(V2_SCHEMA_SQL)
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (2)"
+        )
+
+
 def schema_object_names(db):
     with db.connection() as conn:
         return {
@@ -104,7 +114,7 @@ def test_clean_populated_v1_upgrades_to_v2_atomically_and_repeat_safely(
             for row in conn.execute(
                 "SELECT version FROM schema_migrations"
             )
-        } == {2}
+        } == {3}
         assert tuple(
             conn.execute(
                 """SELECT amount, shares FROM transactions
@@ -133,7 +143,49 @@ def test_v1_with_already_installed_v2_objects_only_advances_version(tmp_path):
             for row in conn.execute(
                 "SELECT version FROM schema_migrations"
             )
-        } == {2}
+        } == {3}
+
+
+def test_v2_upgrades_with_dedicated_trade_time_without_reusing_created_at(
+    tmp_path,
+):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    initialize_v2_database(db)
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('fund', 'test', '003103', '基金', 'public_fund',
+                       'active')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions
+               (id, product_id, transaction_type, status, trade_date,
+                amount, idempotency_key, created_by, created_at)
+               VALUES ('purchase', 'fund', 'manual_purchase', 'pending_quote',
+                       '2026-07-30', '100', 'purchase', 'web',
+                       '2026-07-31 08:00:00')"""
+        )
+
+    db.initialize()
+
+    with db.connection() as conn:
+        columns = {
+            row["name"] for row in conn.execute(
+                "PRAGMA table_info(transactions)"
+            )
+        }
+        row = conn.execute(
+            """SELECT trade_time, created_at FROM transactions
+               WHERE id = 'purchase'"""
+        ).fetchone()
+        versions = {
+            item["version"]
+            for item in conn.execute("SELECT version FROM schema_migrations")
+        }
+    assert "trade_time" in columns
+    assert tuple(row) == ("", "2026-07-31 08:00:00")
+    assert versions == {3}
 
 
 @pytest.mark.parametrize("initial_version", [None, 1])
@@ -168,7 +220,7 @@ def test_concurrent_initializers_share_one_locked_schema_transition(
             for row in conn.execute(
                 "SELECT version FROM schema_migrations"
             )
-        ] == [2]
+            ] == [3]
         assert conn.execute(
             """SELECT COUNT(*) FROM sqlite_master
                WHERE name IN (

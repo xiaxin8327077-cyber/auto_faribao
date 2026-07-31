@@ -62,6 +62,9 @@ class WorkdayCalendar:
             return True
         return day.weekday() < 5
 
+    def has_year(self, year: int) -> bool:
+        return year in self.holidays_by_year
+
     def previous_workday(self, day: date) -> date:
         cursor = day - timedelta(days=1)
         while not self.is_workday(cursor):
@@ -90,6 +93,10 @@ def is_workday(day: date = None, path=None) -> bool:
         from src.beijing_time import today
         day = today()
     return get_calendar(path).is_workday(day)
+
+
+def has_workday_calendar_year(year: int, path=None) -> bool:
+    return get_calendar(path).has_year(year)
 
 
 def is_today_workday() -> bool:

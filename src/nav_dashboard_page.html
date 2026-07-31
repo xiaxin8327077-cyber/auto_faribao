@@ -430,9 +430,9 @@
   <dialog class="management-dialog" id="tradeDialog" aria-labelledby="tradeDialogTitle">
     <form id="tradeForm" method="dialog"><header class="dialog-head"><h2 id="tradeDialogTitle">新建交易</h2><button class="icon-button" type="button" data-close-dialog="tradeDialog" aria-label="关闭">×</button></header><div class="dialog-body">
       <label class="form-field">产品<select name="product_id" id="tradeProduct" required></select></label>
-      <label class="form-field">交易类型<select name="transaction_type"><option value="purchase">申购</option><option value="redemption">赎回</option></select></label>
-      <label class="form-field">金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label>
-      <label class="form-field">交易日期<input name="trade_date" type="date"></label>
+      <label class="form-field">交易类型<select name="transaction_type" id="tradeKind"><option value="purchase">申购</option><option value="redemption">赎回</option></select></label>
+      <label class="form-field" id="tradeValueLabel">申购金额（元）<input id="tradeValueInput" name="amount" type="number" min="0.0001" step="0.0001" required inputmode="decimal"></label>
+      <label class="form-field" id="tradeTimeLabel">申购时间<input id="tradeTimeInput" name="trade_time" type="datetime-local" required></label>
       <label class="form-field">备注<textarea name="note" maxlength="300"></textarea></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="tradeDialog">取消</button><button class="action-button" type="submit">预览</button></div>
     </div></form>
@@ -448,8 +448,8 @@
 
   <dialog class="management-dialog" id="sipDialog" aria-labelledby="sipDialogTitle">
     <form id="sipForm" method="dialog"><header class="dialog-head"><h2 id="sipDialogTitle">定投计划</h2><button class="icon-button" type="button" data-close-dialog="sipDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <label class="form-field">产品<select name="product_id" id="sipProduct" required></select></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">扣款来源<select name="source" id="sipSource"><option value="">零花钱（默认）</option></select></label><label class="form-field">申购费率<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
-      <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存草稿</button></div>
+      <label class="form-field">产品<select name="product_id" id="sipProduct" required></select></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
+      <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存计划</button></div>
     </div></form>
   </dialog>
 
@@ -594,6 +594,7 @@
       const select = $('sipSource');
       const products = portfolioRows('products', []);
       const cashProducts = products.filter(p => String(rowValue(p, 'product_type', 'type')).toLowerCase() === 'cash_management');
+      select.innerHTML = '<option value="">请选择现金管理产品</option>';
       cashProducts.forEach(p => {
         const id = rowValue(p, 'id');
         const name = rowValue(p, 'name', 'product_name', 'code') || '未命名产品';
@@ -645,6 +646,28 @@
     function transactionStatusLabel(value) {
       return ({pending: '待确认', confirmed: '已确认', cancelled: '已取消', reversed: '已冲正'})[normalStatus(value)] || esc(value || '--');
     }
+    function transactionTypeLabel(value) {
+      return ({
+        opening_position: '初始持仓',
+        manual_purchase: '手工申购',
+        manual_redemption: '手工赎回',
+        sip_purchase: '定投申购',
+        cash_transfer_in: '资金转入',
+        cash_transfer_out: '资金转出',
+        income_accrual: '收益入账',
+        holding_adjustment: '持仓校准',
+        cash_dividend: '现金分红',
+        reversal: '交易冲正',
+      })[String(value || '').toLowerCase()] || '其他交易';
+    }
+    function transactionValueHtml(row) {
+      const amount = rowValue(row, 'amount');
+      const shares = rowValue(row, 'shares');
+      const items = [];
+      if (amount !== '') items.push(`<div class="manage-stat"><span>交易金额</span><b>${esc(money(amount))} 元</b></div>`);
+      if (shares !== '') items.push(`<div class="manage-stat"><span>交易份额</span><b>${esc(number(shares).toLocaleString('zh-CN', {maximumFractionDigits: 4}))} 份</b></div>`);
+      return items.length ? `<div class="manage-grid">${items.join('')}</div>` : '<div class="manage-meta">金额和份额将在确认后生成</div>';
+    }
     function renderTransactions() {
       const rows = portfolioRows('transactions');
       const visible = transactionFilter === 'all' ? rows : rows.filter(row => normalStatus(rowValue(row, 'status')) === transactionFilter);
@@ -653,8 +676,18 @@
         const status = normalStatus(rowValue(row, 'status'));
         const title = rowValue(row, 'product_name', 'name', 'product_id') || '交易';
         const transactionType = rowValue(row, 'transaction_type', 'type');
+        const confirmationDate = rowValue(row, 'confirmation_date');
+        const expectedConfirmationDate = rowValue(row, 'expected_confirmation_date');
+        const tradeTime = rowValue(row, 'trade_time');
+        const effectiveTradeDate = rowValue(row, 'effective_trade_date', 'trade_date');
+        const incomeStart = rowValue(row, 'income_start_date');
+        const incomeStop = rowValue(row, 'income_stop_date');
+        const note = rowValue(row, 'note');
         const actions = status === 'pending' ? `<button class="row-action" type="button" data-write-operation="cancel" data-transaction-id="${esc(id)}">取消</button>` : status === 'confirmed' ? `<button class="row-action" type="button" data-write-operation="reverse" data-transaction-id="${esc(id)}">冲正</button>` : '';
-        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(title)} · ${esc(transactionType || '交易')}</div><div class="manage-meta">${esc(rowValue(row, 'trade_date', 'created_at'))} · ${transactionStatusLabel(status)}</div></div><div class="manage-value">${esc(rowValue(row, 'amount') || '--')} 元</div></div>${actions ? `<div class="row-actions">${actions}</div>` : ''}</article>`;
+        const submittedLine = tradeTime ? `提交时间：${esc(String(tradeTime).replace('T', ' ').slice(0, 16))}<br>` : '';
+        const confirmationLine = confirmationDate ? `确认日期：${esc(confirmationDate)}` : `预计确认：${esc(expectedConfirmationDate || '等待行情')}`;
+        const incomeLine = incomeStart ? `收益起算：确认份额后（${esc(incomeStart)}）` : incomeStop ? `收益停止：确认赎回后（${esc(incomeStop)}）` : '';
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="manage-meta">${esc(transactionTypeLabel(transactionType))} · ${transactionStatusLabel(status)}</div></div></div>${transactionValueHtml(row)}<div class="manage-meta">${submittedLine}有效交易日：${esc(effectiveTradeDate || '--')} · ${confirmationLine}${incomeLine ? `<br>${incomeLine}` : ''}${note ? `<br>备注：${esc(note)}` : ''}</div>${actions ? `<div class="row-actions">${actions}</div>` : ''}</article>`;
       }).join('') : '<div class="empty">当前筛选条件下暂无交易记录。</div>';
       updateWriteControls();
     }
@@ -670,8 +703,9 @@
             : status === 'active'
               ? `<button class="row-action" type="button" data-write-operation="sip-pause" data-sip-id="${esc(id)}">暂停</button>`
               : '';
-        const edit = status === 'draft' ? `<button class="row-action" type="button" data-write-operation="sip-edit" data-sip-id="${esc(id)}">编辑草稿</button>` : '';
-        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(status)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${esc(rowValue(row, 'amount', 'daily_amount') || '--')} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'fee_rate', 'purchase_fee_rate') || '--')}</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}</div></article>`;
+        const edit = `<button class="row-action" type="button" data-write-operation="sip-edit" data-sip-id="${esc(id)}">修改计划</button>`;
+        const statusLabel = ({draft: '草稿', active: '执行中', paused: '已暂停'})[status] || status;
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${esc(rowValue(row, 'amount', 'daily_amount') || '--')} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'fee_rate', 'purchase_fee_rate') || '--')}</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}</div></article>`;
       }).join('') : '<div class="empty">暂无定投计划。</div>';
       updateWriteControls();
     }
@@ -834,8 +868,7 @@
       $('currentMonthProfit').className = `month-value ${tone(currentMonthProfit)}`;
       $('basis').textContent = `自 ${data.base_date || '2026-07-01'} 起按收益流水累计`;
       $('marketValue').textContent = money(data.market_value);
-      const pfProducts = data.portfolio?.products || [];
-      const totalConfigured = (data.configured_count || 0) + pfProducts.length;
+      const totalConfigured = (data.products || []).length;
       $('sharesCount').textContent = `${data.shares_count || 0}/${totalConfigured}`;
       $('disclosedCount').textContent = `${data.today_disclosed_count || 0}/${totalConfigured}`;
       const positives = data.positive_rankings || [];
@@ -928,11 +961,102 @@
         clearTimeout(timeout);
       }
     }
+    function previewFieldLabel(path) {
+      const labels = {
+        'normalized_input.operation': '操作类型',
+        'normalized_input.transaction_id': '交易编号',
+        'normalized_input.reason': '操作原因',
+        'normalized_input.amount': '申购金额（元）',
+        'normalized_input.shares': '赎回份额',
+        'normalized_input.fee_rate': '申购费率',
+        'normalized_input.kind': '交易类型',
+        'normalized_input.product_id': '交易产品',
+        'normalized_input.source_cash_product_id': '扣款产品',
+        'normalized_input.destination_cash_product_id': '到账产品',
+        'normalized_input.trade_date': '交易日期',
+        'normalized_input.trade_time': '提交时间',
+        'normalized_input.expected_confirmation_date': '预计确认日',
+        'normalized_input.note': '备注',
+        'source_impact': '资金或份额扣减',
+        'destination_impact': '资金或份额增加',
+        'fee': '预计手续费（元）',
+        'status_prediction': '预计状态',
+        'warning': '重要提示',
+        'operation': '操作类型',
+        'sip_id': '定投计划',
+        'product_id': '产品',
+        'daily_amount': '每期金额（元）',
+        'purchase_fee_rate': '申购费率',
+        'source_cash_product_id': '扣款产品',
+        'start_date': '首次扣款日',
+        'activate': '保存后启用',
+        'actual_shares': '校准后份额',
+        'current_shares': '当前份额',
+        'difference': '份额差额',
+        'effective_date': '生效日期',
+        'reason': '操作原因',
+        'product.provider': '产品渠道',
+        'product.code': '产品代码',
+        'product.name': '产品名称',
+        'product.product_type': '产品类型',
+        'product.registration_code': '登记编码',
+        'quote.product_code': '行情产品代码',
+        'quote.quote_date': '行情日期',
+        'quote.source': '行情来源',
+        'quote.unit_nav': '单位净值',
+        'quote.cumulative_nav': '累计净值',
+        'quote.income_per_10k': '万份收益',
+        'quote.seven_day_annualized_rate': '七日年化收益率',
+      };
+      return labels[path] || labels[path.split('.').slice(-1)[0]] || path;
+    }
+    function previewProductName(value) {
+      const product = portfolioRows('products', []).find(row => String(rowValue(row, 'id', 'product_id')) === String(value));
+      return product ? rowValue(product, 'name', 'product_name', 'code') : value;
+    }
+    function previewValue(path, value) {
+      const text = String(value);
+      const translations = {
+        purchase: '申购', redemption: '赎回', cancel: '取消交易', reverse: '冲正交易',
+        pause: '暂停', resume: '恢复', activate: '启用',
+        confirmed: '立即确认', pending_quote: '等待交易日净值后自动确认',
+        pending_confirmation: '待确认', cancelled: '已取消', reversed: '已冲正',
+        wealth_nav: '净值型理财', cash_management: '现金管理', public_fund: '公募基金',
+        changsheng_fund: '长盛基金', nanyin_wealth: '南银理财', citic_wealth: '信银理财',
+        'The trade will remain pending until a quote arrives.': '当前尚无交易日净值，系统获取净值后会自动确认。',
+        'This operation changes immutable ledger state.': '此操作会保留原始流水，并新增取消或冲正记录。',
+        'official identity and quote verified': '已核验官网产品身份和最新行情。',
+        'SIP plan will be updated': '将保存定投计划修改，计划状态保持不变。',
+        'SIP plan will be activated': '将保存并启用定投计划。',
+        'SIP plan will be saved as draft': '将定投计划保存为草稿。',
+        'holding will be calibrated to the confirmed share count': '将按已确认的真实份额校准持仓。',
+        true: '是', false: '否',
+      };
+      if (translations[text]) return translations[text];
+      if (path.endsWith('product_id') || path.endsWith('_cash_product_id')) return previewProductName(text);
+      if (path === 'source_impact' || path === 'destination_impact') {
+        const pending = text.match(/^(.+):pending_quote$/);
+        if (pending) {
+          const target = pending[1] === 'external_cash' ? '外部资金' : previewProductName(pending[1]);
+          return `${target}：待净值确认`;
+        }
+        const match = text.match(/^(.+):([+-])(.+)$/);
+        if (match) {
+          const target = match[1] === 'external_cash' ? '外部资金' : previewProductName(match[1]);
+          const action = match[2] === '-' ? '扣减' : '增加';
+          const quantity = match[3] === 'pending_quote' ? '待净值确认' : match[3];
+          return `${target} ${action} ${quantity}`;
+        }
+      }
+      if (/^SIP plan will be /.test(text)) return '定投计划状态将按本次操作更新。';
+      if (/^The trade will confirm on /.test(text)) return `交易将在预计确认日自动确认：${text.slice(26).replace('.', '')}`;
+      return text;
+    }
     function previewHtml(result) {
       const details = result?.preview || result?.details || result || {};
       const message = rowValue(details, 'message', 'summary') || '请核对以下内容，确认后将提交。';
       // 跳过展示给用户无意义的技术字段（防篡改哈希、状态标记等）
-      const skipKeys = new Set(['message', 'summary', 'ok', 'identity_fingerprint', 'identity']);
+      const skipKeys = new Set(['message', 'summary', 'ok', 'identity_fingerprint', 'identity', 'raw_hash', 'source_timestamp', 'metadata', 'metadata_json']);
       const lines = [];
       function walk(obj, prefix) {
         for (const [k, v] of Object.entries(obj || {})) {
@@ -942,12 +1066,12 @@
           if (typeof v === 'object') {
             walk(v, label);
           } else {
-            lines.push(`<p><strong>${esc(label)}</strong>：${esc(String(v))}</p>`);
+            lines.push(`<p><strong>${esc(previewFieldLabel(label))}</strong>：${esc(previewValue(label, v))}</p>`);
           }
         }
       }
       walk(details, '');
-      return `<p>${esc(message)}</p>${lines.join('')}`;
+      return `<p>${esc(previewValue('message', message))}</p>${lines.join('')}`;
     }
     async function previewAction({previewPath, submitPath, payload, originDialog, capturePreviewIdentity = false}) {
       if (!state.writeEnabled) return;
@@ -1035,9 +1159,22 @@
     }
     function openTrade(productId = '') {
       if (!state.writeEnabled) return;
+      $('tradeForm').reset();
       productOptions('tradeProduct');
       $('tradeProduct').value = productId;
+      const now = new Date();
+      $('tradeTimeInput').value = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      updateTradeValueField();
       dialogOpen('tradeDialog');
+    }
+    function updateTradeValueField() {
+      const redemption = $('tradeKind').value === 'redemption';
+      const input = $('tradeValueInput');
+      const label = $('tradeValueLabel');
+      input.name = redemption ? 'shares' : 'amount';
+      input.step = redemption ? '0.0001' : '0.01';
+      label.firstChild.textContent = redemption ? '赎回份额' : '申购金额（元）';
+      $('tradeTimeLabel').firstChild.textContent = redemption ? '赎回时间' : '申购时间';
     }
     function openSip(sipId = '') {
       if (!state.writeEnabled) return;
@@ -1047,17 +1184,16 @@
       const form = $('sipForm');
       form.reset();
       if (existing) {
-        const existingStatus = String(rowValue(existing, 'status', 'state') || '').toLowerCase();
-        if (existingStatus !== 'draft') {
-          $('statusText').textContent = '只有草稿状态的定投计划可以编辑。';
-          return;
-        }
         form.product_id.value = rowValue(existing, 'product_id');
         form.amount.value = rowValue(existing, 'amount', 'daily_amount');
-        form.source.value = rowValue(existing, 'source', 'fund_source');
+        form.start_date.value = rowValue(existing, 'start_date');
+        form.source.value = rowValue(existing, 'source_cash_product_id', 'fund_source');
         form.fee_rate.value = rowValue(existing, 'fee_rate', 'purchase_fee_rate');
         form.dataset.sipId = sipId;
-      } else delete form.dataset.sipId;
+      } else {
+        delete form.dataset.sipId;
+        form.start_date.value = new Date().toLocaleDateString('en-CA');
+      }
       dialogOpen('sipDialog');
     }
     function openAdjustment(productId) {
@@ -1088,6 +1224,7 @@
       });
     }
     $('refreshButton').addEventListener('click', refresh);
+    $('tradeKind').addEventListener('change', updateTradeValueField);
     $('cumulativeProfitTrigger').addEventListener('click', openDailyProfits);
     $('dailyProfitClose').addEventListener('click', closeDailyProfits);
     document.querySelectorAll('[data-profit-view]').forEach(tab => {

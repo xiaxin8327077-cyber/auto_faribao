@@ -268,7 +268,7 @@ def test_reverse_sip_updates_execution_across_retry_and_correction(services):
         ).id
     )
     execution = sip.ensure_intent(plan.id, TRADE_DATE)
-    sip.settle_pending(TRADE_DATE)
+    sip.settle_pending(date(2026, 7, 31))
 
     reversal = transactions.reverse_confirmed(
         execution.transaction_id,
@@ -2039,6 +2039,86 @@ def test_fund_redemption_waits_for_exact_quote_and_locks_shares(services):
     assert redemption.status is TransactionStatus.PENDING_QUOTE
     assert redemption.amount is None
     assert projector.calculate("fund").locked_shares == Decimal("25")
+
+
+def test_pending_manual_redemption_settles_when_trade_date_quote_arrives(
+    services,
+):
+    repository, transactions, projector = services
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    seed_opening_position(repository, "fund", "100", "120")
+    redemption = transactions.record_redemption(
+        "fund", Decimal("25"), TRADE_DATE, "web:pending-redemption"
+    )
+    quote = seed_quote(repository, fund, TRADE_DATE, Decimal("1.2"))
+
+    settled = transactions.settle_pending(TRADE_DATE)
+
+    assert [row.id for row in settled] == [redemption.id]
+    assert settled[0].status is TransactionStatus.CONFIRMED
+    assert settled[0].confirmation_nav == quote.unit_nav
+    position = projector.calculate("fund")
+    assert position.total_shares == Decimal("75")
+    assert position.locked_shares == Decimal("0")
+    assert position.available_shares == Decimal("75")
+
+
+def test_timed_redemption_uses_cutoff_and_waits_for_confirmation_date(
+    services,
+):
+    repository, transactions, projector = services
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    seed_opening_position(repository, "fund", "100", "120")
+
+    redemption = transactions.record_redemption(
+        "fund",
+        Decimal("25"),
+        date(2026, 7, 31),
+        "web:timed-redemption",
+        trade_time="2026-07-31T15:01",
+    )
+    seed_quote(repository, fund, date(2026, 8, 3), Decimal("1.2"))
+
+    assert redemption.trade_date == date(2026, 8, 3)
+    assert redemption.trade_time == "2026-07-31T15:01:00"
+    assert transactions.settle_pending(date(2026, 8, 3)) == []
+    assert projector.calculate("fund").locked_shares == Decimal("25")
+
+    settled = transactions.settle_pending(date(2026, 8, 4))
+
+    assert len(settled) == 1
+    assert settled[0].confirmation_date == date(2026, 8, 4)
+    assert projector.calculate("fund").total_shares == Decimal("75")
+
+
+def test_timed_purchase_with_known_nav_stays_pending_until_confirmation(
+    services,
+):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "500")
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
+    seed_quote(repository, fund, TRADE_DATE, Decimal("1.25"))
+
+    purchase = transactions.record_purchase(
+        "fund",
+        Decimal("100"),
+        TRADE_DATE,
+        "web:timed-purchase-known-nav",
+        source_cash_product_id="cash",
+        trade_time="2026-07-30T14:59",
+    )
+
+    assert purchase.status is TransactionStatus.PENDING_CONFIRMATION
+    assert purchase.shares == Decimal("80")
+    assert projector.calculate("fund").total_shares == Decimal("0")
+    assert projector.calculate("cash").locked_shares == Decimal("100")
+    assert transactions.settle_pending(TRADE_DATE) == []
+
+    settled = transactions.settle_pending(date(2026, 7, 31))
+
+    assert settled[0].confirmation_date == date(2026, 7, 31)
+    assert projector.calculate("fund").total_shares == Decimal("80")
+    assert projector.calculate("cash").locked_shares == Decimal("0")
 
 
 def test_cash_redemption_with_destination_confirms_both_sides(services):

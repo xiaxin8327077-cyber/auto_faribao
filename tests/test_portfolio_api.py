@@ -407,6 +407,28 @@ def test_transaction_preview_normalizes_server_side_values(client):
     assert "warning" in preview
 
 
+def test_transaction_preview_uses_entered_time_for_cutoff_and_confirmation(
+    client,
+):
+    response = client.post(
+        "/api/portfolio/transactions/preview",
+        headers=write_headers(idem="preview-timed-purchase"),
+        json={
+            "kind": "purchase",
+            "product_id": "fund",
+            "amount": "100",
+            "fee_rate": "0",
+            "trade_time": "2026-07-30T15:01",
+        },
+    )
+
+    assert response.status_code == 200
+    normalized = response.get_json()["preview"]["normalized_input"]
+    assert normalized["trade_time"] == "2026-07-30T15:01:00"
+    assert normalized["trade_date"] == "2026-07-31"
+    assert normalized["expected_confirmation_date"] == "2026-08-03"
+
+
 def test_create_recomputes_preview_and_ignores_client_share_and_nav(client):
     response = client.post(
         "/api/portfolio/transactions",
@@ -823,7 +845,7 @@ def test_all_transaction_and_sip_write_routes_are_mapped(api_setup):
     ).status_code == 400
 
 
-def test_sip_create_defaults_to_draft_and_edits_only_existing_draft(api_setup):
+def test_sip_create_defaults_to_draft_and_edits_existing_plan_in_place(api_setup):
     client, _, repository, _ = api_setup
     create_body = {
         "product_id": "fund",
@@ -856,21 +878,52 @@ def test_sip_create_defaults_to_draft_and_edits_only_existing_draft(api_setup):
         json={**create_body, "activate": True},
     )
     active_id = activated.get_json()["sip_plan"]["id"]
-    rejected = client.post(
+    active_edit = client.post(
         "/api/portfolio/sip-plans",
         headers=write_headers(idem="sip-active-edit"),
-        json={**create_body, "sip_id": active_id, "daily_amount": "30"},
+        json={
+            **create_body,
+            "sip_id": active_id,
+            "daily_amount": "30",
+            "start_date": "2026-07-31",
+        },
     )
     assert activated.get_json()["sip_plan"]["status"] == "active"
-    assert rejected.status_code == 400
-    assert (
-        client.post(
-            f"/api/portfolio/sip-plans/{active_id}/pause",
-            headers=write_headers(idem="sip-pause"),
-            json={},
-        ).status_code
-        == 200
+    assert active_edit.status_code == 200
+    assert active_edit.get_json()["sip_plan"]["status"] == "active"
+    assert repository.get_plan(active_id).daily_amount == Decimal("30")
+    assert repository.get_plan(active_id).start_date == date(2026, 7, 31)
+
+    clear_source = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="sip-active-clear-source"),
+        json={
+            **create_body,
+            "sip_id": active_id,
+            "source_cash_product_id": "",
+        },
     )
+    assert clear_source.status_code == 400
+
+    paused = client.post(
+        f"/api/portfolio/sip-plans/{active_id}/pause",
+        headers=write_headers(idem="sip-pause"),
+        json={},
+    )
+    paused_edit = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="sip-paused-edit"),
+        json={
+            **create_body,
+            "sip_id": active_id,
+            "daily_amount": "40",
+            "activate": True,
+        },
+    )
+    assert paused.status_code == 200
+    assert paused_edit.status_code == 200
+    assert paused_edit.get_json()["sip_plan"]["status"] == "paused"
+    assert repository.get_plan(active_id).daily_amount == Decimal("40")
 
 
 def test_mobile_compatibility_preview_and_adjustment_routes_are_not_404(client):

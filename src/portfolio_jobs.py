@@ -105,14 +105,24 @@ def build_portfolio_jobs(runtime):
         for plan in repository.list_plans():
             if plan.status is not SipPlanStatus.ACTIVE:
                 continue
-            existed = repository.get_plan_execution(plan.id, day)
-            execution = sip_service.ensure_intent(plan.id, day)
+            try:
+                existed = repository.get_plan_execution(plan.id, day)
+                execution = sip_service.ensure_intent(plan.id, day)
+            except Exception:
+                logger.error(
+                    "Portfolio SIP intent failed for plan %s",
+                    plan.id,
+                    exc_info=True,
+                )
+                continue
             if existed is None and execution.status == "pending_quote":
                 created += 1
         return created
 
     def settle_pending(day):
-        return len(sip_service.settle_pending(day))
+        manual = transaction_service.settle_pending(day)
+        sip = sip_service.settle_pending(day)
+        return len(manual) + len(sip)
 
     def accrue_income(day):
         accrued = 0

@@ -25,7 +25,8 @@ _PRODUCT_COLUMNS = """
 _TRANSACTION_COLUMNS = """
     id, product_id, transaction_type, status, trade_date, confirmation_date,
     amount, shares, fee_amount, fee_rate, confirmation_nav,
-    linked_transaction_id, plan_id, idempotency_key, note, created_by
+    linked_transaction_id, plan_id, idempotency_key, note, created_by,
+    trade_time
 """
 _POSITION_COLUMNS = """
     product_id, available_shares, locked_shares, total_shares, cost_basis
@@ -155,16 +156,17 @@ class PortfolioRepository:
         conn.execute(
             """INSERT INTO transactions
                (id, product_id, transaction_type, status, trade_date,
-                confirmation_date, amount, shares, fee_amount, fee_rate,
+                trade_time, confirmation_date, amount, shares, fee_amount, fee_rate,
                 confirmation_nav, linked_transaction_id, plan_id,
                 idempotency_key, note, created_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 tx.id,
                 tx.product_id,
                 tx.transaction_type.value,
                 tx.status.value,
                 tx.trade_date.isoformat(),
+                tx.trade_time,
                 tx.confirmation_date.isoformat() if tx.confirmation_date else None,
                 optional_decimal_text(tx.amount),
                 optional_decimal_text(tx.shares),
@@ -726,6 +728,7 @@ class PortfolioRepository:
             linked_transaction_id=row["linked_transaction_id"] or "",
             plan_id=row["plan_id"] or "",
             idempotency_key=row["idempotency_key"],
+            trade_time=row["trade_time"] or "",
             note=row["note"],
             created_by=row["created_by"],
         )

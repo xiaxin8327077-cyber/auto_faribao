@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import asdict, is_dataclass, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 import hashlib
@@ -17,6 +17,10 @@ from werkzeug.exceptions import HTTPException
 from src.beijing_time import now as beijing_now
 from src.nav_monitor import ProviderError
 from src.portfolio_market import validate_market_quote
+from src.portfolio_confirmation import (
+    confirmation_schedule,
+    normalize_market_datetime,
+)
 from src.portfolio_models import (
     MarketProduct,
     Product,
@@ -24,6 +28,7 @@ from src.portfolio_models import (
     ProductType,
     SipPlan,
     SipPlanStatus,
+    TransactionType,
     decimal_text,
 )
 from src.portfolio_positions import PositionProjector
@@ -101,6 +106,14 @@ def _parse_date(value, name, default=None):
         return date.fromisoformat(str(value))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be an ISO date") from exc
+
+
+def _parse_datetime(value, name):
+    try:
+        parsed = normalize_market_datetime(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an ISO date and time") from exc
+    return parsed
 
 
 def _decimal(value, name, *, positive=False, nonnegative=False):
@@ -639,16 +652,44 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             raise ValueError("kind must be purchase or redemption")
         product_id = _required_text(body.get("product_id"), "product_id")
         product = repo.require_product(product_id)
-        trade_date = _parse_date(
-            body.get("trade_date"), "trade_date", date.today()
+        trade_time_value = str(body.get("trade_time") or "").strip()
+        transaction_type = (
+            TransactionType.MANUAL_PURCHASE
+            if kind == "purchase"
+            else TransactionType.MANUAL_REDEMPTION
         )
+        schedule = None
+        if trade_time_value:
+            submitted_at = _parse_datetime(trade_time_value, "trade_time")
+            schedule = confirmation_schedule(
+                product,
+                transaction_type,
+                submitted_at,
+            )
+            trade_date = schedule.trade_date
+            normalized_trade_time = submitted_at.isoformat(timespec="seconds")
+        else:
+            trade_date = _parse_date(
+                body.get("trade_date"), "trade_date", date.today()
+            )
+            normalized_trade_time = ""
         quote = repo.get_quote(product.id, trade_date)
         nav = (
             Decimal("1")
             if product.product_type is ProductType.CASH_MANAGEMENT
             else (quote.unit_nav if quote is not None else None)
         )
-        status = "confirmed" if nav is not None else "pending_quote"
+        status = (
+            "confirmed"
+            if nav is not None
+            and (
+                schedule is None
+                or product.product_type is ProductType.CASH_MANAGEMENT
+            )
+            else "pending_confirmation"
+            if nav is not None
+            else "pending_quote"
+        )
 
         if kind == "purchase":
             amount = _decimal(body.get("amount"), "amount", positive=True)
@@ -687,6 +728,15 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 "trade_date": trade_date.isoformat(),
                 "note": str(body.get("note") or ""),
             }
+            if schedule is not None:
+                normalized.update(
+                    {
+                        "trade_time": normalized_trade_time,
+                        "expected_confirmation_date": (
+                            schedule.confirmation_date.isoformat()
+                        ),
+                    }
+                )
             return {
                 "normalized_input": normalized,
                 "source_impact": (
@@ -705,6 +755,11 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                     ""
                     if status == "confirmed"
                     else "The trade will remain pending until a quote arrives."
+                    if status == "pending_quote"
+                    else (
+                        "The trade will confirm on "
+                        f"{schedule.confirmation_date.isoformat()}."
+                    )
                 ),
             }
 
@@ -734,6 +789,15 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             "trade_date": trade_date.isoformat(),
             "note": str(body.get("note") or ""),
         }
+        if schedule is not None:
+            normalized.update(
+                {
+                    "trade_time": normalized_trade_time,
+                    "expected_confirmation_date": (
+                        schedule.confirmation_date.isoformat()
+                    ),
+                }
+            )
         return {
             "normalized_input": normalized,
             "source_impact": f"{product_id}:-{decimal_text(shares)}",
@@ -748,8 +812,35 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 ""
                 if status == "confirmed"
                 else "The trade will remain pending until a quote arrives."
+                if status == "pending_quote"
+                else (
+                    "The trade will confirm on "
+                    f"{schedule.confirmation_date.isoformat()}."
+                )
             ),
         }
+
+    def require_executable_sip_products(
+        repo,
+        product_id,
+        source_id,
+        *,
+        conn=None,
+    ):
+        target = repo.require_product(product_id, conn=conn)
+        if target.product_type is not ProductType.PUBLIC_FUND:
+            raise ValueError("target must be public_fund")
+        if target.status is not ProductStatus.ACTIVE:
+            raise ValueError("target product is not active")
+        if not source_id:
+            raise ValueError(
+                "active SIP plan requires a cash management source"
+            )
+        source = repo.require_product(source_id, conn=conn)
+        if source.product_type is not ProductType.CASH_MANAGEMENT:
+            raise ValueError("source must be cash_management")
+        if source.status is not ProductStatus.ACTIVE:
+            raise ValueError("source product is not active")
 
     def sip_preview(body):
         repo, _, _, _ = services()
@@ -758,8 +849,15 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             plan_id = _required_text(
                 body.get("sip_id") or body.get("plan_id"), "sip_id"
             )
-            if repo.get_plan(plan_id) is None:
+            plan = repo.get_plan(plan_id)
+            if plan is None:
                 raise ValueError("plan not found")
+            if operation in {"resume", "activate"}:
+                require_executable_sip_products(
+                    repo,
+                    plan.product_id,
+                    plan.source_cash_product_id,
+                )
             return {
                 "operation": operation,
                 "sip_id": plan_id,
@@ -826,12 +924,26 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             raise ValueError("activate must be a boolean")
         activate = body.get("activate") is True
         sip_id = str(body.get("sip_id") or body.get("plan_id") or "").strip()
+        existing = None
         if sip_id:
             existing = repo.get_plan(sip_id)
             if existing is None:
                 raise ValueError("plan not found")
-            if existing.status is not SipPlanStatus.DRAFT:
-                raise ValueError("only draft plans can be edited")
+        resulting_status = (
+            existing.status
+            if existing is not None
+            else (
+                SipPlanStatus.ACTIVE
+                if activate
+                else SipPlanStatus.DRAFT
+            )
+        )
+        if resulting_status is SipPlanStatus.ACTIVE:
+            require_executable_sip_products(
+                repo,
+                product_id,
+                source_id,
+            )
         return {
             "sip_id": sip_id,
             "product_id": product_id,
@@ -841,7 +953,9 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             "start_date": start_date.isoformat(),
             "activate": activate,
             "message": (
-                "SIP plan will be activated"
+                "SIP plan will be updated"
+                if sip_id
+                else "SIP plan will be activated"
                 if activate
                 else "SIP plan will be saved as draft"
             ),
@@ -1151,6 +1265,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                     ],
                     fee_rate=normalized["fee_rate"],
                     note=normalized["note"],
+                    trade_time=normalized.get("trade_time", ""),
                     audit_id=str(
                         uuid5(
                             NAMESPACE_URL,
@@ -1170,6 +1285,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                         "destination_cash_product_id"
                     ],
                     note=normalized["note"],
+                    trade_time=normalized.get("trade_time", ""),
                     audit_id=str(
                         uuid5(
                             NAMESPACE_URL,
@@ -1384,6 +1500,12 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                     if operation == "activate":
                         if plan.status is not SipPlanStatus.DRAFT:
                             raise ValueError("only draft plans can be activated")
+                        require_executable_sip_products(
+                            repo,
+                            plan.product_id,
+                            plan.source_cash_product_id,
+                            conn=conn,
+                        )
                         plan = replace(plan, status=SipPlanStatus.ACTIVE)
                     else:
                         if plan.status is SipPlanStatus.DRAFT:
@@ -1391,6 +1513,13 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                                 "plan is not active"
                                 if operation == "pause"
                                 else "plan is not paused"
+                            )
+                        if operation == "resume":
+                            require_executable_sip_products(
+                                repo,
+                                plan.product_id,
+                                plan.source_cash_product_id,
+                                conn=conn,
                             )
                         plan = replace(
                             plan,
@@ -1407,11 +1536,6 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                         if preview["sip_id"]
                         else None
                     )
-                    if (
-                        existing is not None
-                        and existing.status is not SipPlanStatus.DRAFT
-                    ):
-                        raise ValueError("only draft plans can be edited")
                     plan = SipPlan(
                         id=(
                             existing.id
@@ -1432,14 +1556,25 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                             "source_cash_product_id"
                         ],
                         status=(
-                            SipPlanStatus.ACTIVE
-                            if preview["activate"]
-                            else SipPlanStatus.DRAFT
+                            existing.status
+                            if existing is not None
+                            else (
+                                SipPlanStatus.ACTIVE
+                                if preview["activate"]
+                                else SipPlanStatus.DRAFT
+                            )
                         ),
                         start_date=_parse_date(
                             preview["start_date"], "start_date"
                         ),
                     )
+                    if plan.status is SipPlanStatus.ACTIVE:
+                        require_executable_sip_products(
+                            repo,
+                            plan.product_id,
+                            plan.source_cash_product_id,
+                            conn=conn,
+                        )
                     status = 200 if existing is not None else 201
                 repo.save_plan(plan, conn=conn)
                 payload = {
@@ -1504,6 +1639,13 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                         "plan is not active"
                         if operation == "pause"
                         else "plan is not paused"
+                    )
+                if operation == "resume":
+                    require_executable_sip_products(
+                        repo,
+                        plan.product_id,
+                        plan.source_cash_product_id,
+                        conn=conn,
                     )
                 plan = replace(
                     plan,

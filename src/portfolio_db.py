@@ -6,7 +6,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 
 BASE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "portfolio.db"
 
 
@@ -341,6 +341,49 @@ END;
 """
 
 
+V3_SCHEMA_SQL = """
+DROP TRIGGER IF EXISTS prevent_confirmed_transaction_mutation;
+DROP TRIGGER IF EXISTS prevent_reversed_transaction_mutation;
+CREATE TRIGGER prevent_confirmed_transaction_mutation
+BEFORE UPDATE ON transactions
+WHEN OLD.status = 'confirmed' AND NOT (
+    NEW.status = 'reversed'
+    AND OLD.reversed_at IS NULL
+    AND NEW.reversed_at IS NOT NULL
+    AND NEW.id IS OLD.id
+    AND NEW.product_id IS OLD.product_id
+    AND NEW.transaction_type IS OLD.transaction_type
+    AND NEW.trade_date IS OLD.trade_date
+    AND NEW.trade_time IS OLD.trade_time
+    AND NEW.confirmation_date IS OLD.confirmation_date
+    AND NEW.amount IS OLD.amount
+    AND NEW.shares IS OLD.shares
+    AND NEW.fee_amount IS OLD.fee_amount
+    AND NEW.fee_rate IS OLD.fee_rate
+    AND NEW.confirmation_nav IS OLD.confirmation_nav
+    AND NEW.linked_transaction_id IS OLD.linked_transaction_id
+    AND NEW.plan_id IS OLD.plan_id
+    AND NEW.idempotency_key IS OLD.idempotency_key
+    AND NEW.note IS OLD.note
+    AND NEW.created_by IS OLD.created_by
+    AND NEW.created_at IS OLD.created_at
+    AND NEW.confirmed_at IS OLD.confirmed_at
+)
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'confirmed transaction is immutable except for reversal'
+    );
+END;
+CREATE TRIGGER prevent_reversed_transaction_mutation
+BEFORE UPDATE ON transactions
+WHEN OLD.status = 'reversed'
+BEGIN
+    SELECT RAISE(ABORT, 'reversed transaction is immutable');
+END;
+"""
+
+
 IMMUTABLE_TRANSACTION_TRIGGERS_SQL = """
 CREATE TRIGGER IF NOT EXISTS prevent_confirmed_transaction_mutation
 BEFORE UPDATE ON transactions
@@ -430,8 +473,11 @@ class PortfolioDatabase:
                 }
                 if versions == {SCHEMA_VERSION}:
                     pass
+                elif versions == {2}:
+                    self._upgrade_v2_to_v3(conn)
                 elif versions == {BASE_SCHEMA_VERSION}:
                     self._upgrade_v1_to_v2(conn)
+                    self._upgrade_v2_to_v3(conn)
                 else:
                     raise ValueError(
                         "unsupported portfolio schema version set: "
@@ -464,6 +510,7 @@ class PortfolioDatabase:
                 )
             result = validator(conn)
             self._upgrade_v1_to_v2(conn)
+            self._upgrade_v2_to_v3(conn)
         except BaseException:
             conn.rollback()
             raise
@@ -484,10 +531,34 @@ class PortfolioDatabase:
     def _create_current_schema(conn) -> None:
         _execute_sql_script(conn, BASE_SCHEMA_SQL)
         _execute_sql_script(conn, V2_SCHEMA_SQL)
+        PortfolioDatabase._ensure_trade_time_column(conn)
+        _execute_sql_script(conn, V3_SCHEMA_SQL)
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES (?)",
             (SCHEMA_VERSION,),
         )
+
+    @staticmethod
+    def _upgrade_v2_to_v3(conn) -> None:
+        PortfolioDatabase._ensure_trade_time_column(conn)
+        _execute_sql_script(conn, V3_SCHEMA_SQL)
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?)",
+            (SCHEMA_VERSION,),
+        )
+
+    @staticmethod
+    def _ensure_trade_time_column(conn) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(transactions)")
+        }
+        if "trade_time" not in columns:
+            conn.execute(
+                """ALTER TABLE transactions
+                   ADD COLUMN trade_time TEXT NOT NULL DEFAULT ''"""
+            )
 
     def _upgrade_v1_to_v2(self, conn) -> None:
         self._preflight_v2(conn)
@@ -496,7 +567,7 @@ class PortfolioDatabase:
         conn.execute("DELETE FROM schema_migrations")
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES (?)",
-            (SCHEMA_VERSION,),
+            (2,),
         )
 
     @staticmethod
