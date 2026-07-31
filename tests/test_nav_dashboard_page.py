@@ -179,6 +179,7 @@ def test_trade_form_switches_between_purchase_amount_and_redemption_shares():
 def test_trade_form_filters_products_and_shows_type_specific_fields():
     page = _read_page()
 
+    assert ".form-field[hidden] { display: none; }" in page
     assert 'id="tradeFundCodeField"' in page
     assert 'id="tradeFeeRateField"' in page
     assert 'name="fee_rate_percent"' in page
