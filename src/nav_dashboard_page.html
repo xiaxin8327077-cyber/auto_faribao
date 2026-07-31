@@ -243,7 +243,7 @@
     .daily-profit-amount { font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; }
     .daily-profit-amount.positive { color: var(--positive); }
     .daily-profit-amount.negative { color: var(--negative); }
-    .management-tabs { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 100; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 -5px 20px rgba(38, 72, 112, .14); }
+    .management-tabs { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 100; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, 0.78); backdrop-filter: blur(16px) saturate(180%); -webkit-backdrop-filter: blur(16px) saturate(180%); box-shadow: 0 -5px 20px rgba(38, 72, 112, 0.14); }
     .management-tab { min-height: 38px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 800; cursor: pointer; }
     .management-tab[aria-selected="true"] { background: var(--blue); color: #fff; box-shadow: 0 3px 9px rgba(31, 111, 209, .28); }
     .management-tab:focus-visible, .action-button:focus-visible { outline: 3px solid rgba(31, 111, 209, .24); outline-offset: 2px; }
@@ -252,8 +252,9 @@
     .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 2px 14px; }
     .panel-heading h2 { font-size: 20px; }
     .metric-sub { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 14px; }
-    .in-transit-hint { margin: -6px 2px 10px; font-size: 12px; color: var(--muted); min-height: 18px; }
-    .in-transit-hint:empty { margin: 0; min-height: 0; }
+.in-transit-hint { margin: -6px 2px 10px; font-size: 12px; color: var(--muted); min-height: 18px; }
+.in-transit-hint:empty { margin: 0; min-height: 0; }
+.product .in-transit-hint { margin: 4px 0 0; font-size: 10px; font-variant-numeric: tabular-nums; min-height: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .action-button { min-height: 36px; padding: 0 12px; border: 1px solid var(--blue); border-radius: 7px; background: var(--blue); color: #fff; font-size: 13px; font-weight: 800; cursor: pointer; }
     .action-button.secondary { border-color: var(--line); background: var(--panel); color: var(--blue); }
     .action-button.danger { border-color: #c73737; background: #c73737; }
@@ -1537,7 +1538,7 @@
         inTransitBuy > 0 ? `申购在途 ${money(inTransitBuy)} 元` : '',
         inTransitSell > 0 ? `赎回在途 ${money(inTransitSell)} 元` : '',
       ].filter(Boolean).join('，');
-      $('inTransitAmount').textContent = inTransitText ? `在途资金 ${inTransitText}` : '';
+      $('inTransitAmount').textContent = '';
       const totalConfigured = (data.products || []).length;
       $('disclosedCount').textContent = `${data.today_disclosed_count || 0}/${totalConfigured}`;
       const positives = data.positive_rankings || [];
