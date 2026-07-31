@@ -508,6 +508,7 @@
       <label class="form-field" id="tradeFeeRateField" hidden>申购费率（%）<input name="fee_rate_percent" id="tradeFeeRateInput" type="number" min="0" max="100" step="0.0001" inputmode="decimal" required disabled></label>
       <label class="form-field" id="tradeSourceField">申购资金来源<select name="source_cash_product_id" id="tradeSource"><option value="">钱包</option></select></label>
       <label class="form-field" id="tradeDestinationField" hidden>赎回到账<select name="destination_cash_product_id" id="tradeDestination" disabled><option value="">钱包</option></select></label>
+      <label class="form-field" id="tradeSettlementField" hidden>预计到账日期<input name="settlement_date" id="tradeSettlementInput" type="date" disabled></label>
       <label class="form-field" id="tradeTimeLabel">申购时间<input id="tradeTimeInput" name="trade_time" type="datetime-local" required></label>
       <label class="form-field">备注<textarea name="note" maxlength="300"></textarea></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="tradeDialog">取消</button><button class="action-button" type="submit">预览</button></div>
@@ -1141,9 +1142,27 @@
         });
       });
     }
+    // 判断产品是否应隐藏(已清仓且到账日已过)
+    function isClearedAndSettled(productId, positions, transactions) {
+      const pos = positions.find(p => rowValue(p, 'product_id', 'id', 'code') === productId);
+      if (!pos || Number(rowValue(pos, 'total_shares', 'shares')) > 0) return false;
+      // 找到该产品的最近一笔已确认赎回的 settlement_date
+      const txns = transactions.filter(t =>
+        rowValue(t, 'product_id') === productId &&
+        rowValue(t, 'transaction_type', 'type').toLowerCase().includes('redemption') &&
+        rowValue(t, 'status', 'state').toLowerCase() === 'confirmed'
+      );
+      if (!txns.length) return true; // 无赎回记录,直接隐藏
+      const latest = txns.sort((a, b) => String(rowValue(b, 'confirmation_date', 'trade_date')).localeCompare(String(rowValue(a, 'confirmation_date', 'trade_date'))))[0];
+      const settleDate = rowValue(latest, 'settlement_date', 'settlement_date', 'confirmation_date');
+      if (!settleDate) return true;
+      const today = new Date().toISOString().slice(0, 10);
+      return settleDate < today;
+    }
     function renderPositions() {
       const positions = portfolioRows('positions', []);
-      const rows = positions;
+      const transactions = portfolioRows('transactions', []);
+      const rows = positions.filter(p => !isClearedAndSettled(rowValue(p, 'product_id', 'id', 'code'), positions, transactions));
       const groups = ['wealth_nav', 'cash_management', 'public_fund'];
       const list = $('positionsList');
       if (!rows.length) { list.innerHTML = '<div class="empty">暂无持仓，可在交易或定投中添加产品。</div>'; return; }
@@ -1251,6 +1270,8 @@
         confirmationDate ? '确认日期' : '预计确认',
         confirmationDate || expectedConfirmationDate || '等待行情'
       );
+      const settlementDate = rowValue(row, 'settlement_date', 'settlement_date');
+      if (settlementDate) add('预计到账日', settlementDate);
       if (incomeStart) add('收益起算', `确认份额后（${incomeStart}）`);
       if (incomeStop) add('收益停止', `确认赎回后（${incomeStop}）`);
       if (['manual_purchase', 'sip_purchase'].includes(normalizedTransactionType)) {
@@ -1486,7 +1507,12 @@
       $('mainGainAmount').textContent = positives[0] ? signedMoney(positives[0].amount) : '--';
       $('mainDrag').textContent = negatives[0] ? shortName(negatives[0].name || negatives[0].code) : '--';
       $('mainDragAmount').textContent = negatives[0] ? signedMoney(negatives[0].amount) : '--';
-      const products = data.products || [];
+      const pfPositions = portfolioRows('positions', []);
+      const pfTransactions = portfolioRows('transactions', []);
+      const products = (data.products || []).filter(item => {
+        const pid = rowValue(item, 'product_id', 'id', 'code');
+        return !isClearedAndSettled(pid, pfPositions, pfTransactions);
+      });
       $('productTitle').textContent = `产品持仓（${products.length}）`;
       $('productList').innerHTML = products.length ? products.map((item, index) => {
         const profit = item.latest_profit;
@@ -1818,6 +1844,8 @@
       $('tradeSource').disabled = redemption;
       $('tradeDestinationField').hidden = !redemption;
       $('tradeDestination').disabled = !redemption;
+      $('tradeSettlementField').hidden = !redemption;
+      $('tradeSettlementInput').disabled = !redemption;
     }
     function openSip(sipId = '') {
       if (!state.writeEnabled) return;

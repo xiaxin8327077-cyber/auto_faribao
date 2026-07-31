@@ -122,6 +122,7 @@ class Transaction:
     note: str = ""
     created_by: str = "system"
     confirmed_at: Optional[str] = None
+    settlement_date: Optional[date] = None
 
 
 @dataclass(frozen=True)

@@ -27,7 +27,7 @@ _TRANSACTION_COLUMNS = """
     id, product_id, transaction_type, status, trade_date, confirmation_date,
     amount, shares, fee_amount, fee_rate, confirmation_nav,
     linked_transaction_id, plan_id, idempotency_key, note, created_by,
-    trade_time, confirmed_at
+    trade_time, confirmed_at, settlement_date
 """
 _POSITION_COLUMNS = """
     product_id, available_shares, locked_shares, total_shares, cost_basis
@@ -161,8 +161,8 @@ class PortfolioRepository:
                (id, product_id, transaction_type, status, trade_date,
                 trade_time, confirmation_date, amount, shares, fee_amount, fee_rate,
                 confirmation_nav, linked_transaction_id, plan_id,
-                idempotency_key, note, created_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                idempotency_key, note, created_by, settlement_date)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 tx.id,
                 tx.product_id,
@@ -181,6 +181,7 @@ class PortfolioRepository:
                 tx.idempotency_key,
                 tx.note,
                 tx.created_by,
+                tx.settlement_date.isoformat() if tx.settlement_date else None,
             ),
         )
         return tx
@@ -787,6 +788,11 @@ class PortfolioRepository:
             note=row["note"],
             created_by=row["created_by"],
             confirmed_at=row["confirmed_at"] or "",
+            settlement_date=(
+                date.fromisoformat(row["settlement_date"])
+                if row["settlement_date"]
+                else None
+            ),
         )
 
     @staticmethod

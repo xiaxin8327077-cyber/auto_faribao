@@ -656,6 +656,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         product_id = _required_text(body.get("product_id"), "product_id")
         product = repo.require_product(product_id)
         trade_time_value = str(body.get("trade_time") or "").strip()
+        settlement_date = _parse_date(body.get("settlement_date"), "settlement_date", None)
         transaction_type = (
             TransactionType.MANUAL_PURCHASE
             if kind == "purchase"
@@ -740,6 +741,8 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                         ),
                     }
                 )
+            if settlement_date is not None:
+                normalized["settlement_date"] = settlement_date.isoformat()
             return {
                 "normalized_input": normalized,
                 "source_impact": (
@@ -1375,6 +1378,11 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                     ],
                     note=normalized["note"],
                     trade_time=normalized.get("trade_time", ""),
+                    settlement_date=(
+                        _parse_date(normalized["settlement_date"], "settlement_date")
+                        if normalized.get("settlement_date")
+                        else None
+                    ),
                     audit_id=str(
                         uuid5(
                             NAMESPACE_URL,

@@ -7,7 +7,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 
 BASE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "portfolio.db"
 
 
@@ -99,7 +99,8 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     confirmed_at TEXT,
-    reversed_at TEXT
+    reversed_at TEXT,
+    settlement_date TEXT
 );
 CREATE TABLE IF NOT EXISTS sip_plans (
     id TEXT PRIMARY KEY,
@@ -474,11 +475,15 @@ class PortfolioDatabase:
                 }
                 if versions == {SCHEMA_VERSION}:
                     pass
+                elif versions == {3}:
+                    self._upgrade_v3_to_v4(conn)
                 elif versions == {2}:
                     self._upgrade_v2_to_v3(conn)
+                    self._upgrade_v3_to_v4(conn)
                 elif versions == {BASE_SCHEMA_VERSION}:
                     self._upgrade_v1_to_v2(conn)
                     self._upgrade_v2_to_v3(conn)
+                    self._upgrade_v3_to_v4(conn)
                 else:
                     raise ValueError(
                         "unsupported portfolio schema version set: "
@@ -545,6 +550,18 @@ class PortfolioDatabase:
     def _upgrade_v2_to_v3(conn) -> None:
         PortfolioDatabase._ensure_trade_time_column(conn)
         _execute_sql_script(conn, V3_SCHEMA_SQL)
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?)",
+            (SCHEMA_VERSION,),
+        )
+
+    @staticmethod
+    def _upgrade_v3_to_v4(conn) -> None:
+        try:
+            conn.execute("ALTER TABLE transactions ADD COLUMN settlement_date TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.execute("DELETE FROM schema_migrations")
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES (?)",

@@ -193,6 +193,7 @@ class PortfolioTransactionService:
         note="",
         audit_id=None,
         trade_time="",
+        settlement_date=None,
     ) -> Transaction:
         idempotency_key = self._nonempty_text(
             idempotency_key, "idempotency_key"
@@ -265,6 +266,7 @@ class PortfolioTransactionService:
                 ),
                 note=note,
                 created_by=created_by,
+                settlement_date=settlement_date,
             )
             affected_product_ids = {product.id}
             if destination is not None:
