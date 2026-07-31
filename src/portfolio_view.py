@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from src.portfolio_models import (
@@ -299,7 +299,7 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
             product,
             transaction.transaction_type,
             (
-                datetime.fromisoformat(transaction.trade_time)
+                datetime.combine(transaction.trade_date, time.fromisoformat(transaction.trade_time))
                 if transaction.trade_time
                 else datetime.combine(
                     transaction.trade_date, datetime.min.time()
