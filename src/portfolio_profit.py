@@ -60,17 +60,9 @@ def _nav_earning_shares(
         ),
         ZERO,
     )
-    current_position = projector._calculate(
-        product_id,
-        conn=conn,
-        as_of=current_quote_date,
-        use_confirmation_date=True,
-    )
     return max(
         ZERO,
-        opening_position.total_shares
-        + confirmed_from_previous_nav
-        - current_position.locked_shares,
+        opening_position.total_shares + confirmed_from_previous_nav,
     )
 
 

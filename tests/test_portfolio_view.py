@@ -469,6 +469,15 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
             amount=Decimal("13"),
             shares=Decimal("10"),
         ),
+        Transaction(
+            id="pending-redemption",
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_REDEMPTION,
+            status=TransactionStatus.PENDING_QUOTE,
+            trade_date=date(2026, 8, 4),
+            idempotency_key="pending-redemption",
+            shares=Decimal("10"),
+        ),
     ):
         repository.create_transaction(transaction)
     for quote_date, nav in (
