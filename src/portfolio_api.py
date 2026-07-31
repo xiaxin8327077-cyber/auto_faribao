@@ -1099,6 +1099,24 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             {"products": [_json_value(row) for row in repository().list_products()]}
         )
 
+    @blueprint.get("/api/portfolio/products/<product_id>/history")
+    def product_history(product_id):
+        guard = read_guard()
+        if guard:
+            return guard
+        repo = repository()
+        if repo.get_product(product_id) is None:
+            return _error(
+                "product_not_found",
+                "product not found",
+                404,
+            )
+        from src.portfolio_view import build_product_history_payload
+
+        return jsonify(
+            build_product_history_payload(repo, product_id, as_of=_today())
+        )
+
     @blueprint.get("/api/portfolio/products/search")
     def search_products():
         guard = read_guard()

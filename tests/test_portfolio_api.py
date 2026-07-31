@@ -155,6 +155,45 @@ def test_read_routes_require_private_token_and_return_json(client):
         assert key in response.get_json()
 
 
+def test_product_history_route_requires_token_and_returns_daily_rows(api_setup):
+    client, _, repository, _ = api_setup
+    for quote_date, nav in (
+        (date(2026, 7, 29), "1.00"),
+        (date(2026, 7, 30), "1.01"),
+    ):
+        repository.upsert_quote(
+            "fund",
+            MarketQuote(
+                "fund",
+                quote_date,
+                "official",
+                f"fund:{quote_date}",
+                unit_nav=Decimal(nav),
+            ),
+            f"{quote_date}T18:00:00+08:00",
+        )
+
+    path = "/api/portfolio/products/fund/history"
+    assert client.get(path).status_code == 403
+    response = client.get(
+        path,
+        headers={"X-Nav-Dashboard-Key": "secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["history"][0]["date"] == "2026-07-30"
+
+
+def test_product_history_route_returns_not_found_for_unknown_product(client):
+    response = client.get(
+        "/api/portfolio/products/missing/history",
+        headers={"X-Nav-Dashboard-Key": "secret"},
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "product_not_found"
+
+
 def test_product_search_returns_external_candidates_for_partial_input(
     api_setup,
 ):

@@ -16,6 +16,10 @@ from src.portfolio_models import (
     TransactionType,
 )
 from src.portfolio_positions import PositionProjector
+from src.portfolio_confirmation import (
+    MissingTradingCalendarError,
+    is_trading_day,
+)
 
 
 WALLET_PRODUCT_ID = "wallet-plus"
@@ -61,6 +65,9 @@ class WalletPlusProvider:
         quotes = []
         current = start_date
         while current <= end_date:
+            if not is_trading_day(current):
+                current += timedelta(days=1)
+                continue
             raw = {
                 "annualized_rate": str(WALLET_ANNUALIZED_RATE),
                 "income_per_10k": str(WALLET_INCOME_PER_10K),
@@ -89,6 +96,26 @@ class CashConsolidationResult:
     migrated_products: int
 
 
+def _upsert_wallet_quote(repository, quote_date, conn):
+    provider = WalletPlusProvider()
+    try:
+        quotes = provider.fetch_quotes(
+            provider.resolve_product(WALLET_CODE),
+            quote_date,
+            quote_date,
+        )
+    except MissingTradingCalendarError:
+        return
+    if not quotes:
+        return
+    repository.upsert_quote(
+        WALLET_PRODUCT_ID,
+        quotes[0],
+        f"{quote_date.isoformat()}T00:00:00+08:00",
+        conn=conn,
+    )
+
+
 def consolidate_cash_products(
     repository,
     effective_date: date,
@@ -100,17 +127,7 @@ def consolidate_cash_products(
             (_MIGRATION_AUDIT_ID,),
         ).fetchone()
         if existing_audit is not None:
-            quote = WalletPlusProvider().fetch_quotes(
-                WalletPlusProvider().resolve_product(WALLET_CODE),
-                effective_date,
-                effective_date,
-            )[0]
-            repository.upsert_quote(
-                WALLET_PRODUCT_ID,
-                quote,
-                f"{effective_date.isoformat()}T00:00:00+08:00",
-                conn=conn,
-            )
+            _upsert_wallet_quote(repository, effective_date, conn)
             return CashConsolidationResult(Decimal("0"), 0)
 
         wallet = repository.get_product(WALLET_PRODUCT_ID, conn=conn)
@@ -232,17 +249,7 @@ def consolidate_cash_products(
                 conn=conn,
             )
 
-        quote = WalletPlusProvider().fetch_quotes(
-            WalletPlusProvider().resolve_product(WALLET_CODE),
-            effective_date,
-            effective_date,
-        )[0]
-        repository.upsert_quote(
-            WALLET_PRODUCT_ID,
-            quote,
-            f"{effective_date.isoformat()}T00:00:00+08:00",
-            conn=conn,
-        )
+        _upsert_wallet_quote(repository, effective_date, conn)
 
         repository.append_audit(
             _MIGRATION_AUDIT_ID,

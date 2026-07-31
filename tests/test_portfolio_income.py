@@ -42,8 +42,16 @@ def seed_product(repository, product_id, product_type):
     )
 
 
-def seed_cash(repository, product_id, shares):
-    seed_product(repository, product_id, ProductType.CASH_MANAGEMENT)
+def seed_cash(repository, product_id, shares, provider="test"):
+    repository.add_product(
+        Product(
+            id=product_id,
+            provider=provider,
+            code=product_id,
+            name=product_id,
+            product_type=ProductType.CASH_MANAGEMENT,
+        )
+    )
     repository.create_transaction(
         Transaction(
             id=f"opening:{product_id}",
@@ -143,6 +151,23 @@ def test_same_day_cash_purchase_starts_earning_on_next_day(
     second = income.accrue("cash", next_date)
 
     assert second.amount == Decimal("0.750025")
+
+
+def test_cash_income_skips_non_trading_day_even_with_a_fixed_quote(
+    income_services,
+):
+    repository, projector, income = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    saturday = date(2026, 8, 1)
+    seed_quote(repository, "cash", saturday, "0.5")
+
+    result = income.accrue("cash", saturday)
+
+    assert result is None
+    assert repository.get_transaction_by_idempotency(
+        "income:cash:2026-08-01"
+    ) is None
+    assert projector.calculate("cash").total_shares == Decimal("10000")
 
 
 def test_future_pending_cash_out_does_not_reduce_earlier_income(

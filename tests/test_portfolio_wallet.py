@@ -58,12 +58,12 @@ def _add_cash(repository, product_id, amount):
     )
 
 
-def test_wallet_provider_returns_fixed_natural_day_yield():
+def test_wallet_provider_returns_fixed_yield_on_trading_days_only():
     provider = get_market_provider("wallet_plus")
 
     assert isinstance(provider, WalletPlusProvider)
     product = provider.resolve_product(WALLET_CODE)
-    quotes = provider.fetch_quotes(product, date(2026, 7, 30), DAY)
+    quotes = provider.fetch_quotes(product, date(2026, 7, 30), date(2026, 8, 2))
 
     assert product.name == "钱包Plus"
     assert product.product_type is ProductType.CASH_MANAGEMENT
@@ -127,3 +127,33 @@ def test_cash_consolidation_moves_balances_and_sip_source_once(tmp_path):
             if transaction.created_by == "wallet_migration"
         ]
     ) == 3
+
+
+def test_cash_consolidation_succeeds_on_non_trading_day_without_quote(tmp_path):
+    repository = _repository(tmp_path)
+    _add_cash(repository, "cash-a", "100")
+    saturday = date(2026, 8, 1)
+
+    result = consolidate_cash_products(repository, saturday)
+
+    assert result.migrated_balance == Decimal("100")
+    assert repository.require_product(WALLET_PRODUCT_ID).status is ProductStatus.ACTIVE
+    assert repository.get_quote(WALLET_PRODUCT_ID, saturday) is None
+    assert PositionProjector(repository).calculate(
+        WALLET_PRODUCT_ID
+    ).total_shares == Decimal("100")
+
+
+def test_repeat_cash_consolidation_on_non_trading_day_does_not_require_quote(
+    tmp_path,
+):
+    repository = _repository(tmp_path)
+    _add_cash(repository, "cash-a", "100")
+    consolidate_cash_products(repository, DAY)
+    saturday = date(2026, 8, 1)
+
+    result = consolidate_cash_products(repository, saturday)
+
+    assert result == type(result)(Decimal("0"), 0)
+    assert repository.get_quote(WALLET_PRODUCT_ID, saturday) is None
+    assert repository.get_quote(WALLET_PRODUCT_ID, DAY) is not None

@@ -82,6 +82,65 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
     }
 
 
+def build_product_history_payload(repository, product_id, as_of=None) -> dict:
+    """Serialize one product's disclosed quote and profit history."""
+    as_of = as_of or date.today()
+    product = repository.require_product(product_id)
+    quotes = repository.list_quotes(product.id, on_or_before=as_of)
+    history = []
+    previous_quote = None
+    for quote in quotes:
+        profit_date, profit = calculate_latest_profit(
+            repository,
+            product,
+            quote.quote_date,
+        )
+        daily_profit = profit if profit_date == quote.quote_date else None
+        if product.product_type is ProductType.CASH_MANAGEMENT:
+            history.append(
+                {
+                    "date": quote.quote_date.isoformat(),
+                    "income_per_10k": _optional_decimal_text(
+                        quote.income_per_10k
+                    ),
+                    "seven_day_yield": _optional_decimal_text(
+                        quote.seven_day_annualized_rate
+                    ),
+                    "profit": _optional_decimal_text(daily_profit),
+                }
+            )
+        else:
+            change_pct = None
+            if (
+                previous_quote is not None
+                and previous_quote.unit_nav not in (None, _ZERO)
+                and quote.unit_nav is not None
+            ):
+                change_pct = (
+                    (quote.unit_nav - previous_quote.unit_nav)
+                    / previous_quote.unit_nav
+                    * Decimal("100")
+                )
+            history.append(
+                {
+                    "date": quote.quote_date.isoformat(),
+                    "unit_nav": _optional_decimal_text(quote.unit_nav),
+                    "change_pct": _optional_decimal_text(change_pct),
+                    "profit": _optional_decimal_text(daily_profit),
+                }
+            )
+        previous_quote = quote
+    return {
+        "product": {
+            "id": product.id,
+            "code": product.code,
+            "name": product.name,
+            "product_type": product.product_type.value,
+        },
+        "history": list(reversed(history)),
+    }
+
+
 def _is_overview_position(row, transactions, as_of):
     if Decimal(row["shares"]) > _ZERO:
         return True
@@ -425,7 +484,15 @@ def _sip_plan_row(repository, plan, products_by_id):
     product = products_by_id.get(plan.product_id)
     source = products_by_id.get(plan.source_cash_product_id)
     executions = repository.list_plan_executions(plan.id)
-    last_execution = executions[-1] if executions else None
+    last_execution = next(
+        (
+            execution
+            for execution in reversed(executions)
+            if execution.status in {"pending_quote", "confirmed"}
+            and execution.transaction_id
+        ),
+        None,
+    )
     return {
         "id": plan.id,
         "product_id": plan.product_id,
@@ -443,7 +510,7 @@ def _sip_plan_row(repository, plan, products_by_id):
             last_execution.intended_trade_date.isoformat()
             if last_execution else ""
         ),
-        "skip_reason": last_execution.reason if last_execution else "",
+        "skip_reason": "",
     }
 
 

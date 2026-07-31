@@ -17,7 +17,11 @@ from src.portfolio_models import (
 from src.portfolio_positions import PositionProjector
 from src.portfolio_repository import PortfolioRepository
 from src.portfolio_transactions import PortfolioTransactionService
-from src.portfolio_view import build_portfolio_payload
+from src.portfolio_sip import PlanExecution
+from src.portfolio_view import (
+    build_portfolio_payload,
+    build_product_history_payload,
+)
 
 
 @pytest.fixture
@@ -174,6 +178,69 @@ def test_non_cash_product_row_includes_latest_quote_change(portfolio_fixture):
     )
 
     assert wealth["change_pct"] == "0.7476635514018691588785046729"
+
+
+def test_product_history_lists_nav_date_change_and_daily_profit_newest_first(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    repository.upsert_quote(
+        "wealth",
+        MarketQuote(
+            "AF233276B",
+            date(2026, 7, 29),
+            "official",
+            "wealth-previous",
+            unit_nav=Decimal("1.070"),
+        ),
+        "2026-07-29T10:00:00",
+    )
+
+    payload = build_product_history_payload(
+        repository,
+        "wealth",
+        as_of=date(2026, 7, 30),
+    )
+
+    assert payload["product"] == {
+        "id": "wealth",
+        "code": "AF233276B",
+        "name": "净值理财",
+        "product_type": "wealth_nav",
+    }
+    assert payload["history"] == [
+        {
+            "date": "2026-07-30",
+            "unit_nav": "1.078",
+            "change_pct": "0.7476635514018691588785046729",
+            "profit": "0.8",
+        },
+        {
+            "date": "2026-07-29",
+            "unit_nav": "1.07",
+            "change_pct": None,
+            "profit": None,
+        },
+    ]
+
+
+def test_cash_product_history_lists_yield_date_and_recorded_income(
+    portfolio_fixture,
+):
+    payload = build_product_history_payload(
+        portfolio_fixture,
+        "cash",
+        as_of=date(2026, 7, 30),
+    )
+
+    assert payload["history"] == [
+        {
+            "date": "2026-07-30",
+            "income_per_10k": "0.4475",
+            "seven_day_yield": "0.016315",
+            "profit": "0.4475",
+        }
+    ]
 
 
 def test_transactions_are_newest_first_and_show_cash_route(portfolio_fixture):
@@ -648,3 +715,60 @@ def test_sip_view_exposes_fee_rate_in_percent_units(tmp_path):
 
     assert plan["purchase_fee_rate"] == "0.00006"
     assert plan["purchase_fee_rate_percent"] == "0.006"
+
+
+def test_sip_view_does_not_treat_non_trading_day_skip_as_last_execution(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    repository.save_plan(
+        SipPlan(
+            id="plan-with-weekend-skip",
+            product_id="fund",
+            daily_amount=Decimal("20"),
+            purchase_fee_rate=Decimal("0"),
+            source_cash_product_id="cash",
+            status=SipPlanStatus.ACTIVE,
+            start_date=date(2026, 7, 30),
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="sip-friday",
+            product_id="fund",
+            transaction_type=TransactionType.SIP_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 31),
+            confirmation_date=date(2026, 7, 31),
+            idempotency_key="sip-friday",
+            amount=Decimal("20"),
+            shares=Decimal("20"),
+            plan_id="plan-with-weekend-skip",
+        )
+    )
+    repository.save_plan_execution(
+        PlanExecution(
+            id="execution-friday",
+            plan_id="plan-with-weekend-skip",
+            intended_trade_date=date(2026, 7, 31),
+            status="confirmed",
+            transaction_id="sip-friday",
+        )
+    )
+    repository.save_plan_execution(
+        PlanExecution(
+            id="execution-saturday",
+            plan_id="plan-with-weekend-skip",
+            intended_trade_date=date(2026, 8, 1),
+            status="skipped",
+            reason="non_trading_day",
+        )
+    )
+
+    plan = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 8, 1),
+    )["sip_plans"][0]
+
+    assert plan["last_execution"] == "2026-07-31"
+    assert plan["skip_reason"] == ""

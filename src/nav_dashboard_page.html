@@ -179,8 +179,10 @@
     .holding { grid-column: 2 / -1; margin-top: 4px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
     .nav, .income { text-align: right; font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .date, .change { margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 600; }
-    .income.positive, .income.positive .change { color: var(--positive); }
-    .income.negative, .income.negative .change { color: var(--negative); }
+    .income.positive { color: var(--positive); }
+    .income.negative { color: var(--negative); }
+    .change-value.positive { color: var(--positive); }
+    .change-value.negative { color: var(--negative); }
     .ranking { display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding: 16px 0 4px; }
     .rank-block { min-width: 0; padding: 0 10px; }
     .rank-block + .rank-block { border-left: 1px solid var(--line); }
@@ -243,9 +245,12 @@
     .daily-profit-amount { font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; }
     .daily-profit-amount.positive { color: var(--positive); }
     .daily-profit-amount.negative { color: var(--negative); }
-    .management-tabs { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 100; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, 0.78); backdrop-filter: blur(16px) saturate(180%); -webkit-backdrop-filter: blur(16px) saturate(180%); box-shadow: 0 -5px 20px rgba(38, 72, 112, 0.14); }
-    .management-tab { min-height: 38px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 800; cursor: pointer; }
-    .management-tab[aria-selected="true"] { background: var(--blue); color: #fff; box-shadow: 0 3px 9px rgba(31, 111, 209, .28); }
+    .management-tabs { --tab-indicator-x: 6px; --tab-indicator-width: calc((100% - 24px) / 4); position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 100; isolation: isolate; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; overflow: hidden; padding: 6px; border: 1px solid rgba(255, 255, 255, .72); border-radius: 18px; background: linear-gradient(135deg, rgba(255, 255, 255, .72), rgba(224, 239, 255, .48)); backdrop-filter: blur(24px) saturate(190%); -webkit-backdrop-filter: blur(24px) saturate(190%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .88), inset 0 -1px 0 rgba(120, 153, 190, .16), 0 -8px 30px rgba(38, 72, 112, .16); }
+    .management-tabs::after { content: ''; position: absolute; z-index: -2; inset: 0; background: radial-gradient(circle at 18% 0, rgba(255,255,255,.9), transparent 42%), linear-gradient(110deg, transparent 20%, rgba(255,255,255,.42) 48%, transparent 72%); pointer-events: none; }
+    .management-tab-indicator { position: absolute; z-index: -1; top: 6px; left: 0; width: var(--tab-indicator-width); height: calc(100% - 12px); border: 1px solid rgba(255, 255, 255, .88); border-radius: 13px; background: linear-gradient(145deg, rgba(255,255,255,.92), rgba(198,224,255,.66)); box-shadow: inset 0 1px 1px rgba(255,255,255,.95), 0 5px 15px rgba(31,111,209,.20); transform: translate3d(var(--tab-indicator-x), 0, 0); transition: width .24s cubic-bezier(.22,.8,.22,1), transform .24s cubic-bezier(.22,.8,.22,1); pointer-events: none; }
+    .management-tab { position: relative; z-index: 1; min-height: 38px; border: 0; border-radius: 13px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 800; cursor: pointer; transition: color .2s ease, transform .2s ease; }
+    .management-tab[aria-selected="true"] { background: transparent; color: #155eac; text-shadow: 0 1px 0 rgba(255,255,255,.75); box-shadow: none; }
+    .management-tab:active { transform: scale(.96); }
     .management-tab:focus-visible, .action-button:focus-visible { outline: 3px solid rgba(31, 111, 209, .24); outline-offset: 2px; }
     .management-panel[hidden] { display: none; }
     .management-panel { padding-bottom: 64px; }
@@ -271,6 +276,13 @@
     .manage-stat span { display: block; color: var(--muted); font-size: 10px; }
     .manage-stat b { display: block; margin-top: 4px; overflow: hidden; font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
     .manage-subvalue { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .product-history { margin-top: 4px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+    .product-history-head, .product-history-row { display: grid; grid-template-columns: 78px minmax(68px, 1fr) minmax(72px, 1fr) minmax(72px, 1fr); align-items: center; gap: 6px; padding: 9px 8px; font-variant-numeric: tabular-nums; text-align: right; }
+    .product-history-head { color: var(--muted); background: var(--blue-soft); font-size: 10px; font-weight: 800; }
+    .product-history-row { min-height: 42px; border-top: 1px solid var(--line-soft); font-size: 11px; font-weight: 700; }
+    .product-history-head span:first-child, .product-history-row span:first-child { text-align: left; }
+    .product-history-row .positive { color: var(--positive); }
+    .product-history-row .negative { color: var(--negative); }
     .position-stat-grid .manage-stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
     .row-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
     .row-action { min-height: 31px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--blue); font-size: 12px; font-weight: 750; cursor: pointer; }
@@ -404,6 +416,7 @@
       </header>
 
       <nav class="management-tabs" role="tablist" aria-label="组合管理">
+        <span class="management-tab-indicator" id="managementTabIndicator" aria-hidden="true"></span>
         <button class="management-tab" id="overviewTab" type="button" role="tab" aria-selected="true" aria-controls="overviewPanel" data-tab="overview">总览</button>
         <button class="management-tab" id="positionsTab" type="button" role="tab" aria-selected="false" aria-controls="positionsPanel" data-tab="positions">持仓</button>
         <button class="management-tab" id="transactionsTab" type="button" role="tab" aria-selected="false" aria-controls="transactionsPanel" data-tab="transactions">交易</button>
@@ -611,6 +624,8 @@
       writeEnabled: false,
     };
     let transactionFilter = 'all';
+    let managementSwipeStart = null;
+    let productDetailRequestId = 0;
     const INTERNAL_TRANSACTION_TYPES = new Set([
       'opening_position',
       'cash_transfer_in',
@@ -695,6 +710,12 @@
         button.setAttribute('aria-selected', String(selected));
         $(`${button.dataset.tab}Panel`).hidden = !selected;
       });
+      const tabBar = document.querySelector('.management-tabs');
+      const activeButton = tabBar?.querySelector(`[data-tab="${tab}"]`);
+      if (tabBar && activeButton) {
+        tabBar.style.setProperty('--tab-indicator-x', `${activeButton.offsetLeft}px`);
+        tabBar.style.setProperty('--tab-indicator-width', `${activeButton.offsetWidth}px`);
+      }
     }
     function positionTypeLabel(value) {
       return ({wealth_nav: '净值型理财', cash_management: '现金管理', public_fund: '公募基金'})[value] || '其他产品';
@@ -1236,7 +1257,7 @@
           const shareStats = `<div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div><div class="manage-stat"><span>可用份额</span><b>${esc(availableSharesDisplay || '--')}</b></div><div class="manage-stat"><span>在途资金</span><b>${money(inTransitAmount || 0)} 元</b></div>`;
           const navStat = group === 'cash_management'
             ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b></div>`
-            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b><small class="manage-subvalue">${esc(shortDate(quoteDate) || '--')} · ${changePct === '' ? '--' : esc(signedPercent(changePct))}</small></div>`;
+            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b><small class="manage-subvalue">${esc(shortDate(quoteDate) || '--')} · <span class="change-value ${tone(changePct)}">${changePct === '' ? '--' : esc(signedPercent(changePct))}</span></small></div>`;
           const latestProfitStat = `<div class="manage-stat"><span>最新收益</span><b>${latestProfit === '' ? '--' : signedMoney(latestProfit) + ' 元'}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
           return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${latestProfitStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准持仓</button><button class="row-action" type="button" data-write-operation="adjust-latest-profit" data-product-id="${esc(id)}">校准最新收益</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">详情</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
@@ -1379,7 +1400,7 @@
         const edit = `<button class="row-action" type="button" data-write-operation="sip-edit" data-sip-id="${esc(id)}">修改计划</button>`;
         const remove = `<button class="row-action" type="button" data-write-operation="sip-delete" data-sip-id="${esc(id)}">删除计划</button>`;
         const statusLabel = ({draft: '草稿', active: '执行中', paused: '已暂停'})[status] || status;
-        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${money(rowValue(row, 'amount', 'daily_amount') || 0)} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'purchase_fee_rate_percent') || '--')}%</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="manage-meta">跳过原因：${esc(rowValue(row, 'skip_reason') || '无')}</div><div class="row-actions">${edit}${controls}${remove}</div></article>`;
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${money(rowValue(row, 'amount', 'daily_amount') || 0)} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'purchase_fee_rate_percent') || '--')}%</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div></div><div class="row-actions">${edit}${controls}${remove}</div></article>`;
       }).join('') : '<div class="empty">暂无定投计划。</div>';
       updateWriteControls();
     }
@@ -1612,7 +1633,12 @@
           pendingRedemptionShares > 0 ? `赎回待确认 ${money(pendingRedemptionShares)} 份` : '',
           unsettledRedemptionAmount > 0 ? `赎回待到账 ${money(unsettledRedemptionAmount)} 元` : '',
         ].filter(Boolean).join(' · ');
-        return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div></div><div class="nav"><div>${item.latest_nav ? number(item.latest_nav).toFixed(6) : '--'}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div>${(() => { const h = formatHolding(item.shares, item.latest_nav); const text = h && inTransitText ? `${h} · ${inTransitText}` : (h || inTransitText); return text ? `<div class="holding">${esc(text)}</div>` : ''; })()}</article>`;
+        const itemType = rowValue(item, 'product_type', 'wealth_type', 'type');
+        const cashIncome = rowValue(item, 'per_10k_yield');
+        const navDisplay = itemType === 'cash_management'
+          ? (cashIncome === '' ? '万份 --' : `万份 ${number(cashIncome).toFixed(4)}`)
+          : (item.latest_nav ? number(item.latest_nav).toFixed(6) : '--');
+        return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div></div><div class="nav"><div>${esc(navDisplay)}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change change-value ${tone(item.change_pct)}">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div>${(() => { const h = formatHolding(item.shares, item.latest_nav); const text = h && inTransitText ? `${h} · ${inTransitText}` : (h || inTransitText); return text ? `<div class="holding">${esc(text)}</div>` : ''; })()}</article>`;
       }).join('') : '<div class="empty">暂无已配置的净值产品</div>';
       $('positiveRanking').innerHTML = rankingRows(monthlyPositives, '本月无正贡献');
       $('negativeRanking').innerHTML = rankingRows(monthlyNegatives, '本月无拖累');
@@ -1994,7 +2020,8 @@
       }
       dialogOpen('sipDialog');
     }
-    function openProductDetail(productId) {
+    async function openProductDetail(productId) {
+      const requestId = ++productDetailRequestId;
       const product = portfolioRows('positions', portfolioRows('products', [])).find(
         row => String(rowValue(row, 'product_id', 'id', 'code')) === String(productId)
       );
@@ -2025,10 +2052,45 @@
         'product_name',
         'code'
       ) || '持仓详情';
-      $('productDetailContent').innerHTML = fields.map(
-        ([label, value]) => `<p><strong>${esc(label)}：</strong>${esc(value)}</p>`
-      ).join('');
+      $('productDetailContent').innerHTML = '<div class="empty">正在读取每日明细...</div>';
       dialogOpen('productDetailDialog');
+      try {
+        const response = await api(
+          `/api/portfolio/products/${encodeURIComponent(productId)}/history`
+        );
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || '读取产品历史失败');
+        if (requestId !== productDetailRequestId) return;
+        const cashProduct = productType === 'cash_management';
+        const history = Array.isArray(payload.history) ? payload.history : [];
+        const headings = cashProduct
+          ? ['收益日期', '万份收益', '七日年化', '当日收益']
+          : ['净值日期', '单位净值', '涨跌幅', '当日收益'];
+        const historyRows = history.map(row => {
+          const changePct = rowValue(row, 'change_pct');
+          const profit = rowValue(row, 'profit');
+          const middle = cashProduct
+            ? [
+                rowValue(row, 'income_per_10k') || '--',
+                rowValue(row, 'seven_day_yield') === ''
+                  ? '--'
+                  : `${(number(row.seven_day_yield) * 100).toFixed(2)}%`,
+              ]
+            : [
+                rowValue(row, 'unit_nav') || '--',
+                changePct === '' ? '--' : signedPercent(changePct),
+              ];
+          const middleTone = cashProduct ? '' : tone(changePct);
+          return `<div class="product-history-row"><span>${esc(row.date || '--')}</span><span>${esc(middle[0])}</span><span class="${middleTone}">${esc(middle[1])}</span><span class="${tone(profit)}">${profit === '' ? '--' : `${esc(signedMoney(profit))} 元`}</span></div>`;
+        }).join('');
+        const summary = fields.map(
+          ([label, value]) => `<p><strong>${esc(label)}：</strong>${esc(value)}</p>`
+        ).join('');
+        $('productDetailContent').innerHTML = `${summary}<div class="product-history"><div class="product-history-head">${headings.map(label => `<span>${esc(label)}</span>`).join('')}</div>${historyRows || '<div class="empty">暂无每日行情记录</div>'}</div>`;
+      } catch (error) {
+        if (requestId !== productDetailRequestId) return;
+        $('productDetailContent').innerHTML = `<div class="empty">${esc(error.message || '读取产品历史失败')}</div>`;
+      }
     }
     function openAdjustment(productId) {
       if (!state.writeEnabled) return;
@@ -2221,6 +2283,31 @@
       tab.addEventListener('click', () => setProfitView(tab.dataset.profitView));
     });
     document.querySelectorAll('[data-tab]').forEach(tab => tab.addEventListener('click', () => setActiveTab(tab.dataset.tab)));
+    $('dashboardContent').addEventListener('touchstart', event => {
+      const target = event.target;
+      const blocked = target.closest('dialog, input, select, textarea, .transaction-filters, .product-suggestion-panel, .daily-profit-list');
+      if (event.touches.length !== 1 || blocked || !$('dailyProfitBackdrop').hidden) {
+        managementSwipeStart = null;
+        return;
+      }
+      managementSwipeStart = {
+        x: event.touches[0].clientX,
+        y: event.touches[0].clientY,
+      };
+    }, {passive: true});
+    $('dashboardContent').addEventListener('touchend', event => {
+      if (!managementSwipeStart || event.changedTouches.length !== 1) return;
+      const deltaX = event.changedTouches[0].clientX - managementSwipeStart.x;
+      const deltaY = event.changedTouches[0].clientY - managementSwipeStart.y;
+      managementSwipeStart = null;
+      if (Math.abs(deltaX) < 60 || Math.abs(deltaX) <= Math.abs(deltaY) * 1.2) return;
+      const currentIndex = MANAGEMENT_TABS.indexOf(state.activeTab);
+      const nextIndex = Math.max(
+        0,
+        Math.min(MANAGEMENT_TABS.length - 1, currentIndex + (deltaX < 0 ? 1 : -1))
+      );
+      setActiveTab(MANAGEMENT_TABS[nextIndex]);
+    }, {passive: true});
     document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => closeDialog(button.dataset.closeDialog)));
     document.querySelectorAll('[data-write-action]').forEach(button => button.addEventListener('click', () => {
       if (!state.writeEnabled) {
@@ -2327,6 +2414,7 @@
       if (event.key === 'Escape') closeDailyProfits();
     });
     window.addEventListener('hashchange', () => location.reload());
+    window.addEventListener('resize', () => setActiveTab(state.activeTab));
     setActiveTab(state.activeTab);
     updateWriteControls();
     loadDashboard();

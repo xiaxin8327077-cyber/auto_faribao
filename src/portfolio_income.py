@@ -8,6 +8,10 @@ from src.portfolio_models import (
     TransactionStatus,
     TransactionType,
 )
+from src.portfolio_confirmation import (
+    MissingTradingCalendarError,
+    is_trading_day,
+)
 
 
 ONE = Decimal("1")
@@ -27,6 +31,13 @@ class CashIncomeService:
             product = self.repository.require_product(product_id, conn=conn)
             if product.product_type is not ProductType.CASH_MANAGEMENT:
                 raise ValueError("product must be cash_management")
+            if product.provider == "wallet_plus":
+                try:
+                    trading_day = is_trading_day(quote_date)
+                except MissingTradingCalendarError:
+                    return None
+                if not trading_day:
+                    return None
 
             existing = self.repository.get_transaction_by_idempotency(
                 idempotency_key,

@@ -29,6 +29,26 @@ def test_active_management_tab_survives_page_and_data_refresh():
     assert "setActiveTab(state.activeTab);" in html
 
 
+def test_management_tabs_support_horizontal_swipe_navigation():
+    html = _read_page()
+
+    assert "let managementSwipeStart = null;" in html
+    assert "addEventListener('touchstart'" in html
+    assert "addEventListener('touchend'" in html
+    assert "Math.abs(deltaX) < 60" in html
+    assert "setActiveTab(MANAGEMENT_TABS[nextIndex]);" in html
+
+
+def test_management_tabs_use_liquid_glass_indicator():
+    html = _read_page()
+
+    assert 'id="managementTabIndicator"' in html
+    assert "backdrop-filter: blur(24px) saturate(190%)" in html
+    assert ".management-tab-indicator" in html
+    assert "--tab-indicator-x" in html
+    assert "--tab-indicator-width" in html
+
+
 def test_write_fetch_uses_private_token_idempotency_and_custom_header():
     html = _read_page()
     assert '"X-Nav-Dashboard-Key": token' in html
@@ -98,6 +118,12 @@ def test_sip_plan_can_be_deleted_after_preview():
     assert "operation.replace('sip-', '')" in html
 
 
+def test_sip_card_hides_internal_skip_reason():
+    html = _read_page()
+
+    assert "跳过原因：" not in html
+
+
 def test_sip_fee_rate_field_and_display_use_percent_units():
     html = _read_page()
 
@@ -124,7 +150,7 @@ def test_position_card_merges_quote_date_and_change_below_non_cash_nav():
         "const quoteDate = row.quote?.date || "
         "rowValue(row, 'nav_date', 'quote_date');"
     ) in html
-    assert 'class="manage-subvalue"' in html
+    assert 'class="change-value ${tone(changePct)}"' in html
     assert "signedPercent(changePct)" in html
     assert "<span>净值日期</span>" not in html
     assert "<span>最新收益</span>" in html
@@ -175,8 +201,37 @@ def test_position_detail_opens_a_real_dialog():
     assert 'id="productDetailDialog"' in html
     assert 'id="productDetailContent"' in html
     assert 'data-view-product="${esc(id)}">详情</button>' in html
-    assert "function openProductDetail(productId)" in html
+    assert "async function openProductDetail(productId)" in html
+    assert "`/api/portfolio/products/${encodeURIComponent(productId)}/history`" in html
+    assert "净值日期" in html
+    assert "单位净值" in html
+    assert "涨跌幅" in html
+    assert "当日收益" in html
     assert "dialogOpen('productDetailDialog');" in html
+
+
+def test_stale_product_detail_request_cannot_overwrite_newer_dialog():
+    html = _read_page()
+
+    assert "let productDetailRequestId = 0;" in html
+    assert "const requestId = ++productDetailRequestId;" in html
+    assert "if (requestId !== productDetailRequestId) return;" in html
+
+
+def test_change_percent_uses_independent_red_up_green_down_tone_and_four_decimals():
+    html = _read_page()
+
+    assert "number(value).toFixed(4)" in html
+    assert ".change-value.positive { color: var(--positive); }" in html
+    assert ".change-value.negative { color: var(--negative); }" in html
+    assert 'class="change change-value ${tone(item.change_pct)}"' in html
+
+
+def test_cash_overview_shows_fixed_per_ten_thousand_income_in_nav_column():
+    html = _read_page()
+
+    assert "const cashIncome = rowValue(item, 'per_10k_yield')" in html
+    assert "`万份 ${number(cashIncome).toFixed(4)}`" in html
 
 
 def test_adjustment_values_and_share_step_use_two_decimals():
