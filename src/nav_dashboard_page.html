@@ -1538,7 +1538,6 @@
         inTransitSell > 0 ? `赎回在途 ${money(inTransitSell)} 元` : '',
       ].filter(Boolean).join('，');
       $('inTransitAmount').textContent = inTransitText ? `在途资金 ${inTransitText}` : '';
-      $('inTransitAmount').textContent = inTransit > 0 ? `在途资金 ${money(inTransit)} 元` : '';
       const totalConfigured = (data.products || []).length;
       $('disclosedCount').textContent = `${data.today_disclosed_count || 0}/${totalConfigured}`;
       const positives = data.positive_rankings || [];
@@ -1560,11 +1559,11 @@
         const pid = rowValue(item, 'product_id', 'id', 'code');
         const profit = item.latest_profit;
         // 计算该产品的在途申购和赎回
-        const pendingBuyAmt = pfTransactions.filter(t => {
+        const pendingBuyAmt = pfTxList.filter(t => {
           const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
           return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('purchase');
         }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
-        const pendingSellAmt = pfTransactions.filter(t => {
+        const pendingSellAmt = pfTxList.filter(t => {
           const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
           return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('redemption');
         }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
