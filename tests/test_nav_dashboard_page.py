@@ -107,6 +107,30 @@ def test_public_fund_position_shares_show_two_decimal_places():
     assert "<span>在途资金</span>" in html
 
 
+def test_position_detail_opens_a_real_dialog():
+    html = _read_page()
+
+    assert 'id="productDetailDialog"' in html
+    assert 'id="productDetailContent"' in html
+    assert 'data-view-product="${esc(id)}">详情</button>' in html
+    assert "function openProductDetail(productId)" in html
+    assert "dialogOpen('productDetailDialog');" in html
+
+
+def test_adjustment_values_and_share_step_use_two_decimals():
+    html = _read_page()
+
+    assert 'name="shares" type="number" min="0" step="0.01"' in html
+    assert (
+        "form.elements.shares.value = number("
+        "rowValue(product, 'shares', 'share')).toFixed(2);"
+    ) in html
+    assert (
+        "form.elements.profit.value = number("
+        "rowValue(product, 'holding_profit', 'cumulative_profit')).toFixed(2);"
+    ) in html
+
+
 def test_products_are_added_inline_from_trade_or_sip_dialog_only():
     html = _read_page()
 

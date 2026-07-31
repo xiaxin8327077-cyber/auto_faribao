@@ -463,9 +463,14 @@
 
   <dialog class="management-dialog" id="adjustmentDialog" aria-labelledby="adjustmentDialogTitle">
     <form id="adjustmentForm" method="dialog"><header class="dialog-head"><h2 id="adjustmentDialogTitle">校准持仓</h2><button class="icon-button" type="button" data-close-dialog="adjustmentDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <input name="product_id" id="adjustmentProductId" type="hidden"><label class="form-field">调整后持仓份额<input name="shares" type="number" min="0" step="0.0001" required inputmode="decimal"></label><label class="form-field">平台累计持有收益（元）<input name="profit" type="number" step="0.01" required inputmode="decimal"></label><label class="form-field">校准日期<input name="effective_date" type="date" required></label><label class="form-field">说明<textarea name="note" maxlength="300" required></textarea></label>
+      <input name="product_id" id="adjustmentProductId" type="hidden"><label class="form-field">调整后持仓份额<input name="shares" type="number" min="0" step="0.01" required inputmode="decimal"></label><label class="form-field">平台累计持有收益（元）<input name="profit" type="number" step="0.01" required inputmode="decimal"></label><label class="form-field">校准日期<input name="effective_date" type="date" required></label><label class="form-field">说明<textarea name="note" maxlength="300" required></textarea></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="adjustmentDialog">取消</button><button class="action-button" type="submit">预览</button></div>
     </div></form>
+  </dialog>
+
+  <dialog class="management-dialog" id="productDetailDialog" aria-labelledby="productDetailDialogTitle">
+    <header class="dialog-head"><h2 id="productDetailDialogTitle">持仓详情</h2><button class="icon-button" type="button" data-close-dialog="productDetailDialog" aria-label="关闭">×</button></header>
+    <div class="dialog-body"><div class="preview-result" id="productDetailContent"></div><div class="dialog-actions"><button class="action-button" type="button" data-close-dialog="productDetailDialog">关闭</button></div></div>
   </dialog>
 
   <script>
@@ -674,7 +679,7 @@
             ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b></div>`
             : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
-          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">查看</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
+          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">详情</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
         }).join('')}</section>`;
       }).join('') || '<div class="empty">暂无可展示的分类持仓。</div>';
     }
@@ -1288,6 +1293,45 @@
       }
       dialogOpen('sipDialog');
     }
+    function openProductDetail(productId) {
+      const product = portfolioRows('positions', portfolioRows('products', [])).find(
+        row => String(rowValue(row, 'product_id', 'id', 'code')) === String(productId)
+      );
+      if (!product) {
+        $('statusText').textContent = '未找到该产品详情。';
+        return;
+      }
+      const productType = rowValue(
+        product,
+        'wealth_type',
+        'product_type',
+        'type',
+        'category'
+      );
+      const publicFund = productType === 'public_fund';
+      const shareText = value => publicFund
+        ? number(value).toFixed(2)
+        : number(value).toLocaleString('zh-CN', {maximumFractionDigits: 4});
+      const fields = [
+        ['产品代码', rowValue(product, 'code', 'product_code') || '--'],
+        ['产品类型', positionTypeLabel(productType)],
+        ['当前市值', `${money(rowValue(product, 'market_value', 'value', 'holding_value') || 0)} 元`],
+        ['持有份额', shareText(rowValue(product, 'shares', 'share'))],
+        ['可用份额', shareText(rowValue(product, 'available_shares'))],
+        ['在途资金', `${money(rowValue(product, 'in_transit_amount') || 0)} 元`],
+        ['累计持有收益', `${signedMoney(rowValue(product, 'holding_profit', 'cumulative_profit') || 0)} 元`],
+      ];
+      $('productDetailDialogTitle').textContent = rowValue(
+        product,
+        'name',
+        'product_name',
+        'code'
+      ) || '持仓详情';
+      $('productDetailContent').innerHTML = fields.map(
+        ([label, value]) => `<p><strong>${esc(label)}：</strong>${esc(value)}</p>`
+      ).join('');
+      dialogOpen('productDetailDialog');
+    }
     function openAdjustment(productId) {
       if (!state.writeEnabled) return;
       const form = $('adjustmentForm');
@@ -1296,8 +1340,8 @@
       );
       form.reset();
       $('adjustmentProductId').value = productId;
-      form.elements.shares.value = rowValue(product, 'shares', 'share') || '0';
-      form.elements.profit.value = rowValue(product, 'holding_profit', 'cumulative_profit') || '0';
+      form.elements.shares.value = number(rowValue(product, 'shares', 'share')).toFixed(2);
+      form.elements.profit.value = number(rowValue(product, 'holding_profit', 'cumulative_profit')).toFixed(2);
       form.elements.effective_date.value = new Date().toLocaleDateString('en-CA');
       dialogOpen('adjustmentDialog');
     }
@@ -1425,8 +1469,7 @@
     document.addEventListener('click', event => {
       const view = event.target.closest('[data-view-product]');
       if (!view) return;
-      const product = portfolioRows('positions', portfolioRows('products', [])).find(row => String(rowValue(row, 'product_id', 'id', 'code')) === String(view.dataset.viewProduct));
-      $('statusText').textContent = product ? `${rowValue(product, 'name', 'product_name', 'code')}：当前市值 ${rowValue(product, 'market_value', 'value', 'holding_value') || '--'} 元` : '未找到该产品详情。';
+      openProductDetail(view.dataset.viewProduct);
     });
     $('tradeForm').addEventListener('submit', async event => {
       event.preventDefault();
