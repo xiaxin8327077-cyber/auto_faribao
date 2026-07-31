@@ -1169,8 +1169,18 @@
     }
     function renderPositions() {
       const positions = portfolioRows('positions', []);
+      const products = portfolioRows('products', []);
       const transactions = portfolioRows('transactions', []);
-      const rows = positions.filter(p => !isClearedAndSettled(rowValue(p, 'product_id', 'id', 'code'), positions, transactions));
+      // 合并 positions + products 中无 position 但有 pending 交易的产品
+      const posIds = new Set(positions.map(p => rowValue(p, 'product_id', 'id', 'code')));
+      const pendingProducts = products.filter(p => {
+        const pid = rowValue(p, 'id');
+        return !posIds.has(pid) && transactions.some(t =>
+          rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'pending'
+        );
+      }).map(p => ({...p, product_id: p.id, total_shares: '0', available_shares: '0', locked_shares: '0'}));
+      const allRows = [...positions, ...pendingProducts];
+      const rows = allRows.filter(p => !isClearedAndSettled(rowValue(p, 'product_id', 'id', 'code'), positions, transactions));
       const groups = ['wealth_nav', 'cash_management', 'public_fund'];
       const list = $('positionsList');
       // 在途资金提示(区分申购和赎回)
