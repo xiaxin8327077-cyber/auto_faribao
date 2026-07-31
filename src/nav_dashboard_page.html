@@ -448,7 +448,7 @@
 
   <dialog class="management-dialog" id="sipDialog" aria-labelledby="sipDialogTitle">
     <form id="sipForm" method="dialog"><header class="dialog-head"><h2 id="sipDialogTitle">定投计划</h2><button class="icon-button" type="button" data-close-dialog="sipDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <label class="form-field">产品<select name="product_id" id="sipProduct" required></select></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">扣款来源<input name="source" maxlength="80" required></label><label class="form-field">申购费率<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
+      <label class="form-field">产品<select name="product_id" id="sipProduct" required></select></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">扣款来源<select name="source" id="sipSource"><option value="">零花钱（默认）</option></select></label><label class="form-field">申购费率<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存草稿</button></div>
     </div></form>
   </dialog>
@@ -590,16 +590,37 @@
         return `<option value="${esc(id)}">${esc(label)}</option>`;
       }).join('')}`;
     }
+    function fillSipSource() {
+      const select = $('sipSource');
+      const products = portfolioRows('products', []);
+      const cashProducts = products.filter(p => String(rowValue(p, 'product_type', 'type')).toLowerCase() === 'cash_management');
+      cashProducts.forEach(p => {
+        const id = rowValue(p, 'id');
+        const name = rowValue(p, 'name', 'product_name', 'code') || '未命名产品';
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = name;
+        select.appendChild(opt);
+      });
+    }
     function renderPositions() {
-      const rows = portfolioRows('positions', portfolioRows('products', []));
+      const products = portfolioRows('products', []);
+      const positions = portfolioRows('positions', []);
+      const posById = {};
+      positions.forEach(p => { const pid = rowValue(p, 'product_id', 'id', 'code'); if (pid) posById[pid] = p; });
+      const rows = products.map(p => {
+        const pid = rowValue(p, 'product_id', 'id', 'code');
+        const pos = posById[pid] || {};
+        return {...p, ...pos, _id: pid || rowValue(p, 'id')};
+      });
       const groups = ['wealth_nav', 'cash_management', 'public_fund'];
       const list = $('positionsList');
       if (!rows.length) { list.innerHTML = '<div class="empty">暂无持仓，请先添加产品。</div>'; return; }
       list.innerHTML = groups.map(group => {
-        const groupRows = rows.filter(row => rowValue(row, 'wealth_type', 'type', 'category') === group);
+        const groupRows = rows.filter(row => rowValue(row, 'wealth_type', 'type', 'category', 'product_type') === group);
         if (!groupRows.length) return '';
         return `<section class="manage-card"><div class="section-head"><h2>${esc(positionTypeLabel(group))}</h2><span class="section-meta">${groupRows.length} 项</span></div>${groupRows.map(row => {
-          const id = rowValue(row, 'product_id', 'id', 'code');
+          const id = row._id || rowValue(row, 'product_id', 'id', 'code');
           const name = rowValue(row, 'name', 'product_name', 'code') || '未命名产品';
           const nav = rowValue(row, 'unit_nav', 'latest_nav', 'nav');
           const holding = rowValue(row, 'market_value', 'value', 'holding_value');
@@ -609,7 +630,7 @@
           const navStat = group === 'cash_management'
             ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDay || '--')}</b></div>`
             : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div><div class="manage-stat"><span>持有份额</span><b>${esc(shares || '--')}</b></div>`;
-          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${esc(holding || '--')} 元</div></div><div class="manage-grid">${navStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-view-product="${esc(id)}">查看</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
+          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid">${navStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-view-product="${esc(id)}">查看</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
         }).join('')}</section>`;
       }).join('') || '<div class="empty">暂无可展示的分类持仓。</div>';
     }
@@ -813,8 +834,10 @@
       $('currentMonthProfit').className = `month-value ${tone(currentMonthProfit)}`;
       $('basis').textContent = `自 ${data.base_date || '2026-07-01'} 起按收益流水累计`;
       $('marketValue').textContent = money(data.market_value);
-      $('sharesCount').textContent = `${data.shares_count || 0}/${data.configured_count || 0}`;
-      $('disclosedCount').textContent = `${data.today_disclosed_count || 0}/${data.configured_count || 0}`;
+      const pfProducts = data.portfolio?.products || [];
+      const totalConfigured = (data.configured_count || 0) + pfProducts.length;
+      $('sharesCount').textContent = `${data.shares_count || 0}/${totalConfigured}`;
+      $('disclosedCount').textContent = `${data.today_disclosed_count || 0}/${totalConfigured}`;
       const positives = data.positive_rankings || [];
       const negatives = data.negative_rankings || [];
       const monthlyPositives = data.monthly_positive_rankings || [];
@@ -908,22 +931,50 @@
     function previewHtml(result) {
       const details = result?.preview || result?.details || result || {};
       const message = rowValue(details, 'message', 'summary') || '请核对以下内容，确认后将提交。';
-      const fields = Object.entries(details).filter(([key, value]) => !['message', 'summary', 'ok'].includes(key) && typeof value !== 'object');
-      return `<p>${esc(message)}</p>${fields.map(([key, value]) => `<p><strong>${esc(key)}</strong>：${esc(value)}</p>`).join('')}`;
+      // 跳过展示给用户无意义的技术字段（防篡改哈希、状态标记等）
+      const skipKeys = new Set(['message', 'summary', 'ok', 'identity_fingerprint', 'identity']);
+      const lines = [];
+      function walk(obj, prefix) {
+        for (const [k, v] of Object.entries(obj || {})) {
+          if (skipKeys.has(k)) continue;
+          if (v === null || v === undefined || v === '') continue;
+          const label = prefix ? `${prefix}.${k}` : k;
+          if (typeof v === 'object') {
+            walk(v, label);
+          } else {
+            lines.push(`<p><strong>${esc(label)}</strong>：${esc(String(v))}</p>`);
+          }
+        }
+      }
+      walk(details, '');
+      return `<p>${esc(message)}</p>${lines.join('')}`;
     }
     async function previewAction({previewPath, submitPath, payload, originDialog, capturePreviewIdentity = false}) {
       if (!state.writeEnabled) return;
+      const originDlg = $(originDialog);
+      originDlg?.querySelector('.form-error')?.remove();
       const idempotencyKey = newIdempotencyKey();
       let submitPayload = payload;
       state.pendingAction = {submitPath, payload: submitPayload, idempotencyKey, originDialog};
       try {
         const preview = await requestJson(previewPath, payload, idempotencyKey);
-        const previewIdentity = preview?.preview?.product || null;
+        const previewData = preview?.preview || preview || {};
+        const previewIdentity = previewData.product || null;
+        const previewFingerprint = previewData.identity_fingerprint || null;
         if (capturePreviewIdentity) {
           if (!previewIdentity?.registration_code) throw new Error('产品预览未返回完整身份信息');
-          submitPayload = {...payload, ...previewIdentity};
+          if (!previewFingerprint) throw new Error('产品预览未返回身份指纹');
+          // 后端 require_identity 同时校验 identity 字典与 identity_fingerprint
+          const identityDict = {
+            provider: previewIdentity.provider,
+            code: previewIdentity.code,
+            name: previewIdentity.name,
+            product_type: previewIdentity.product_type,
+            registration_code: previewIdentity.registration_code,
+          };
+          submitPayload = {...payload, ...previewIdentity, identity: identityDict, identity_fingerprint: previewFingerprint};
         }
-        state.pendingAction = {submitPath, payload: submitPayload, idempotencyKey, originDialog, previewIdentity};
+        state.pendingAction = {submitPath, payload: submitPayload, idempotencyKey, originDialog, previewIdentity, previewFingerprint};
         $('confirmPreview').innerHTML = previewHtml(preview);
         $('confirmStatus').textContent = '';
         $('reverseReasonField').hidden = true;
@@ -931,7 +982,20 @@
         closeDialog(originDialog);
         dialogOpen('confirmDialog');
       } catch (error) {
-        $('statusText').textContent = `预览失败：${error.message}`;
+        const message = `预览失败：${error.message}`;
+        $('statusText').textContent = message;
+        const dlg = $(originDialog);
+        if (dlg) {
+          let errEl = dlg.querySelector('.form-error');
+          if (!errEl) {
+            errEl = document.createElement('p');
+            errEl.className = 'form-error';
+            errEl.style.cssText = 'color:#b91c1c;margin:8px 0 0;font-size:14px;word-break:break-word;';
+            const bodyEl = dlg.querySelector('.dialog-body');
+            if (bodyEl) bodyEl.appendChild(errEl);
+          }
+          errEl.textContent = message;
+        }
       }
     }
     async function submitPendingAction() {
@@ -978,6 +1042,7 @@
     function openSip(sipId = '') {
       if (!state.writeEnabled) return;
       productOptions('sipProduct');
+      fillSipSource();
       const existing = portfolioRows('sip_plans', portfolioRows('sips', [])).find(row => String(rowValue(row, 'id', 'sip_id')) === String(sipId));
       const form = $('sipForm');
       form.reset();
@@ -1081,7 +1146,7 @@
       event.preventDefault();
       if (!state.writeEnabled) return;
       const form = event.currentTarget;
-      const payload = {...formPayload(form), activate: false, sip_id: form.dataset.sipId || undefined};
+      const payload = {...formPayload(form), activate: true, sip_id: form.dataset.sipId || undefined};
       previewAction({
         previewPath: '/api/portfolio/sip-plans/preview', submitPath: '/api/portfolio/sip-plans',
         payload, originDialog: 'sipDialog',

@@ -74,7 +74,8 @@ def test_reverse_collects_a_nonempty_reason_before_preview():
 
 def test_sip_save_is_draft_and_activation_is_an_explicit_operation():
     html = _read_page()
-    assert "activate: false" in html
+    # 服务器契约：激活 SIP 显式携带 activate: true，暂停/恢复/激活均为独立写操作。
+    assert "activate: true" in html
     assert "data-write-operation=\"sip-activate\"" in html
     assert "if (existingStatus !== 'draft')" in html
     assert "sip_id: form.dataset.sipId || undefined" in html
@@ -82,8 +83,9 @@ def test_sip_save_is_draft_and_activation_is_an_explicit_operation():
 
 def test_product_create_preserves_preview_identity_for_submit():
     html = _read_page()
-    assert "const previewIdentity = preview?.preview?.product" in html
-    assert "submitPayload = {...payload, ...previewIdentity}" in html
+    # 服务器契约：previewAction 统一从 previewData.product 取产品身份。
+    assert "const previewIdentity = previewData.product || null" in html
+    assert "submitPayload = {...payload, ...previewIdentity" in html
     assert "capturePreviewIdentity: true" in html
     assert "registration_code" in html
 

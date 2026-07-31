@@ -34,8 +34,8 @@ CITIC_CASH_INCOME_FIELDS = frozenset(
     ("tenThousandIncomeAmt", "outTenThousandIncomeAmt")
 )
 FUND_IDENTITIES = {
-    "003103": ("长盛盛裕纯债债券型证券投资基金C类", "Bond"),
-    "015736": ("长盛盛裕纯债债券型证券投资基金D类", "Bond"),
+    "003103": ("长盛盛裕纯债债券型证券投资基金C类", "Bond", "003103"),
+    "015736": ("长盛盛裕纯债债券型证券投资基金D类", "Bond", "015736"),
 }
 
 
@@ -328,18 +328,19 @@ class ChangshengFundProvider:
         identity = FUND_IDENTITIES.get(normalized)
         if identity is None:
             raise ProviderError("无法可靠识别产品类型")
-        name, _fund_type = identity
+        name, _fund_type, registration_code = identity
         return MarketProduct(
             self.provider,
             normalized,
             name,
             ProductType.PUBLIC_FUND,
+            registration_code,
         )
 
     def fetch_quotes(self, product, start_date, end_date) -> list[MarketQuote]:
         _require_product(self.provider, product)
         resolved_product = self.resolve_product(product.code)
-        _name, fund_type = FUND_IDENTITIES[resolved_product.code]
+        _name, fund_type = FUND_IDENTITIES[resolved_product.code][:2]
         form = {
             "_ZVING_METHOD": "fund/loadNetWorth",
             "_ZVING_URL": "%2Fc%2F2022-05-10%2F190157.shtml",

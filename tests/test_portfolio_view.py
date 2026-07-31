@@ -107,7 +107,7 @@ def test_payload_preserves_legacy_profit_rows_without_recalculation(portfolio_fi
 
 
 def test_payload_keeps_overview_fields_and_cash_value_is_shares(portfolio_fixture):
-    payload = build_portfolio_payload(portfolio_fixture)
+    payload = build_portfolio_payload(portfolio_fixture, as_of=date(2026, 7, 30))
     cash = next(row for row in payload["products"] if row["code"] == "NYRR000007")
 
     assert cash["shares"] == "100.4475"

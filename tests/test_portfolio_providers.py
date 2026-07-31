@@ -588,6 +588,7 @@ def test_changsheng_resolves_only_exact_fund_identities(code, name):
         code,
         name,
         ProductType.PUBLIC_FUND,
+        registration_code=code,
     )
 
 

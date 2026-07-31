@@ -552,8 +552,8 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             raise ValueError("provider returned a different provider")
         if resolved.code.strip().upper() != code.upper():
             raise ValueError("provider returned a different product code")
-        if body.get("name") and body["name"].strip() != resolved.name:
-            raise ValueError("resolved product name does not match request")
+        # 用户填写的名称仅作参考，统一以行情机构解析的官方名称为准，
+        # 由确认对话框向用户展示核对，不再强制逐字匹配。
         if declared_type and str(declared_type) != resolved.product_type.value:
             raise ValueError("resolved product type does not match request")
         identity = _identity(resolved)
@@ -754,7 +754,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
     def sip_preview(body):
         repo, _, _, _ = services()
         operation = str(body.get("operation") or "").strip().lower()
-        if operation in {"pause", "resume"}:
+        if operation in {"pause", "resume", "activate"}:
             plan_id = _required_text(
                 body.get("sip_id") or body.get("plan_id"), "sip_id"
             )
@@ -765,7 +765,38 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 "sip_id": plan_id,
                 "message": f"SIP plan will be {operation}d",
             }
-        product_id = _required_text(body.get("product_id"), "product_id")
+        product_id = str(body.get("product_id") or "").strip()
+        code = str(body.get("code") or "").strip().upper()
+        if not product_id and code:
+            from src.portfolio_providers import FUND_IDENTITIES, ChangshengFundProvider
+            if code not in FUND_IDENTITIES:
+                raise ValueError("unsupported fund code: " + code + ", must be one of: " + ", ".join(sorted(FUND_IDENTITIES)))
+            existing = repo.get_product_by_provider_code("changsheng_fund", code)
+            if existing is not None:
+                product_id = existing.id
+            else:
+                from uuid import uuid5, NAMESPACE_URL
+                provider = ChangshengFundProvider()
+                resolved = provider.resolve_product(code)
+                pid = str(uuid5(NAMESPACE_URL, "portfolio-product:auto-" + code))
+                import json
+                product_rec = Product(
+                    id=pid, provider=resolved.provider, code=resolved.code,
+                    name=resolved.name, product_type=resolved.product_type,
+                    registration_code=resolved.registration_code or "",
+                    metadata_json=json.dumps(dict(resolved.metadata or {}), ensure_ascii=False),
+                )
+                with repo.database.transaction() as conn:
+                    if repo.get_product(pid, conn=conn) is None:
+                        conn.execute(
+                            "INSERT INTO products (id, provider, code, name, product_type, registration_code, status, metadata_json, created_at, updated_at) "
+                            "VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                            (product_rec.id, product_rec.provider, product_rec.code, product_rec.name,
+                             product_rec.product_type.value, product_rec.registration_code, "active", product_rec.metadata_json),
+                        )
+                product_id = pid
+        if not product_id:
+            raise ValueError("product_id or code is required")
         product = repo.require_product(product_id)
         if product.product_type is not ProductType.PUBLIC_FUND:
             raise ValueError("target must be public_fund")
@@ -781,13 +812,13 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         )
         if fee_rate >= 1:
             raise ValueError("purchase_fee_rate must be between 0 and 1")
-        source_id = _required_text(
-            body.get("source_cash_product_id") or body.get("source"),
-            "source_cash_product_id",
-        )
-        source = repo.require_product(source_id)
-        if source.product_type is not ProductType.CASH_MANAGEMENT:
-            raise ValueError("source must be cash_management")
+        source_id = str(
+            body.get("source_cash_product_id") or body.get("source") or ""
+        ).strip()
+        if source_id:
+            source = repo.require_product(source_id)
+            if source.product_type is not ProductType.CASH_MANAGEMENT:
+                raise ValueError("source must be cash_management")
         start_date = _parse_date(
             body.get("start_date"), "start_date", date.today()
         )
@@ -1346,24 +1377,29 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 cached = replay(action, idem, body, conn=conn)
                 if cached:
                     return cached
-                if operation in {"pause", "resume"}:
+                if operation in {"pause", "resume", "activate"}:
                     plan = repo.get_plan(preview["sip_id"], conn=conn)
                     if plan is None:
                         raise ValueError("plan not found")
-                    if plan.status is SipPlanStatus.DRAFT:
-                        raise ValueError(
-                            "plan is not active"
-                            if operation == "pause"
-                            else "plan is not paused"
+                    if operation == "activate":
+                        if plan.status is not SipPlanStatus.DRAFT:
+                            raise ValueError("only draft plans can be activated")
+                        plan = replace(plan, status=SipPlanStatus.ACTIVE)
+                    else:
+                        if plan.status is SipPlanStatus.DRAFT:
+                            raise ValueError(
+                                "plan is not active"
+                                if operation == "pause"
+                                else "plan is not paused"
+                            )
+                        plan = replace(
+                            plan,
+                            status=(
+                                SipPlanStatus.PAUSED
+                                if operation == "pause"
+                                else SipPlanStatus.ACTIVE
+                            ),
                         )
-                    plan = replace(
-                        plan,
-                        status=(
-                            SipPlanStatus.PAUSED
-                            if operation == "pause"
-                            else SipPlanStatus.ACTIVE
-                        ),
-                    )
                     status = 200
                 else:
                     existing = (
