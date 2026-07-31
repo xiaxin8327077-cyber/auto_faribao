@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import json
 from uuid import NAMESPACE_URL, uuid4, uuid5
