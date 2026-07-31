@@ -292,6 +292,7 @@
     .transaction-detail b { display: block; margin-top: 2px; color: var(--text); font-size: 11px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
     .transaction-detail.full { grid-column: 1 / -1; }
     dialog.management-dialog { width: min(calc(100% - 24px), 406px); max-height: min(84vh, 680px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: var(--panel); box-shadow: 0 24px 70px rgba(13, 29, 50, .32); }
+    #tradeDialog, #sipDialog { width: min(calc(100% - 24px), 520px); }
     dialog.management-dialog::backdrop { background: rgba(13, 29, 50, .44); }
     .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
     .dialog-head h2 { font-size: 19px; }
@@ -303,6 +304,62 @@
     .product-search-status { min-height: 16px; color: var(--muted); font-size: 11px; font-weight: 650; line-height: 1.4; }
     .product-search-status.success { color: #087a4b; }
     .product-search-status.error { color: #b91c1c; }
+    .product-search-control { position: relative; }
+    .product-suggestion-panel {
+      position: absolute;
+      z-index: 80;
+      top: calc(100% + 5px);
+      left: 50%;
+      width: min(460px, calc(100vw - 56px));
+      max-height: 300px;
+      overflow-y: auto;
+      padding: 5px;
+      border: 1px solid #b8cbe3;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 14px 34px rgba(13, 44, 78, .22);
+      transform: translateX(-50%);
+    }
+    .product-suggestion-panel[hidden] { display: none; }
+    .product-suggestion-item {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 94px minmax(0, 1fr);
+      align-items: start;
+      gap: 8px;
+      padding: 9px 10px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+    .product-suggestion-item:hover,
+    .product-suggestion-item.active { background: var(--blue-soft); }
+    .product-suggestion-code {
+      padding-top: 1px;
+      color: #123c6a;
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .product-suggestion-name {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1.45;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .product-suggestion-provider {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 600;
+    }
     .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
     .preview-result { display: grid; gap: 9px; padding: 12px; border-radius: 8px; background: var(--bg); font-size: 13px; line-height: 1.5; }
     .preview-result p { margin: 0; }
@@ -445,7 +502,7 @@
   <dialog class="management-dialog" id="tradeDialog" aria-labelledby="tradeDialogTitle">
     <form id="tradeForm" method="dialog"><header class="dialog-head"><h2 id="tradeDialogTitle">新建交易</h2><button class="icon-button" type="button" data-close-dialog="tradeDialog" aria-label="关闭">×</button></header><div class="dialog-body">
       <label class="form-field">产品类型<select id="tradeProductType" required><option value="wealth_nav">理财</option><option value="cash_management">现金</option><option value="public_fund">公募基金</option></select></label>
-      <label class="form-field">搜索并选择产品<input id="tradeProductQuery" list="tradeProductSuggestions" placeholder="输入产品代码或中文名称" autocomplete="off" required><datalist id="tradeProductSuggestions"></datalist><input name="product_id" id="tradeProduct" type="hidden"><input name="new_fund_code" id="tradeFundCode" type="hidden" disabled><span class="product-search-status" id="tradeProductSearchStatus" aria-live="polite"></span></label>
+      <div class="form-field"><label for="tradeProductQuery">搜索并选择产品</label><div class="product-search-control"><input id="tradeProductQuery" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="tradeProductSuggestions" placeholder="输入产品代码或中文名称" autocomplete="off" required><div class="product-suggestion-panel" id="tradeProductSuggestions" role="listbox" hidden></div></div><input name="product_id" id="tradeProduct" type="hidden"><input name="new_fund_code" id="tradeFundCode" type="hidden" disabled><span class="product-search-status" id="tradeProductSearchStatus" aria-live="polite"></span></div>
       <label class="form-field">交易类型<select name="transaction_type" id="tradeKind"><option value="purchase">申购</option><option value="redemption">赎回</option></select></label>
       <label class="form-field" id="tradeValueLabel">申购金额（元）<input id="tradeValueInput" name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label>
       <label class="form-field" id="tradeFeeRateField" hidden>申购费率（%）<input name="fee_rate_percent" id="tradeFeeRateInput" type="number" min="0" max="100" step="0.0001" inputmode="decimal" required disabled></label>
@@ -466,7 +523,7 @@
 
   <dialog class="management-dialog" id="sipDialog" aria-labelledby="sipDialogTitle">
     <form id="sipForm" method="dialog"><header class="dialog-head"><h2 id="sipDialogTitle">定投计划</h2><button class="icon-button" type="button" data-close-dialog="sipDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <label class="form-field">搜索并选择公募基金<input id="sipProductQuery" list="sipProductSuggestions" placeholder="输入基金代码或中文名称" autocomplete="off" required><datalist id="sipProductSuggestions"></datalist><input name="product_id" id="sipProduct" type="hidden"><input name="new_fund_code" id="sipFundCode" type="hidden"><span class="product-search-status" id="sipProductSearchStatus" aria-live="polite"></span></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
+      <div class="form-field"><label for="sipProductQuery">搜索并选择公募基金</label><div class="product-search-control"><input id="sipProductQuery" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="sipProductSuggestions" placeholder="输入基金代码或中文名称" autocomplete="off" required><div class="product-suggestion-panel" id="sipProductSuggestions" role="listbox" hidden></div></div><input name="product_id" id="sipProduct" type="hidden"><input name="new_fund_code" id="sipFundCode" type="hidden"><span class="product-search-status" id="sipProductSearchStatus" aria-live="polite"></span></div><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存计划</button></div>
     </div></form>
   </dialog>
@@ -649,6 +706,8 @@
     const productSearchRemoteRows = {trade: [], sip: []};
     const productCandidateSearchTimers = {};
     const productCandidateSearchSequence = {};
+    const productSearchRenderedRows = {trade: [], sip: []};
+    const productSearchActiveIndex = {trade: -1, sip: -1};
     function productSearchRows(productType = '') {
       return portfolioRows('products', []).filter(row => (
         String(rowValue(row, 'status') || 'active') === 'active'
@@ -689,14 +748,116 @@
       ));
       return [...localRows, ...remoteRows];
     }
+    function matchingProductSuggestions(scope, productType) {
+      const query = String(
+        $(PRODUCT_SEARCH_CONTROLS[scope].query).value || ''
+      ).trim().toLowerCase();
+      if (query.length < 2) return [];
+      return productSearchCandidateRows(scope, productType).filter(row => {
+        const code = String(
+          rowValue(row, 'code', 'product_code')
+        ).toLowerCase();
+        const name = String(
+          rowValue(row, 'name', 'product_name')
+        ).toLowerCase();
+        const provider = String(
+          productSearchProviderLabel(row)
+        ).toLowerCase();
+        return (
+          code.includes(query)
+          || name.includes(query)
+          || provider.includes(query)
+          || productSearchText(row).toLowerCase() === query
+        );
+      }).slice(0, 10);
+    }
+    function setProductSuggestionPanelOpen(scope, open) {
+      const controls = PRODUCT_SEARCH_CONTROLS[scope];
+      const panel = $(controls.list);
+      const input = $(controls.query);
+      const visible = Boolean(open && productSearchRenderedRows[scope].length);
+      panel.hidden = !visible;
+      input.setAttribute('aria-expanded', String(visible));
+      if (!visible) {
+        productSearchActiveIndex[scope] = -1;
+        input.removeAttribute('aria-activedescendant');
+      }
+    }
     function renderProductSuggestions(scope, productType) {
       const controls = PRODUCT_SEARCH_CONTROLS[scope];
-      $(controls.list).innerHTML = productSearchCandidateRows(
+      const rows = matchingProductSuggestions(scope, productType);
+      productSearchRenderedRows[scope] = rows;
+      if (productSearchActiveIndex[scope] >= rows.length) {
+        productSearchActiveIndex[scope] = -1;
+      }
+      $(controls.list).innerHTML = rows.map((row, index) => {
+        const provider = productSearchProviderLabel(row);
+        const active = productSearchActiveIndex[scope] === index;
+        return `<button class="product-suggestion-item${active ? ' active' : ''}" id="${scope}ProductSuggestion${index}" type="button" role="option" aria-selected="${active}" data-product-suggestion-index="${index}"><span class="product-suggestion-code">${esc(rowValue(row, 'code', 'product_code'))}</span><span class="product-suggestion-name">${esc(rowValue(row, 'name', 'product_name'))}${provider ? `<span class="product-suggestion-provider">${esc(provider)}</span>` : ''}</span></button>`;
+      }).join('');
+      const input = $(controls.query);
+      if (productSearchActiveIndex[scope] >= 0) {
+        input.setAttribute(
+          'aria-activedescendant',
+          `${scope}ProductSuggestion${productSearchActiveIndex[scope]}`
+        );
+      } else {
+        input.removeAttribute('aria-activedescendant');
+      }
+      setProductSuggestionPanelOpen(
         scope,
-        productType
-      ).map(
-        row => `<option value="${esc(productSearchText(row))}"></option>`
-      ).join('');
+        document.activeElement === input && rows.length > 0
+      );
+    }
+    function showProductSuggestions(scope) {
+      const productType = scope === 'sip'
+        ? 'public_fund'
+        : $('tradeProductType').value;
+      renderProductSuggestions(scope, productType);
+      setProductSuggestionPanelOpen(
+        scope,
+        productSearchRenderedRows[scope].length > 0
+      );
+    }
+    function selectProductSuggestion(scope, index) {
+      const row = productSearchRenderedRows[scope][index];
+      if (!row) return;
+      const controls = PRODUCT_SEARCH_CONTROLS[scope];
+      const input = $(controls.query);
+      const productType = scope === 'sip'
+        ? 'public_fund'
+        : $('tradeProductType').value;
+      input.value = productSearchText(row);
+      setProductSuggestionPanelOpen(scope, false);
+      syncProductSearch(scope, productType, true);
+      if (productType === 'public_fund') {
+        schedulePublicFundSearch(scope, 0);
+      }
+    }
+    function handleProductSearchKeydown(scope, event) {
+      const rows = productSearchRenderedRows[scope];
+      if (!rows.length) return;
+      if (event.key === 'Escape') {
+        setProductSuggestionPanelOpen(scope, false);
+        return;
+      }
+      if (!['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) return;
+      if (event.key === 'Enter') {
+        const index = productSearchActiveIndex[scope];
+        if (index < 0 || $(PRODUCT_SEARCH_CONTROLS[scope].list).hidden) return;
+        event.preventDefault();
+        selectProductSuggestion(scope, index);
+        return;
+      }
+      event.preventDefault();
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      const current = productSearchActiveIndex[scope];
+      productSearchActiveIndex[scope] = current < 0
+        ? (direction > 0 ? 0 : rows.length - 1)
+        : (current + direction + rows.length) % rows.length;
+      showProductSuggestions(scope);
+      $(`${scope}ProductSuggestion${productSearchActiveIndex[scope]}`)
+        ?.scrollIntoView({block: 'nearest'});
     }
     function fillProductSearch(scope, productType) {
       const controls = PRODUCT_SEARCH_CONTROLS[scope];
@@ -708,6 +869,7 @@
       delete input.dataset.resolvedProductType;
       delete input.dataset.resolvedProductText;
       renderProductSuggestions(scope, productType);
+      setProductSuggestionPanelOpen(scope, false);
       syncProductSearch(scope, productType);
     }
     function setProductSearchStatus(scope, message = '', tone = '') {
@@ -1827,6 +1989,7 @@
     });
     $('tradeProductQuery').addEventListener('input', () => {
       syncProductSearch('trade', $('tradeProductType').value);
+      showProductSuggestions('trade');
       scheduleProductCandidateSearch('trade');
       if ($('tradeProductType').value === 'public_fund') {
         schedulePublicFundSearch('trade');
@@ -1841,6 +2004,7 @@
     });
     $('sipProductQuery').addEventListener('input', () => {
       syncProductSearch('sip', 'public_fund');
+      showProductSuggestions('sip');
       scheduleProductCandidateSearch('sip');
       schedulePublicFundSearch('sip');
     });
@@ -1849,6 +2013,30 @@
       scheduleProductCandidateSearch('sip', 0);
       schedulePublicFundSearch('sip', 0);
     });
+    for (const scope of ['trade', 'sip']) {
+      const controls = PRODUCT_SEARCH_CONTROLS[scope];
+      const input = $(controls.query);
+      const panel = $(controls.list);
+      input.addEventListener('focus', () => showProductSuggestions(scope));
+      input.addEventListener(
+        'keydown',
+        event => handleProductSearchKeydown(scope, event)
+      );
+      input.addEventListener('blur', () => {
+        setTimeout(() => setProductSuggestionPanelOpen(scope, false), 120);
+      });
+      panel.addEventListener('mousedown', event => event.preventDefault());
+      panel.addEventListener('click', event => {
+        const option = event.target.closest(
+          '[data-product-suggestion-index]'
+        );
+        if (!option) return;
+        selectProductSuggestion(
+          scope,
+          Number(option.dataset.productSuggestionIndex)
+        );
+      });
+    }
     $('cumulativeProfitTrigger').addEventListener('click', openDailyProfits);
     $('dailyProfitClose').addEventListener('click', closeDailyProfits);
     document.querySelectorAll('[data-profit-view]').forEach(tab => {

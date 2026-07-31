@@ -186,9 +186,9 @@ def test_products_are_added_inline_from_trade_or_sip_dialog_only():
 def test_trade_and_sip_use_one_searchable_product_field():
     html = _read_page()
 
-    assert 'id="tradeProductQuery" list="tradeProductSuggestions"' in html
+    assert 'id="tradeProductQuery" role="combobox"' in html
     assert 'id="tradeProductSuggestions"' in html
-    assert 'id="sipProductQuery" list="sipProductSuggestions"' in html
+    assert 'id="sipProductQuery" role="combobox"' in html
     assert 'id="sipProductSuggestions"' in html
     assert '<select name="product_id" id="tradeProduct">' not in html
     assert '<select name="product_id" id="sipProduct">' not in html
@@ -228,6 +228,20 @@ def test_partial_code_and_chinese_name_search_external_product_candidates():
     assert "productSearchRemoteRows[scope]" in html
     assert "scheduleProductCandidateSearch('trade')" in html
     assert "scheduleProductCandidateSearch('sip')" in html
+
+
+def test_product_candidates_use_wide_custom_panel_with_full_names():
+    html = _read_page()
+
+    assert 'class="product-suggestion-panel"' in html
+    assert 'role="listbox"' in html
+    assert "width: min(460px, calc(100vw - 56px))" in html
+    assert ".product-suggestion-name" in html
+    assert "white-space: normal" in html
+    assert "font-size: 12px" in html
+    assert "function selectProductSuggestion(scope, index)" in html
+    assert "data-product-suggestion-index" in html
+    assert "function handleProductSearchKeydown(scope, event)" in html
 
 
 def test_product_create_preserves_preview_identity_for_submit():
