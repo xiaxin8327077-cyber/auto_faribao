@@ -14,6 +14,7 @@ from src.portfolio_models import (
 )
 from src.portfolio_positions import PositionProjector
 from src.portfolio_repository import PortfolioRepository
+from src.portfolio_transactions import PortfolioTransactionService
 from src.portfolio_view import build_portfolio_payload
 
 
@@ -229,3 +230,81 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
     assert profit_on_sip_confirmation == "10"
     assert profit_on_redemption_confirmation == "15"
     assert profit_after_redemption == "13"
+
+
+def test_profit_calibration_sets_baseline_then_future_nav_profit_continues(
+    tmp_path,
+):
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    projector = PositionProjector(repository)
+    service = PortfolioTransactionService(repository, projector)
+    repository.add_product(
+        Product(
+            "fund",
+            "changsheng_fund",
+            "003103",
+            "公募基金",
+            ProductType.PUBLIC_FUND,
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="opening:fund",
+            product_id="fund",
+            transaction_type=TransactionType.OPENING_POSITION,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 29),
+            confirmation_date=date(2026, 7, 29),
+            idempotency_key="opening:fund",
+            amount=Decimal("100"),
+            shares=Decimal("100"),
+        )
+    )
+    for quote_date, nav in (
+        (date(2026, 7, 29), "1"),
+        (date(2026, 7, 30), "1.1"),
+    ):
+        repository.upsert_quote(
+            "fund",
+            MarketQuote(
+                "003103",
+                quote_date,
+                "official",
+                f"fund:{quote_date}",
+                unit_nav=Decimal(nav),
+            ),
+            "2026-07-30T18:00:00+08:00",
+        )
+    projector.rebuild()
+
+    service.adjust_holding_profit(
+        "fund",
+        Decimal("25"),
+        date(2026, 7, 30),
+        "平台累计收益校准",
+        "web:profit-baseline",
+    )
+    calibrated = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 7, 30),
+    )["products"][0]
+    repository.upsert_quote(
+        "fund",
+        MarketQuote(
+            "003103",
+            date(2026, 7, 31),
+            "official",
+            "fund:2026-07-31",
+            unit_nav=Decimal("1.2"),
+        ),
+        "2026-07-31T18:00:00+08:00",
+    )
+    advanced = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 7, 31),
+    )["products"][0]
+
+    assert calibrated["holding_profit"] == "25"
+    assert advanced["holding_profit"] == "35"

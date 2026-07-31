@@ -96,7 +96,10 @@ class PositionProjector:
                 continue
             if transaction.status not in _APPLIED_STATUSES:
                 continue
-            if transaction.transaction_type is TransactionType.CASH_DIVIDEND:
+            if transaction.transaction_type in {
+                TransactionType.CASH_DIVIDEND,
+                TransactionType.PROFIT_ADJUSTMENT,
+            }:
                 continue
 
             share_delta = (

@@ -382,7 +382,6 @@
           <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="pending">待确认</button>
           <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="confirmed">已确认</button>
           <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="cancelled">已取消</button>
-          <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="reversed">已冲正</button>
         </div>
         <div class="manage-list" id="transactionsList"><div class="empty">暂无交易记录</div></div>
       </section>
@@ -441,7 +440,6 @@
   <dialog class="management-dialog" id="confirmDialog" aria-labelledby="confirmDialogTitle">
     <header class="dialog-head"><h2 id="confirmDialogTitle">确认提交</h2><button class="icon-button" type="button" data-close-dialog="confirmDialog" aria-label="关闭">×</button></header><div class="dialog-body">
       <div class="preview-result" id="confirmPreview">正在生成预览...</div><div class="confirm-status" id="confirmStatus" role="status"></div>
-      <div id="reverseReasonField" hidden><label class="form-field">冲正原因<textarea id="reverseReason" name="reason" required maxlength="300"></textarea></label></div>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="confirmDialog">返回</button><button class="action-button" id="confirmSubmitButton" type="button">确认提交</button></div>
     </div>
   </dialog>
@@ -455,7 +453,7 @@
 
   <dialog class="management-dialog" id="adjustmentDialog" aria-labelledby="adjustmentDialogTitle">
     <form id="adjustmentForm" method="dialog"><header class="dialog-head"><h2 id="adjustmentDialogTitle">校准持仓</h2><button class="icon-button" type="button" data-close-dialog="adjustmentDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <input name="product_id" id="adjustmentProductId" type="hidden"><label class="form-field">调整后份额<input name="shares" type="number" min="0" step="0.0001" required inputmode="decimal"></label><label class="form-field">说明<textarea name="note" maxlength="300"></textarea></label>
+      <input name="product_id" id="adjustmentProductId" type="hidden"><label class="form-field">调整后持仓份额<input name="shares" type="number" min="0" step="0.0001" required inputmode="decimal"></label><label class="form-field">平台累计持有收益（元）<input name="profit" type="number" step="0.01" required inputmode="decimal"></label><label class="form-field">校准日期<input name="effective_date" type="date" required></label><label class="form-field">说明<textarea name="note" maxlength="300" required></textarea></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="adjustmentDialog">取消</button><button class="action-button" type="submit">预览</button></div>
     </div></form>
   </dialog>
@@ -505,6 +503,13 @@
       writeEnabled: false,
     };
     let transactionFilter = 'all';
+    const INTERNAL_TRANSACTION_TYPES = new Set([
+      'opening_position',
+      'cash_transfer_in',
+      'cash_transfer_out',
+      'income_accrual',
+      'reversal',
+    ]);
     const profitViewMeta = {
       daily: {tab: 'dailyProfitTab', periodLabel: '净值日期', amountLabel: '当日收益', countLabel: '个收益日'},
       monthly: {tab: 'monthlyProfitTab', periodLabel: '自然月', amountLabel: '月度收益', countLabel: '个月'},
@@ -619,12 +624,14 @@
           const nav = rowValue(row, 'unit_nav', 'latest_nav', 'nav');
           const holding = rowValue(row, 'market_value', 'value', 'holding_value');
           const shares = rowValue(row, 'shares', 'share');
+          const holdingProfit = rowValue(row, 'holding_profit', 'cumulative_profit');
           const cashYield = rowValue(row, 'per_10k_yield', 'per_ten_thousand_yield');
           const sevenDay = rowValue(row, 'seven_day_yield', 'seven_day_annualized_yield');
           const navStat = group === 'cash_management'
             ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDay || '--')}</b></div>`
             : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div><div class="manage-stat"><span>持有份额</span><b>${esc(shares || '--')}</b></div>`;
-          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid">${navStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-view-product="${esc(id)}">查看</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
+          const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
+          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid">${navStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">查看</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
         }).join('')}</section>`;
       }).join('') || '<div class="empty">暂无可展示的分类持仓。</div>';
     }
@@ -649,6 +656,7 @@
         cash_transfer_out: '资金转出',
         income_accrual: '收益入账',
         holding_adjustment: '持仓校准',
+        profit_adjustment: '收益校准',
         cash_dividend: '现金分红',
         reversal: '交易冲正',
       })[String(value || '').toLowerCase()] || '其他交易';
@@ -662,7 +670,11 @@
       return items.length ? `<div class="manage-grid">${items.join('')}</div>` : '<div class="manage-meta">金额和份额将在确认后生成</div>';
     }
     function renderTransactions() {
-      const rows = portfolioRows('transactions');
+      const rows = portfolioRows('transactions').filter(row => (
+        !INTERNAL_TRANSACTION_TYPES.has(
+          String(rowValue(row, 'transaction_type', 'type')).toLowerCase()
+        )
+      ));
       const visible = transactionFilter === 'all' ? rows : rows.filter(row => normalStatus(rowValue(row, 'status')) === transactionFilter);
       $('transactionsList').innerHTML = visible.length ? visible.map(row => {
         const id = rowValue(row, 'id', 'transaction_id');
@@ -676,7 +688,7 @@
         const incomeStart = rowValue(row, 'income_start_date');
         const incomeStop = rowValue(row, 'income_stop_date');
         const note = rowValue(row, 'note');
-        const actions = status === 'pending' ? `<button class="row-action" type="button" data-write-operation="cancel" data-transaction-id="${esc(id)}">取消</button>` : status === 'confirmed' ? `<button class="row-action" type="button" data-write-operation="reverse" data-transaction-id="${esc(id)}">冲正</button>` : '';
+        const actions = status === 'pending' ? `<button class="row-action" type="button" data-write-operation="cancel" data-transaction-id="${esc(id)}">取消</button>` : '';
         const submittedLine = tradeTime ? `提交时间：${esc(String(tradeTime).replace('T', ' ').slice(0, 16))}<br>` : '';
         const confirmationLine = confirmationDate ? `确认日期：${esc(confirmationDate)}` : `预计确认：${esc(expectedConfirmationDate || '等待行情')}`;
         const incomeLine = incomeStart ? `收益起算：确认份额后（${esc(incomeStart)}）` : incomeStop ? `收益停止：确认赎回后（${esc(incomeStop)}）` : '';
@@ -986,6 +998,9 @@
         'actual_shares': '校准后份额',
         'current_shares': '当前份额',
         'difference': '份额差额',
+        'actual_profit': '校准后累计持有收益（元）',
+        'current_profit': '当前累计持有收益（元）',
+        'profit_difference': '收益校准差额（元）',
         'effective_date': '生效日期',
         'reason': '操作原因',
         'product.provider': '产品渠道',
@@ -1094,7 +1109,6 @@
         state.pendingAction = {submitPath, payload: submitPayload, idempotencyKey, originDialog, previewIdentity, previewFingerprint};
         $('confirmPreview').innerHTML = previewHtml(preview);
         $('confirmStatus').textContent = '';
-        $('reverseReasonField').hidden = true;
         $('confirmSubmitButton').textContent = '确认提交';
         closeDialog(originDialog);
         dialogOpen('confirmDialog');
@@ -1118,21 +1132,6 @@
     async function submitPendingAction() {
       const action = state.pendingAction;
       if (!action || !state.writeEnabled) return;
-      if (action.type === 'reverse-reason') {
-        const reason = $('reverseReason').value.trim();
-        if (!reason) {
-          $('confirmStatus').textContent = '请填写非空的冲正原因。';
-          $('reverseReason').focus();
-          return;
-        }
-        await previewAction({
-          previewPath: '/api/portfolio/transactions/preview',
-          submitPath: '/api/portfolio/transactions',
-          payload: {operation: 'reverse', transaction_id: action.transactionId, reason},
-          originDialog: 'confirmDialog',
-        });
-        return;
-      }
       const button = $('confirmSubmitButton');
       button.disabled = true;
       $('confirmStatus').textContent = '正在提交...';
@@ -1191,20 +1190,16 @@
     }
     function openAdjustment(productId) {
       if (!state.writeEnabled) return;
-      $('adjustmentForm').reset();
+      const form = $('adjustmentForm');
+      const product = portfolioRows('positions', portfolioRows('products', [])).find(
+        row => String(rowValue(row, 'product_id', 'id', 'code')) === String(productId)
+      );
+      form.reset();
       $('adjustmentProductId').value = productId;
+      form.elements.shares.value = rowValue(product, 'shares', 'share') || '0';
+      form.elements.profit.value = rowValue(product, 'holding_profit', 'cumulative_profit') || '0';
+      form.elements.effective_date.value = new Date().toLocaleDateString('en-CA');
       dialogOpen('adjustmentDialog');
-    }
-    function openReverse(transactionId) {
-      if (!state.writeEnabled) return;
-      state.pendingAction = {type: 'reverse-reason', transactionId};
-      $('confirmPreview').innerHTML = '<p>冲正会创建反向流水，请先填写原因再预览影响。</p>';
-      $('confirmStatus').textContent = '';
-      $('reverseReason').value = '';
-      $('reverseReasonField').hidden = false;
-      $('confirmSubmitButton').textContent = '预览冲正';
-      dialogOpen('confirmDialog');
-      $('reverseReason').focus();
     }
     async function simpleOperation(operation, id) {
       if (!state.writeEnabled) return;
@@ -1246,7 +1241,17 @@
       if (operation === 'trade') openTrade(control.dataset.productId);
       if (operation === 'adjust') openAdjustment(control.dataset.productId);
       if (operation === 'cancel') simpleOperation(operation, control.dataset.transactionId);
-      if (operation === 'reverse') openReverse(control.dataset.transactionId);
+      if (operation === 'delete-holding') previewAction({
+        previewPath: '/api/portfolio/positions/adjustments/preview',
+        submitPath: '/api/portfolio/positions/adjustments',
+        payload: {
+          product_id: control.dataset.productId,
+          shares: '0',
+          effective_date: new Date().toLocaleDateString('en-CA'),
+          note: '删除持仓',
+        },
+        originDialog: 'confirmDialog',
+      });
       if (operation === 'sip-edit') openSip(control.dataset.sipId);
       if (operation === 'sip-activate' || operation === 'sip-pause' || operation === 'sip-resume') simpleOperation(operation, control.dataset.sipId);
       if (operation === 'disable-product') previewAction({

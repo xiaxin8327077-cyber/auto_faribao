@@ -991,3 +991,27 @@ def test_mobile_compatibility_preview_and_adjustment_routes_are_not_404(client):
             json=body,
         )
         assert response.status_code != 404
+
+
+def test_position_adjustment_accepts_shares_and_cumulative_profit(api_setup):
+    client, _, repository, _ = api_setup
+
+    response = client.post(
+        "/api/portfolio/positions/adjustments",
+        headers=write_headers(idem="adjust-shares-profit"),
+        json={
+            "product_id": "cash",
+            "shares": "900",
+            "profit": "12.34",
+            "effective_date": "2026-07-30",
+            "note": "平台校准",
+        },
+    )
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["preview"]["actual_profit"] == "12.34"
+    assert payload["profit_transaction"]["transaction_type"] == (
+        "profit_adjustment"
+    )
+    assert repository.get_position("cash").total_shares == Decimal("900")

@@ -416,6 +416,28 @@ class PortfolioRepository:
             row = conn.execute(query, params).fetchone()
         return self._quote_from_row(row) if row else None
 
+    def list_quotes(
+        self,
+        product_id: str,
+        on_or_before: date | None = None,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[MarketQuote]:
+        query = (
+            f"SELECT {_QUOTE_COLUMNS} FROM quotes q "
+            "JOIN products p ON p.id = q.product_id WHERE q.product_id = ?"
+        )
+        params: tuple[str, ...] = (product_id,)
+        if on_or_before is not None:
+            query += " AND q.quote_date <= ?"
+            params += (on_or_before.isoformat(),)
+        query += " ORDER BY q.quote_date"
+        if conn is None:
+            with self.database.connection() as owned:
+                rows = owned.execute(query, params).fetchall()
+        else:
+            rows = conn.execute(query, params).fetchall()
+        return [self._quote_from_row(row) for row in rows]
+
     def save_plan(
         self,
         plan: SipPlan,

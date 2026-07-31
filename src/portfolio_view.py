@@ -10,12 +10,14 @@ from src.portfolio_models import (
 )
 from src.portfolio_confirmation import confirmation_schedule
 from src.portfolio_positions import PositionProjector
+from src.portfolio_profit import calculate_holding_profit
 
 
 _ZERO = Decimal("0")
 _LEDGER_PROFIT_TYPES = {
     TransactionType.INCOME_ACCRUAL,
     TransactionType.CASH_DIVIDEND,
+    TransactionType.PROFIT_ADJUSTMENT,
 }
 
 
@@ -58,6 +60,11 @@ def _product_row(repository, product, as_of):
     quote_payload = _quote_payload(product.product_type, quote)
     market_value = _market_value(product.product_type, position.total_shares, quote)
     latest_profit = _latest_product_profit(repository, product, as_of)
+    holding_profit = calculate_holding_profit(
+        repository,
+        product,
+        as_of,
+    )
     row = {
         "id": product.id,
         "product_id": product.id,
@@ -76,6 +83,8 @@ def _product_row(repository, product, as_of):
         "cost_basis": decimal_text(position.cost_basis),
         "market_value": _optional_decimal_text(market_value),
         "latest_profit": _optional_decimal_text(latest_profit),
+        "holding_profit": decimal_text(holding_profit),
+        "cumulative_profit": decimal_text(holding_profit),
         "quote_status": "ready" if market_value is not None else "pending",
         "quote": quote_payload,
     }

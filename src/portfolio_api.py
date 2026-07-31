@@ -32,6 +32,7 @@ from src.portfolio_models import (
     decimal_text,
 )
 from src.portfolio_positions import PositionProjector
+from src.portfolio_profit import calculate_holding_profit
 from src.portfolio_sip import SipService
 from src.portfolio_transactions import PortfolioTransactionService
 
@@ -966,7 +967,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         product_id = product_id or _required_text(
             body.get("product_id"), "product_id"
         )
-        repo.require_product(product_id)
+        product = repo.require_product(product_id)
         actual = _decimal(
             body.get("actual_shares", body.get("shares")),
             "actual_shares",
@@ -979,7 +980,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         reason = _required_text(
             body.get("reason") or body.get("note"), "reason"
         )
-        return {
+        preview = {
             "product_id": product_id,
             "actual_shares": decimal_text(actual),
             "current_shares": decimal_text(current.total_shares),
@@ -988,6 +989,24 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             "reason": reason,
             "message": "holding will be calibrated to the confirmed share count",
         }
+        profit_value = body.get("actual_profit", body.get("profit"))
+        if profit_value not in (None, ""):
+            actual_profit = _decimal(profit_value, "actual_profit")
+            current_profit = calculate_holding_profit(
+                repo,
+                product,
+                effective,
+            )
+            preview.update(
+                {
+                    "actual_profit": decimal_text(actual_profit),
+                    "current_profit": decimal_text(current_profit),
+                    "profit_difference": decimal_text(
+                        actual_profit - current_profit
+                    ),
+                }
+            )
+        return preview
 
     @blueprint.get("/api/portfolio")
     def portfolio():
@@ -1393,12 +1412,30 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 preview["actual_shares"],
                 _parse_date(preview["effective_date"], "effective_date"),
                 preview["reason"],
-                idem,
+                (
+                    f"{idem}:shares"
+                    if "actual_profit" in preview
+                    else idem
+                ),
             )
             payload = {
                 "transaction": _json_value(transaction),
                 "preview": preview,
             }
+            if "actual_profit" in preview:
+                profit_transaction = service.adjust_holding_profit(
+                    preview["product_id"],
+                    preview["actual_profit"],
+                    _parse_date(
+                        preview["effective_date"],
+                        "effective_date",
+                    ),
+                    preview["reason"],
+                    f"{idem}:profit",
+                )
+                payload["profit_transaction"] = _json_value(
+                    profit_transaction
+                )
             remember(action, idem, body, payload, 200)
             return jsonify(payload)
         except ValueError as exc:

@@ -62,14 +62,11 @@ def test_preview_and_submit_share_one_idempotency_key_from_the_first_request():
     ) in html
 
 
-def test_reverse_collects_a_nonempty_reason_before_preview():
+def test_reverse_operation_is_not_exposed_in_the_dashboard():
     html = _read_page()
-    assert 'id="reverseReasonField"' in html
-    assert 'id="reverseReason"' in html
-    assert "function openReverse(transactionId)" in html
-    assert "if (!reason)" in html
-    assert "payload: {operation: 'reverse', transaction_id: action.transactionId, reason}" in html
-    assert "if (operation === 'reverse') openReverse(control.dataset.transactionId);" in html
+    assert 'id="reverseReasonField"' not in html
+    assert 'data-write-operation="reverse"' not in html
+    assert "function openReverse(transactionId)" not in html
 
 
 def test_sip_save_is_draft_and_activation_is_an_explicit_operation():
@@ -141,6 +138,10 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert "manual_redemption: '手工赎回'" in page
     assert "opening_position: '初始持仓'" in page
     assert "function previewFieldLabel(path)" in page
+    assert "'normalized_input.amount': '申购金额（元）'" in page
+    assert "'status_prediction': '预计状态'" in page
+    assert "The trade will remain pending until a quote arrives." in page
+    assert "等待交易日净值后自动确认" in page
 
 
 def test_positions_panel_uses_positive_position_rows_not_all_products():
@@ -148,10 +149,28 @@ def test_positions_panel_uses_positive_position_rows_not_all_products():
 
     assert "const rows = positions;" in page
     assert "const rows = products.map" not in page
-    assert "'normalized_input.amount': '申购金额（元）'" in page
-    assert "'status_prediction': '预计状态'" in page
-    assert "The trade will remain pending until a quote arrives." in page
-    assert "等待交易日净值后自动确认" in page
+
+
+def test_holding_controls_support_delete_and_profit_calibration_without_reversal():
+    page = PAGE_PATH.read_text(encoding="utf-8")
+
+    assert 'name="profit"' in page
+    assert 'data-write-operation="delete-holding"' in page
+    assert 'data-write-operation="reverse"' not in page
+
+
+def test_transaction_list_hides_internal_ledger_rows():
+    page = PAGE_PATH.read_text(encoding="utf-8")
+
+    assert "INTERNAL_TRANSACTION_TYPES" in page
+    for transaction_type in (
+        "opening_position",
+        "cash_transfer_in",
+        "cash_transfer_out",
+        "income_accrual",
+        "reversal",
+    ):
+        assert transaction_type in page
 
 
 def test_top_metrics_unchanged():

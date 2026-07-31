@@ -174,6 +174,31 @@ def test_holding_adjustment_records_only_the_difference(services):
     assert projector.calculate("cash").total_shares == Decimal("998.50")
 
 
+def test_holding_profit_adjustment_records_only_the_difference(services):
+    repository, transactions, _projector = services
+    seed_cash(repository, "cash", "1000")
+
+    first = transactions.adjust_holding_profit(
+        "cash",
+        Decimal("12.34"),
+        TRADE_DATE,
+        "平台累计收益校准",
+        "web:adjust-profit",
+    )
+    retried = transactions.adjust_holding_profit(
+        "cash",
+        Decimal("12.34"),
+        TRADE_DATE,
+        "平台累计收益校准",
+        "web:adjust-profit",
+    )
+
+    assert retried == first
+    assert first.transaction_type is TransactionType.PROFIT_ADJUSTMENT
+    assert first.amount == Decimal("12.34")
+    assert first.shares == Decimal("0")
+
+
 def test_cancel_pending_is_idempotent_and_audited_once(services):
     repository, transactions, _ = services
     seed_product(repository, "fund", ProductType.PUBLIC_FUND)
