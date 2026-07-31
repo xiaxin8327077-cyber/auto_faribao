@@ -1848,6 +1848,13 @@ class PortfolioTransactionService:
         return parsed.isoformat(timespec="seconds")
 
     @staticmethod
+    def _parse_trade_time(self, trade_time: str, trade_date: date) -> datetime:
+        """兼容两种 trade_time 格式: HH:MM:SS 和 YYYY-MM-DDTHH:MM:SS"""
+        if trade_time and 'T' in trade_time:
+            return datetime.fromisoformat(trade_time)
+        from datetime import time as _time
+        return datetime.combine(trade_date, _time.fromisoformat(trade_time))
+
     def _confirmation_date(
         product,
         transaction_type,
@@ -1859,7 +1866,7 @@ class PortfolioTransactionService:
         return confirmation_schedule(
             product,
             transaction_type,
-            datetime.fromisoformat(trade_time),
+            self._parse_trade_time(trade_time, trade_date),
         ).confirmation_date
 
     def _create_linked_pair(self, primary, linked, conn):
