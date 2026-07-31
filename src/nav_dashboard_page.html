@@ -1154,6 +1154,12 @@
       const pos = positions.find(p => rowValue(p, 'product_id', 'id', 'code') === productId);
       if (!pos) return false;
       if (Number(rowValue(pos, 'total_shares', 'shares')) > 0) return false;
+      // 有 pending 交易的产品不隐藏(在途申购/赎回)
+      const hasPending = transactions.some(t =>
+        rowValue(t, 'product_id') === productId &&
+        normalStatus(rowValue(t, 'status')) === 'pending'
+      );
+      if (hasPending) return false;
       // 找到该产品的最近一笔已确认赎回的 settlement_date
       const txns = transactions.filter(t =>
         rowValue(t, 'product_id') === productId &&
