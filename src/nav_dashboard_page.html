@@ -440,6 +440,7 @@
       <label class="form-field">交易类型<select name="transaction_type" id="tradeKind"><option value="purchase">申购</option><option value="redemption">赎回</option></select></label>
       <label class="form-field" id="tradeValueLabel">申购金额（元）<input id="tradeValueInput" name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label>
       <label class="form-field" id="tradeFeeRateField" hidden>申购费率（%）<input name="fee_rate_percent" id="tradeFeeRateInput" type="number" min="0" max="100" step="0.0001" inputmode="decimal" required disabled></label>
+      <label class="form-field" id="tradeSourceField">申购资金来源<select name="source_cash_product_id" id="tradeSource"><option value="">钱包</option></select></label>
       <label class="form-field" id="tradeDestinationField" hidden>赎回到账<select name="destination_cash_product_id" id="tradeDestination" disabled><option value="">钱包</option></select></label>
       <label class="form-field" id="tradeTimeLabel">申购时间<input id="tradeTimeInput" name="trade_time" type="datetime-local" required></label>
       <label class="form-field">备注<textarea name="note" maxlength="300"></textarea></label>
@@ -511,9 +512,19 @@
     let refreshPollTimer = null;
     let transientRefreshError = '';
     let transientRefreshErrorUntil = 0;
+    const MANAGEMENT_TABS = ['overview', 'positions', 'transactions', 'sip'];
+    const ACTIVE_TAB_STORAGE_KEY = 'nav-dashboard-active-tab';
+    function readStoredActiveTab() {
+      try {
+        const tab = sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+        return MANAGEMENT_TABS.includes(tab) ? tab : 'overview';
+      } catch (_error) {
+        return 'overview';
+      }
+    }
     const state = {
       data: null,
-      activeTab: "overview",
+      activeTab: readStoredActiveTab(),
       pendingAction: null,
       writeEnabled: false,
     };
@@ -590,8 +601,13 @@
       updateWriteControls();
     }
     function setActiveTab(tab) {
-      if (!['overview', 'positions', 'transactions', 'sip'].includes(tab)) return;
+      if (!MANAGEMENT_TABS.includes(tab)) return;
       state.activeTab = tab;
+      try {
+        sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tab);
+      } catch (_error) {
+        // 隐私模式禁用存储时，当前页面内仍保持页签状态。
+      }
       document.querySelectorAll('[data-tab]').forEach(button => {
         const selected = button.dataset.tab === tab;
         button.setAttribute('aria-selected', String(selected));
@@ -633,18 +649,19 @@
         select.appendChild(opt);
       });
     }
-    function fillTradeDestination() {
-      const select = $('tradeDestination');
+    function fillTradeCashOptions() {
       const cashProducts = portfolioRows('products', []).filter(product => (
         String(rowValue(product, 'product_type', 'type')).toLowerCase() === 'cash_management'
         && String(rowValue(product, 'status') || 'active') === 'active'
       ));
-      select.innerHTML = '<option value="">钱包</option>';
-      cashProducts.forEach(product => {
-        const option = document.createElement('option');
-        option.value = rowValue(product, 'id', 'product_id');
-        option.textContent = rowValue(product, 'name', 'product_name', 'code') || '钱包Plus';
-        select.appendChild(option);
+      [$('tradeSource'), $('tradeDestination')].forEach(select => {
+        select.innerHTML = '<option value="">钱包</option>';
+        cashProducts.forEach(product => {
+          const option = document.createElement('option');
+          option.value = rowValue(product, 'id', 'product_id');
+          option.textContent = rowValue(product, 'name', 'product_name', 'code') || '钱包Plus';
+          select.appendChild(option);
+        });
       });
     }
     function renderPositions() {
@@ -799,6 +816,7 @@
       renderTransactions();
       renderSip();
       updateWriteControls();
+      setActiveTab(state.activeTab);
     }
     function setAccessState(valid) {
       $('accessError').style.display = valid ? 'none' : 'block';
@@ -1255,7 +1273,7 @@
       ) || 'wealth_nav';
       updateTradeProductType();
       $('tradeProduct').value = productId;
-      fillTradeDestination();
+      fillTradeCashOptions();
       const now = new Date();
       $('tradeTimeInput').value = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
       updateTradeValueField();
@@ -1276,12 +1294,14 @@
       const input = $('tradeValueInput');
       const label = $('tradeValueLabel');
       input.name = redemption ? 'shares' : 'amount';
-      input.step = redemption ? '0.0001' : '0.01';
-      input.min = redemption ? '0.0001' : '0.01';
+      input.step = '0.01';
+      input.min = '0.01';
       label.firstChild.textContent = redemption ? '赎回份额' : '申购金额（元）';
       $('tradeTimeLabel').firstChild.textContent = redemption ? '赎回时间' : '申购时间';
       $('tradeFeeRateField').hidden = !(publicFund && !redemption);
       $('tradeFeeRateInput').disabled = !(publicFund && !redemption);
+      $('tradeSourceField').hidden = redemption;
+      $('tradeSource').disabled = redemption;
       $('tradeDestinationField').hidden = !redemption;
       $('tradeDestination').disabled = !redemption;
     }
@@ -1530,6 +1550,7 @@
       if (event.key === 'Escape') closeDailyProfits();
     });
     window.addEventListener('hashchange', () => location.reload());
+    setActiveTab(state.activeTab);
     updateWriteControls();
     loadDashboard();
     setInterval(updateRefreshControls, 1000);

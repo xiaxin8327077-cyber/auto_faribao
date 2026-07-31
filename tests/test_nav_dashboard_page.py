@@ -19,6 +19,16 @@ def test_page_has_four_management_tabs_and_quick_trade():
         assert f'id="{element_id}"' in html
 
 
+def test_active_management_tab_survives_page_and_data_refresh():
+    html = _read_page()
+
+    assert "const ACTIVE_TAB_STORAGE_KEY = 'nav-dashboard-active-tab';" in html
+    assert "function readStoredActiveTab()" in html
+    assert "activeTab: readStoredActiveTab()," in html
+    assert "sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tab);" in html
+    assert "setActiveTab(state.activeTab);" in html
+
+
 def test_write_fetch_uses_private_token_idempotency_and_custom_header():
     html = _read_page()
     assert '"X-Nav-Dashboard-Key": token' in html
@@ -227,7 +237,8 @@ def test_trade_form_switches_between_purchase_amount_and_redemption_shares():
     assert 'id="tradeValueInput"' in page
     assert 'name="trade_time"' in page
     assert "input.name = redemption ? 'shares' : 'amount';" in page
-    assert "input.min = redemption ? '0.0001' : '0.01';" in page
+    assert "input.step = '0.01';" in page
+    assert "input.min = '0.01';" in page
     assert "label.firstChild.textContent = redemption ? '赎回份额' : '申购金额（元）';" in page
     assert "$('tradeTimeLabel').firstChild.textContent = redemption ? '赎回时间' : '申购时间';" in page
 
@@ -239,12 +250,16 @@ def test_trade_form_filters_products_and_shows_type_specific_fields():
     assert 'id="tradeFundCodeField"' in page
     assert 'id="tradeFeeRateField"' in page
     assert 'name="fee_rate_percent"' in page
+    assert 'id="tradeSourceField"' in page
+    assert 'name="source_cash_product_id"' in page
     assert 'id="tradeDestinationField"' in page
     assert 'name="destination_cash_product_id"' in page
     assert '<option value="">钱包</option>' in page
     assert "productOptions('tradeProduct', productType);" in page
     assert "$('tradeFundCodeField').hidden = !publicFund;" in page
     assert "$('tradeFeeRateField').hidden = !(publicFund && !redemption);" in page
+    assert "$('tradeSourceField').hidden = redemption;" in page
+    assert "$('tradeSource').disabled = redemption;" in page
     assert "$('tradeDestinationField').hidden = !redemption;" in page
     assert "payload.fee_rate = String(number(payload.fee_rate_percent) / 100);" in page
     assert "delete payload.fee_rate_percent;" in page
