@@ -21,6 +21,57 @@ _FUND_CASH_PROFIT_TYPES = {
     TransactionType.PROFIT_ADJUSTMENT,
     TransactionType.LATEST_PROFIT_ADJUSTMENT,
 }
+_NAV_PURCHASE_TYPES = {
+    TransactionType.OPENING_POSITION,
+    TransactionType.MANUAL_PURCHASE,
+    TransactionType.SIP_PURCHASE,
+}
+
+
+def _nav_earning_shares(
+    repository,
+    product_id,
+    previous_quote_date,
+    current_quote_date,
+    conn=None,
+):
+    projector = PositionProjector(repository)
+    opening_position = projector._calculate(
+        product_id,
+        conn=conn,
+        as_of=previous_quote_date,
+        use_confirmation_date=True,
+    )
+    confirmed_from_previous_nav = sum(
+        (
+            transaction.shares or ZERO
+            for transaction in repository.list_transactions(
+                product_id=product_id,
+                conn=conn,
+            )
+            if (
+                transaction.status is TransactionStatus.CONFIRMED
+                and transaction.transaction_type in _NAV_PURCHASE_TYPES
+                and transaction.trade_date <= previous_quote_date
+                and previous_quote_date
+                < (transaction.confirmation_date or transaction.trade_date)
+                <= current_quote_date
+            )
+        ),
+        ZERO,
+    )
+    current_position = projector._calculate(
+        product_id,
+        conn=conn,
+        as_of=current_quote_date,
+        use_confirmation_date=True,
+    )
+    return max(
+        ZERO,
+        opening_position.total_shares
+        + confirmed_from_previous_nav
+        - current_position.locked_shares,
+    )
 
 
 def calculate_holding_profit(
@@ -67,23 +118,13 @@ def calculate_holding_profit(
         )
         if quote.unit_nav is not None
     ]
-    projector = PositionProjector(repository)
     for previous, current in zip(quotes, quotes[1:]):
-        opening_position = projector._calculate(
+        shares = _nav_earning_shares(
+            repository,
             product.id,
+            previous.quote_date,
+            current.quote_date,
             conn=conn,
-            as_of=current.quote_date - timedelta(days=1),
-            use_confirmation_date=True,
-        )
-        current_position = projector._calculate(
-            product.id,
-            conn=conn,
-            as_of=current.quote_date,
-            use_confirmation_date=True,
-        )
-        shares = max(
-            ZERO,
-            opening_position.total_shares - current_position.locked_shares,
         )
         profit += shares * (current.unit_nav - previous.unit_nav)
     return profit
@@ -141,22 +182,12 @@ def calculate_latest_profit(repository, product, as_of: date, conn=None):
     )
     if previous is None or previous.unit_nav is None:
         return latest.quote_date, None
-    projector = PositionProjector(repository)
-    opening_position = projector._calculate(
+    shares = _nav_earning_shares(
+        repository,
         product.id,
+        previous.quote_date,
+        latest.quote_date,
         conn=conn,
-        as_of=latest.quote_date - timedelta(days=1),
-        use_confirmation_date=True,
-    )
-    current_position = projector._calculate(
-        product.id,
-        conn=conn,
-        as_of=latest.quote_date,
-        use_confirmation_date=True,
-    )
-    shares = max(
-        ZERO,
-        opening_position.total_shares - current_position.locked_shares,
     )
     adjustment = sum(
         (

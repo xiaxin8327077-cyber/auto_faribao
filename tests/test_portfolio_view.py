@@ -458,6 +458,17 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
             amount=Decimal("20"),
             shares=Decimal("20"),
         ),
+        Transaction(
+            id="same-day-purchase",
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 8, 4),
+            confirmation_date=date(2026, 8, 4),
+            idempotency_key="same-day-purchase",
+            amount=Decimal("13"),
+            shares=Decimal("10"),
+        ),
     ):
         repository.create_transaction(transaction)
     for quote_date, nav in (
@@ -492,8 +503,8 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
         repository, as_of=date(2026, 8, 4)
     )["products"][0]["latest_profit"]
 
-    assert profit_on_sip_confirmation == "10"
-    assert sip_confirmation_payload["products"][0]["holding_profit"] == "10"
+    assert profit_on_sip_confirmation == "15"
+    assert sip_confirmation_payload["products"][0]["holding_profit"] == "15"
     assert profit_on_redemption_confirmation == "15"
     assert profit_after_redemption == "13"
 
@@ -513,7 +524,7 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
         as_of=date(2026, 8, 4),
     )["products"][0]
     assert calibrated["latest_profit"] == "7.5"
-    assert calibrated["holding_profit"] == "32.5"
+    assert calibrated["holding_profit"] == "37.5"
 
 
 def test_profit_calibration_sets_baseline_then_future_nav_profit_continues(
