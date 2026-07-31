@@ -70,7 +70,7 @@ def calculate_holding_profit(
         shares = projector._calculate(
             product.id,
             conn=conn,
-            as_of=previous.quote_date,
+            as_of=current.quote_date,
             use_confirmation_date=True,
         ).total_shares
         profit += shares * (current.unit_nav - previous.unit_nav)
