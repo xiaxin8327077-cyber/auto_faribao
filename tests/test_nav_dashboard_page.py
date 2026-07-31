@@ -209,6 +209,11 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert "String(rowValue(row, 'created_by')) !== 'wallet_migration'" in page
     assert "申购资金来源：" in page
     assert "赎回到账：" in page
+    assert ".transaction-summary.single { grid-template-columns: minmax(0, 1fr); }" in page
+    assert ".transaction-details { display: grid;" in page
+    assert 'class="manage-card transaction-card"' in page
+    assert 'class="transaction-head-actions"' in page
+    assert "function transactionDetailsHtml(" in page
 
 
 def test_positions_panel_uses_positive_position_rows_not_all_products():

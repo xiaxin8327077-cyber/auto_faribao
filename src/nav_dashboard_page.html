@@ -270,6 +270,19 @@
     .transaction-filters { display: flex; overflow-x: auto; gap: 7px; margin-top: 12px; padding-bottom: 2px; scrollbar-width: none; }
     .transaction-filter { flex: 0 0 auto; min-height: 31px; padding: 0 10px; border: 1px solid var(--line); border-radius: 15px; background: var(--panel); color: var(--muted); font-size: 12px; font-weight: 750; cursor: pointer; }
     .transaction-filter[aria-pressed="true"] { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); }
+    .transaction-card { padding: 12px 13px; }
+    .transaction-card .manage-card-head { align-items: center; }
+    .transaction-head-actions { display: flex; flex: 0 0 auto; align-items: center; }
+    .transaction-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+    .transaction-summary.single { grid-template-columns: minmax(0, 1fr); }
+    .transaction-metric { min-width: 0; padding: 9px 10px; border-radius: 7px; background: var(--bg); }
+    .transaction-metric span { display: block; color: var(--muted); font-size: 10px; }
+    .transaction-metric b { display: block; margin-top: 3px; overflow: hidden; font-size: 14px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+    .transaction-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+    .transaction-detail { min-width: 0; }
+    .transaction-detail span { display: block; color: var(--muted); font-size: 10px; line-height: 1.3; }
+    .transaction-detail b { display: block; margin-top: 2px; color: var(--text); font-size: 11px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+    .transaction-detail.full { grid-column: 1 / -1; }
     dialog.management-dialog { width: min(calc(100% - 24px), 406px); max-height: min(84vh, 680px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: var(--panel); box-shadow: 0 24px 70px rgba(13, 29, 50, .32); }
     dialog.management-dialog::backdrop { background: rgba(13, 29, 50, .44); }
     .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
@@ -688,9 +701,40 @@
       const amount = rowValue(row, 'amount');
       const shares = rowValue(row, 'shares');
       const items = [];
-      if (amount !== '') items.push(`<div class="manage-stat"><span>交易金额</span><b>${esc(money(amount))} 元</b></div>`);
-      if (shares !== '') items.push(`<div class="manage-stat"><span>交易份额</span><b>${esc(number(shares).toLocaleString('zh-CN', {maximumFractionDigits: 4}))} 份</b></div>`);
-      return items.length ? `<div class="manage-grid">${items.join('')}</div>` : '<div class="manage-meta">金额和份额将在确认后生成</div>';
+      if (amount !== '') items.push(`<div class="transaction-metric"><span>交易金额</span><b>${esc(money(amount))} 元</b></div>`);
+      if (shares !== '') items.push(`<div class="transaction-metric"><span>交易份额</span><b>${esc(number(shares).toLocaleString('zh-CN', {maximumFractionDigits: 4}))} 份</b></div>`);
+      return items.length
+        ? `<div class="transaction-summary${items.length === 1 ? ' single' : ''}">${items.join('')}</div>`
+        : '<div class="manage-meta">金额和份额将在确认后生成</div>';
+    }
+    function transactionDetailsHtml(row, normalizedTransactionType) {
+      const details = [];
+      const tradeTime = rowValue(row, 'trade_time');
+      const effectiveTradeDate = rowValue(row, 'effective_trade_date', 'trade_date');
+      const confirmationDate = rowValue(row, 'confirmation_date');
+      const expectedConfirmationDate = rowValue(row, 'expected_confirmation_date');
+      const incomeStart = rowValue(row, 'income_start_date');
+      const incomeStop = rowValue(row, 'income_stop_date');
+      const note = rowValue(row, 'note');
+      const add = (label, value, full = false) => {
+        if (value === '') return;
+        details.push(`<div class="transaction-detail${full ? ' full' : ''}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`);
+      };
+      if (tradeTime) add('提交时间', String(tradeTime).replace('T', ' ').slice(0, 16));
+      add('有效交易日', effectiveTradeDate || '--');
+      add(
+        confirmationDate ? '确认日期' : '预计确认',
+        confirmationDate || expectedConfirmationDate || '等待行情'
+      );
+      if (incomeStart) add('收益起算', `确认份额后（${incomeStart}）`);
+      if (incomeStop) add('收益停止', `确认赎回后（${incomeStop}）`);
+      if (['manual_purchase', 'sip_purchase'].includes(normalizedTransactionType)) {
+        add('申购资金来源：', rowValue(row, 'funding_source') || '钱包');
+      } else if (normalizedTransactionType === 'manual_redemption') {
+        add('赎回到账：', rowValue(row, 'redemption_destination') || '钱包');
+      }
+      if (note) add('备注', note, true);
+      return `<div class="transaction-details">${details.join('')}</div>`;
     }
     function renderTransactions() {
       const rows = portfolioRows('transactions').filter(row => (
@@ -706,23 +750,8 @@
         const title = rowValue(row, 'product_name', 'name', 'product_id') || '交易';
         const transactionType = rowValue(row, 'transaction_type', 'type');
         const normalizedTransactionType = String(transactionType || '').toLowerCase();
-        const confirmationDate = rowValue(row, 'confirmation_date');
-        const expectedConfirmationDate = rowValue(row, 'expected_confirmation_date');
-        const tradeTime = rowValue(row, 'trade_time');
-        const effectiveTradeDate = rowValue(row, 'effective_trade_date', 'trade_date');
-        const incomeStart = rowValue(row, 'income_start_date');
-        const incomeStop = rowValue(row, 'income_stop_date');
-        const note = rowValue(row, 'note');
         const actions = status === 'pending' ? `<button class="row-action" type="button" data-write-operation="cancel" data-transaction-id="${esc(id)}">取消</button>` : '';
-        const submittedLine = tradeTime ? `提交时间：${esc(String(tradeTime).replace('T', ' ').slice(0, 16))}<br>` : '';
-        const confirmationLine = confirmationDate ? `确认日期：${esc(confirmationDate)}` : `预计确认：${esc(expectedConfirmationDate || '等待行情')}`;
-        const incomeLine = incomeStart ? `收益起算：确认份额后（${esc(incomeStart)}）` : incomeStop ? `收益停止：确认赎回后（${esc(incomeStop)}）` : '';
-        const routeLine = ['manual_purchase', 'sip_purchase'].includes(normalizedTransactionType)
-          ? `申购资金来源：${esc(rowValue(row, 'funding_source') || '钱包')}`
-          : normalizedTransactionType === 'manual_redemption'
-            ? `赎回到账：${esc(rowValue(row, 'redemption_destination') || '钱包')}`
-            : '';
-        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="manage-meta">${esc(transactionTypeLabel(transactionType))} · ${transactionStatusLabel(status)}</div></div></div>${transactionValueHtml(row)}<div class="manage-meta">${submittedLine}有效交易日：${esc(effectiveTradeDate || '--')} · ${confirmationLine}${incomeLine ? `<br>${incomeLine}` : ''}${routeLine ? `<br>${routeLine}` : ''}${note ? `<br>备注：${esc(note)}` : ''}</div>${actions ? `<div class="row-actions">${actions}</div>` : ''}</article>`;
+        return `<article class="manage-card transaction-card"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="manage-meta">${esc(transactionTypeLabel(transactionType))} · ${transactionStatusLabel(status)}</div></div><div class="transaction-head-actions">${actions}</div></div>${transactionValueHtml(row)}${transactionDetailsHtml(row, normalizedTransactionType)}</article>`;
       }).join('') : '<div class="empty">当前筛选条件下暂无交易记录。</div>';
       updateWriteControls();
     }
