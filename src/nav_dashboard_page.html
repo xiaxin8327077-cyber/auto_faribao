@@ -1239,7 +1239,14 @@
         if (value === '') return;
         details.push(`<div class="transaction-detail${full ? ' full' : ''}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`);
       };
-      if (tradeTime) add('提交时间', String(tradeTime).replace('T', ' ').slice(0, 16));
+      if (tradeTime) {
+        let displayTime = String(tradeTime).replace('T', ' ').slice(0, 19);
+        if (displayTime.length <= 8) {
+          // HH:MM:SS 格式，拼接有效交易日
+          displayTime = (effectiveTradeDate ? effectiveTradeDate + ' ' : '') + displayTime;
+        }
+        add('提交时间', displayTime);
+      }
       add('有效交易日', effectiveTradeDate || '--');
       add(
         confirmationDate ? '确认日期' : '预计确认',
