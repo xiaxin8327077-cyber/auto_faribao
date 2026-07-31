@@ -155,6 +155,51 @@ def test_read_routes_require_private_token_and_return_json(client):
         assert key in response.get_json()
 
 
+def test_product_search_returns_external_candidates_for_partial_input(
+    api_setup,
+):
+    client, _, _, provider = api_setup
+    provider.search_products = lambda query, limit=10: [
+        MarketProduct(
+            provider="eastmoney_fund",
+            code="002112",
+            name=f"{query}匹配基金",
+            product_type=ProductType.PUBLIC_FUND,
+            registration_code="002112",
+        )
+    ][:limit]
+
+    response = client.get(
+        "/api/portfolio/products/search",
+        headers={"X-Nav-Dashboard-Key": "secret"},
+        query_string={"q": "0211", "product_type": "public_fund"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "candidates": [
+            {
+                "provider": "eastmoney_fund",
+                "code": "002112",
+                "name": "0211匹配基金",
+                "product_type": "public_fund",
+                "registration_code": "002112",
+            }
+        ]
+    }
+
+
+def test_product_search_requires_at_least_two_characters(client):
+    response = client.get(
+        "/api/portfolio/products/search",
+        headers={"X-Nav-Dashboard-Key": "secret"},
+        query_string={"q": "0", "product_type": "public_fund"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["message"] == "请至少输入2个字符"
+
+
 def test_unexpected_api_failure_still_returns_uniform_json(
     api_setup, monkeypatch
 ):

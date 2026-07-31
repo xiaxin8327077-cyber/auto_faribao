@@ -218,6 +218,18 @@ def test_unknown_six_digit_fund_code_resolves_name_before_submit():
     assert "fundSearchPreviewCache.get(code) || await requestJson(" in html
 
 
+def test_partial_code_and_chinese_name_search_external_product_candidates():
+    html = _read_page()
+
+    assert "'/api/portfolio/products/search'" in html
+    assert "function scheduleProductCandidateSearch(scope" in html
+    assert "async function searchProductCandidates(scope)" in html
+    assert "query.length < 2" in html
+    assert "productSearchRemoteRows[scope]" in html
+    assert "scheduleProductCandidateSearch('trade')" in html
+    assert "scheduleProductCandidateSearch('sip')" in html
+
+
 def test_product_create_preserves_preview_identity_for_submit():
     html = _read_page()
     # 单弹窗添加基金时，仍将预览返回的完整身份带入产品提交。

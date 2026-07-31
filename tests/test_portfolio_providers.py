@@ -74,6 +74,179 @@ def test_verified_cash_products_resolve_to_cash_management():
     )
 
 
+def test_eastmoney_searches_public_funds_by_partial_code_or_name():
+    requests = []
+
+    def opener(request, timeout):
+        requests.append((request.full_url, timeout))
+        return {
+            "Datas": [
+                {
+                    "CODE": "002112",
+                    "CATEGORY": 700,
+                    "NAME": "德邦鑫星价值灵活配置混合C",
+                    "FundBaseInfo": {
+                        "SHORTNAME": "德邦鑫星价值灵活配置混合C",
+                        "JJGS": "德邦基金",
+                        "FTYPE": "混合型",
+                    },
+                },
+                {
+                    "CODE": "021100",
+                    "CATEGORY": 700,
+                    "NAME": "博时中证红利ETF发起式联接C",
+                    "FundBaseInfo": {
+                        "SHORTNAME": "博时中证红利ETF发起式联接C",
+                    },
+                },
+                {
+                    "CODE": "IGNORED",
+                    "CATEGORY": 100,
+                    "FundBaseInfo": {"SHORTNAME": "非公募基金"},
+                },
+            ]
+        }
+
+    candidates = EastmoneyFundProvider(opener=opener).search_products(
+        "0211", limit=10
+    )
+
+    assert [item.code for item in candidates] == ["002112", "021100"]
+    assert candidates[0].name == "德邦鑫星价值灵活配置混合C"
+    assert candidates[0].product_type is ProductType.PUBLIC_FUND
+    assert "key=0211" in requests[0][0]
+
+
+def test_citic_searches_only_net_value_wealth_products():
+    class FakeCiticClient:
+        def get_json(self, path, params):
+            assert path.endswith("/search")
+            assert params == {"key": "慧盈象"}
+            return {
+                "code": "0000",
+                "data": [
+                    {
+                        "prodCode": "AF233276B",
+                        "prodNameShort": "慧盈象固收增强一年持有期5号B",
+                        "profitType": "0",
+                        "productType": "2",
+                    },
+                    {
+                        "prodCode": "AM264381F",
+                        "prodNameShort": "日盈象天天利618号-F",
+                        "profitType": "2",
+                        "productType": "4",
+                        "tenThousandIncomeAmt": "0.4",
+                    },
+                ],
+            }
+
+    candidates = CiticPortfolioProvider(FakeCiticClient()).search_products(
+        "慧盈象", limit=10
+    )
+
+    assert [item.code for item in candidates] == ["AF233276B"]
+    assert candidates[0].product_type is ProductType.WEALTH_NAV
+
+
+def test_nanyin_searches_public_net_value_products_by_keyword():
+    class FakeNanyinClient:
+        def post_encrypted_json(self, path, payload):
+            assert path.endswith(
+                "queryProductList.portlet&"
+                "TopModuelId=e7db4f2628cb40548f6101d71695ada2"
+            )
+            assert payload["name"] == "鑫逸稳"
+            assert payload["productTypes"] == ["2", "3", "4", "5"]
+            return {
+                "aaData": [
+                    {
+                        "salesCode": "NYXY001275",
+                        "name": "南银理财鑫逸稳半年194期-L份额",
+                        "financingRegisterCode": "Z7003226000229",
+                    }
+                ]
+            }
+
+    candidates = NanyinPortfolioProvider(FakeNanyinClient()).search_products(
+        "鑫逸稳", limit=10
+    )
+
+    assert [item.code for item in candidates] == ["NYXY001275"]
+    assert candidates[0].name == "南银理财鑫逸稳半年194期-L份额"
+    assert candidates[0].product_type is ProductType.WEALTH_NAV
+
+
+def test_citic_resolves_selected_net_value_wealth_with_verified_detail():
+    class FakeCiticClient:
+        def get_json(self, path, params):
+            if path.endswith("/getTAProductNav"):
+                return {
+                    "code": "0000",
+                    "data": {
+                        "productNavPic": [
+                            {
+                                "prodCode": "AF233276B",
+                                "navDate": "2026-07-30",
+                                "nav": "1.0776",
+                                "totalNav": "1.0776",
+                            }
+                        ]
+                    },
+                }
+            assert path.endswith("/getTAProductDetail")
+            assert params == {"prodCode": "AF233276B", "prodType": 2}
+            return {
+                "code": "0000",
+                "data": {
+                    "prodCode": "AF233276B",
+                    "prodNameShort": "慧盈象固收增强一年持有期5号B",
+                    "registCode": "Z7002623000809",
+                    "productType": "2",
+                },
+            }
+
+    product = CiticPortfolioProvider(FakeCiticClient()).resolve_product(
+        "AF233276B"
+    )
+
+    assert product == MarketProduct(
+        "citic_wealth",
+        "AF233276B",
+        "慧盈象固收增强一年持有期5号B",
+        ProductType.WEALTH_NAV,
+        "Z7002623000809",
+    )
+
+
+def test_nanyin_resolves_selected_net_value_wealth_from_official_detail():
+    class FakeNanyinClient:
+        def post_encrypted_json(self, path, payload):
+            assert path.endswith(
+                "queryProductDetail.portlet&"
+                "TopModuelId=e7db4f2628cb40548f6101d71695ada2"
+            )
+            assert payload == {"productCode": "NYXY001275"}
+            return {
+                "salesCode": "NYXY001275",
+                "title": "南银理财鑫逸稳半年194期-L份额",
+                "financingRegisterCode": "Z7003226000229",
+                "productTemplateType": "1303",
+            }
+
+    product = NanyinPortfolioProvider(FakeNanyinClient()).resolve_product(
+        "NYXY001275"
+    )
+
+    assert product == MarketProduct(
+        "nanyin_wealth",
+        "NYXY001275",
+        "南银理财鑫逸稳半年194期-L份额",
+        ProductType.WEALTH_NAV,
+        "Z7003226000229",
+    )
+
+
 def test_nanyin_wealth_nav_fields_preserve_legacy_meaning():
     provider = NanyinPortfolioProvider(client=None)
     product = MarketProduct(

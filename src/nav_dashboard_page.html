@@ -486,6 +486,7 @@
   <script>
     const API_PATH = '/api/nav-dashboard';
     const REFRESH_PATH = '/api/nav-dashboard/refresh';
+    const PRODUCT_SEARCH_PATH = '/api/portfolio/products/search';
     const hashKey = decodeURIComponent(location.hash.slice(1));
     const token = hashKey;
     const accessKey = token;
@@ -645,6 +646,9 @@
     const fundSearchPreviewCache = new Map();
     const fundSearchTimers = {};
     const fundSearchSequence = {};
+    const productSearchRemoteRows = {trade: [], sip: []};
+    const productCandidateSearchTimers = {};
+    const productCandidateSearchSequence = {};
     function productSearchRows(productType = '') {
       return portfolioRows('products', []).filter(row => (
         String(rowValue(row, 'status') || 'active') === 'active'
@@ -660,6 +664,7 @@
         nanyin_wealth: '南银理财',
         citic_wealth: '信银理财',
         changsheng_fund: '长盛基金',
+        eastmoney_fund: '公募基金',
       })[provider] || rowValue(row, 'provider') || '';
     }
     function productSearchText(row) {
@@ -669,12 +674,40 @@
       const identity = [code, name].filter(Boolean).join(' ');
       return provider ? `${identity}（${provider}）` : identity;
     }
-    function fillProductSearch(scope, productType) {
+    function productSearchCandidateRows(scope, productType) {
+      const localRows = productSearchRows(productType);
+      const localKeys = new Set(localRows.map(row => (
+        `${String(rowValue(row, 'provider')).toLowerCase()}:`
+        + String(rowValue(row, 'code', 'product_code')).toUpperCase()
+      )));
+      const remoteRows = (productSearchRemoteRows[scope] || []).filter(row => (
+        String(rowValue(row, 'product_type', 'type')) === productType
+        && !localKeys.has(
+          `${String(rowValue(row, 'provider')).toLowerCase()}:`
+          + String(rowValue(row, 'code', 'product_code')).toUpperCase()
+        )
+      ));
+      return [...localRows, ...remoteRows];
+    }
+    function renderProductSuggestions(scope, productType) {
       const controls = PRODUCT_SEARCH_CONTROLS[scope];
-      const rows = productSearchRows(productType);
-      $(controls.list).innerHTML = rows.map(
+      $(controls.list).innerHTML = productSearchCandidateRows(
+        scope,
+        productType
+      ).map(
         row => `<option value="${esc(productSearchText(row))}"></option>`
       ).join('');
+    }
+    function fillProductSearch(scope, productType) {
+      const controls = PRODUCT_SEARCH_CONTROLS[scope];
+      productSearchRemoteRows[scope] = [];
+      const input = $(controls.query);
+      delete input.dataset.resolvedProductCode;
+      delete input.dataset.resolvedProductName;
+      delete input.dataset.resolvedProductProvider;
+      delete input.dataset.resolvedProductType;
+      delete input.dataset.resolvedProductText;
+      renderProductSuggestions(scope, productType);
       syncProductSearch(scope, productType);
     }
     function setProductSearchStatus(scope, message = '', tone = '') {
@@ -686,6 +719,21 @@
       const controls = PRODUCT_SEARCH_CONTROLS[scope];
       const input = $(controls.query);
       const rawQuery = String(input.value || '').trim();
+      let resolvedProductCode = input.dataset.resolvedProductCode || '';
+      let resolvedProductText = input.dataset.resolvedProductText || '';
+      if (
+        resolvedProductCode
+        && rawQuery !== resolvedProductCode
+        && rawQuery !== resolvedProductText
+      ) {
+        delete input.dataset.resolvedProductCode;
+        delete input.dataset.resolvedProductName;
+        delete input.dataset.resolvedProductProvider;
+        delete input.dataset.resolvedProductType;
+        delete input.dataset.resolvedProductText;
+        resolvedProductCode = '';
+        resolvedProductText = '';
+      }
       let resolvedCode = input.dataset.resolvedFundCode || '';
       let resolvedText = input.dataset.resolvedFundText || '';
       if (
@@ -700,7 +748,7 @@
         resolvedText = '';
       }
       const query = rawQuery.toLowerCase();
-      const rows = productSearchRows(productType);
+      const rows = productSearchCandidateRows(scope, productType);
       const exact = rows.find(row => {
         const id = String(rowValue(row, 'id', 'product_id') || '').toLowerCase();
         const code = String(rowValue(row, 'code', 'product_code') || '').toLowerCase();
@@ -714,15 +762,41 @@
         const provider = String(productSearchProviderLabel(row)).toLowerCase();
         return code.includes(query) || name.includes(query) || provider.includes(query);
       }) : [];
-      const product = exact || (matches.length === 1 ? matches[0] : null);
-      $(controls.product).value = product
-        ? rowValue(product, 'id', 'product_id', 'code')
+      const product = exact || (complete && matches.length === 1 ? matches[0] : null);
+      const remoteProduct = product?._remote ? product : null;
+      $(controls.product).value = product && !remoteProduct
+        ? rowValue(product, 'id', 'product_id')
         : '';
+      if (remoteProduct) {
+        const display = productSearchText(remoteProduct);
+        input.dataset.resolvedProductCode = rowValue(
+          remoteProduct,
+          'code',
+          'product_code'
+        );
+        input.dataset.resolvedProductName = rowValue(
+          remoteProduct,
+          'name',
+          'product_name'
+        );
+        input.dataset.resolvedProductProvider = rowValue(
+          remoteProduct,
+          'provider'
+        );
+        input.dataset.resolvedProductType = productType;
+        input.dataset.resolvedProductText = display;
+        resolvedProductCode = input.dataset.resolvedProductCode;
+        resolvedProductText = display;
+      }
       const typedFundCode = /^\d{6}$/.test(rawQuery) ? rawQuery : '';
       const newFundCode = (
-        !product
+        !$(controls.product).value
         && productType === 'public_fund'
-      ) ? (typedFundCode || (rawQuery === resolvedText ? resolvedCode : '')) : '';
+      ) ? (
+        rowValue(remoteProduct, 'code', 'product_code')
+        || typedFundCode
+        || (rawQuery === resolvedText ? resolvedCode : '')
+      ) : '';
       $(controls.fundCode).disabled = productType !== 'public_fund';
       $(controls.fundCode).value = newFundCode;
       if (product && complete) input.value = productSearchText(product);
@@ -740,6 +814,83 @@
         setProductSearchStatus(scope, '请选择候选列表中的已有产品。', 'error');
       }
       return product;
+    }
+    async function searchProductCandidates(scope) {
+      const controls = PRODUCT_SEARCH_CONTROLS[scope];
+      const input = $(controls.query);
+      const query = String(input.value || '').trim();
+      const productType = scope === 'sip'
+        ? 'public_fund'
+        : $('tradeProductType').value;
+      if (!['public_fund', 'wealth_nav'].includes(productType)) return;
+      if (query.length < 2) {
+        productSearchRemoteRows[scope] = [];
+        renderProductSuggestions(scope, productType);
+        return;
+      }
+      const sequence = (productCandidateSearchSequence[scope] || 0) + 1;
+      productCandidateSearchSequence[scope] = sequence;
+      setProductSearchStatus(scope, `正在搜索“${query}”...`);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const params = new URLSearchParams({
+          q: query,
+          product_type: productType,
+        });
+        const response = await api(
+          `${PRODUCT_SEARCH_PATH}?${params}`,
+          {signal: controller.signal}
+        );
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(result.message || result.error || `HTTP ${response.status}`);
+        }
+        if (
+          sequence !== productCandidateSearchSequence[scope]
+          || String(input.value || '').trim() !== query
+        ) return;
+        productSearchRemoteRows[scope] = (result.candidates || []).map(
+          row => ({...row, _remote: true})
+        );
+        renderProductSuggestions(scope, productType);
+        syncProductSearch(scope, productType);
+        const count = productSearchRemoteRows[scope].length;
+        if (!$(controls.product).value && !input.dataset.resolvedProductCode) {
+          setProductSearchStatus(
+            scope,
+            count ? `找到 ${count} 个候选，请从列表中选择。` : '未找到匹配产品。',
+            count ? '' : 'error'
+          );
+        }
+      } catch (error) {
+        if (sequence !== productCandidateSearchSequence[scope]) return;
+        setProductSearchStatus(
+          scope,
+          error.name === 'AbortError' ? '产品搜索超时，请重试。' : `产品搜索失败：${error.message}`,
+          'error'
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    function scheduleProductCandidateSearch(scope, delay = 350) {
+      clearTimeout(productCandidateSearchTimers[scope]);
+      const query = String(
+        $(PRODUCT_SEARCH_CONTROLS[scope].query).value || ''
+      ).trim();
+      if (query.length < 2) {
+        productSearchRemoteRows[scope] = [];
+        const productType = scope === 'sip'
+          ? 'public_fund'
+          : $('tradeProductType').value;
+        renderProductSuggestions(scope, productType);
+        return;
+      }
+      productCandidateSearchTimers[scope] = setTimeout(
+        () => searchProductCandidates(scope),
+        delay
+      );
     }
     async function resolvePublicFundSearch(scope) {
       const controls = PRODUCT_SEARCH_CONTROLS[scope];
@@ -1566,25 +1717,55 @@
       dialogOpen('adjustmentDialog');
     }
     async function ensureInlineFund(form, payload) {
-      const code = String(payload.new_fund_code || '').trim();
+      const scope = form.id === 'sipForm' ? 'sip' : 'trade';
+      const input = $(PRODUCT_SEARCH_CONTROLS[scope].query);
+      const productType = scope === 'sip'
+        ? 'public_fund'
+        : $('tradeProductType').value;
+      const resolvedCode = String(
+        input.dataset.resolvedProductCode || ''
+      ).trim();
+      const code = String(
+        payload.new_fund_code || resolvedCode
+      ).trim();
+      const provider = String(
+        input.dataset.resolvedProductProvider || ''
+      ).trim();
       delete payload.new_fund_code;
       if (!code) {
-        if (!payload.product_id) throw new Error('请选择已有产品或输入6位基金代码');
+        if (!payload.product_id) {
+          throw new Error('请搜索并选择一个具体产品');
+        }
         return payload;
       }
-      if (!/^\d{6}$/.test(code)) throw new Error('公募基金代码必须为6位数字');
+      if (productType === 'public_fund' && !/^\d{6}$/.test(code)) {
+        throw new Error('公募基金代码必须为6位数字');
+      }
+      if (productType === 'wealth_nav' && !provider) {
+        throw new Error('请从联想候选中选择南银或信银理财产品');
+      }
       const existing = portfolioRows('products', []).find(row => (
-        String(rowValue(row, 'code', 'product_code')) === code
-        && String(rowValue(row, 'product_type', 'type')) === 'public_fund'
+        String(rowValue(row, 'code', 'product_code')).toUpperCase()
+          === code.toUpperCase()
+        && String(rowValue(row, 'product_type', 'type')) === productType
+        && (!provider || String(rowValue(row, 'provider')) === provider)
       ));
       if (existing) {
         payload.product_id = rowValue(existing, 'id', 'product_id');
         return payload;
       }
 
-      const productPayload = {code, product_type: 'public_fund'};
+      const productPayload = {
+        code,
+        product_type: productType,
+        ...(provider ? {provider} : {}),
+      };
       const idempotencyKey = newIdempotencyKey();
-      const previewResult = fundSearchPreviewCache.get(code) || await requestJson(
+      const previewResult = (
+        productType === 'public_fund'
+          ? fundSearchPreviewCache.get(code)
+          : null
+      ) || await requestJson(
           '/api/portfolio/products/preview',
           productPayload,
           idempotencyKey
@@ -1592,7 +1773,7 @@
       const preview = previewResult?.preview || previewResult || {};
       const identity = preview.product;
       if (!identity?.registration_code || !preview.identity_fingerprint) {
-        throw new Error('基金代码校验未返回完整产品身份');
+        throw new Error('产品校验未返回完整身份信息');
       }
       const submitPayload = {
         ...productPayload,
@@ -1612,7 +1793,7 @@
         idempotencyKey
       );
       const product = created?.product;
-      if (!product?.id) throw new Error('基金添加成功但未返回产品编号');
+      if (!product?.id) throw new Error('产品添加成功但未返回产品编号');
       const portfolio = state.data?.portfolio || state.data;
       if (Array.isArray(portfolio?.products)) portfolio.products.push(product);
       payload.product_id = product.id;
@@ -1646,22 +1827,26 @@
     });
     $('tradeProductQuery').addEventListener('input', () => {
       syncProductSearch('trade', $('tradeProductType').value);
+      scheduleProductCandidateSearch('trade');
       if ($('tradeProductType').value === 'public_fund') {
         schedulePublicFundSearch('trade');
       }
     });
     $('tradeProductQuery').addEventListener('change', () => {
       syncProductSearch('trade', $('tradeProductType').value, true);
+      scheduleProductCandidateSearch('trade', 0);
       if ($('tradeProductType').value === 'public_fund') {
         schedulePublicFundSearch('trade', 0);
       }
     });
     $('sipProductQuery').addEventListener('input', () => {
       syncProductSearch('sip', 'public_fund');
+      scheduleProductCandidateSearch('sip');
       schedulePublicFundSearch('sip');
     });
     $('sipProductQuery').addEventListener('change', () => {
       syncProductSearch('sip', 'public_fund', true);
+      scheduleProductCandidateSearch('sip', 0);
       schedulePublicFundSearch('sip', 0);
     });
     $('cumulativeProfitTrigger').addEventListener('click', openDailyProfits);

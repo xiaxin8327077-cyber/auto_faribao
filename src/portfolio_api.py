@@ -1056,6 +1056,62 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             {"products": [_json_value(row) for row in repository().list_products()]}
         )
 
+    @blueprint.get("/api/portfolio/products/search")
+    def search_products():
+        guard = read_guard()
+        if guard:
+            return guard
+        query = str(request.args.get("q") or "").strip()
+        if len(query) < 2:
+            return _error("validation_error", "请至少输入2个字符", 400)
+        if len(query) > 80:
+            return _error("validation_error", "搜索内容不能超过80个字符", 400)
+        product_type = str(
+            request.args.get("product_type") or ""
+        ).strip()
+        providers = {
+            ProductType.PUBLIC_FUND.value: ("eastmoney_fund",),
+            ProductType.WEALTH_NAV.value: (
+                "citic_wealth",
+                "nanyin_wealth",
+            ),
+        }.get(product_type)
+        if not providers:
+            return _error("validation_error", "不支持该产品类型", 400)
+        candidates = []
+        errors = []
+        for provider_name in providers:
+            try:
+                provider = provider_factory(provider_name)
+                search = getattr(provider, "search_products", None)
+                if not callable(search):
+                    raise ProviderError("行情机构暂不支持产品搜索")
+                candidates.extend(search(query, limit=10))
+            except ProviderError as exc:
+                errors.append(str(exc))
+        unique = []
+        seen = set()
+        for candidate in candidates:
+            if (
+                not isinstance(candidate, MarketProduct)
+                or candidate.product_type.value != product_type
+            ):
+                continue
+            key = (candidate.provider, candidate.code.upper())
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(_identity(candidate))
+            if len(unique) >= 10:
+                break
+        if not unique and errors and len(errors) == len(providers):
+            return _error(
+                "provider_error",
+                "；".join(dict.fromkeys(errors)),
+                502,
+            )
+        return jsonify({"candidates": unique})
+
     @blueprint.get("/api/portfolio/transactions")
     def transactions():
         guard = read_guard()

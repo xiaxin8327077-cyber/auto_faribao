@@ -92,6 +92,8 @@ def _open_json_request(request, timeout=10) -> dict:
 
 class CiticPortfolioProvider:
     provider = "citic_wealth"
+    SEARCH_PATH = "/cms.product/api/custom/productInfo/search"
+    DETAIL_PATH = "/cms.product/api/custom/productInfo/getTAProductDetail"
     NAV_PATH = "/cms.product/api/custom/productInfo/getTAProductNav"
 
     def __init__(self, client=None):
@@ -137,39 +139,79 @@ class CiticPortfolioProvider:
             ),
             "",
         )
-        if not income_field or item.get("sevenDaysIncomeRate") in (None, ""):
-            raise ProviderError("无法可靠识别产品类型")
-        try:
-            annualized_rate = _parse_decimal(item.get("sevenDaysIncomeRate"))
-        except Exception as exc:
-            raise ProviderError("无法可靠识别产品类型") from exc
-        if not annualized_rate.is_finite():
-            raise ProviderError("无法可靠识别产品类型")
+        if income_field and item.get("sevenDaysIncomeRate") not in (None, ""):
+            try:
+                annualized_rate = _parse_decimal(
+                    item.get("sevenDaysIncomeRate")
+                )
+            except Exception as exc:
+                raise ProviderError("无法可靠识别产品类型") from exc
+            if not annualized_rate.is_finite():
+                raise ProviderError("无法可靠识别产品类型")
 
-        name = str(
-            item.get("prodNameShort")
-            or item.get("prodName")
-            or item.get("name")
-            or ""
-        ).strip()
-        registration_code = str(
-            item.get("registCode") or item.get("registerCode") or ""
-        ).strip()
-        if not name or not registration_code:
-            raise ProviderError("无法可靠识别产品类型")
-        metadata = (
-            {"income_field": income_field}
-            if income_field != "tenThousandIncomeAmt"
-            else None
-        )
-        product = MarketProduct(
-            self.provider,
-            normalized,
-            name,
-            ProductType.CASH_MANAGEMENT,
-            registration_code,
-            metadata,
-        )
+            name = str(
+                item.get("prodNameShort")
+                or item.get("prodName")
+                or item.get("name")
+                or ""
+            ).strip()
+            registration_code = str(
+                item.get("registCode") or item.get("registerCode") or ""
+            ).strip()
+            if not name or not registration_code:
+                raise ProviderError("无法可靠识别产品类型")
+            metadata = (
+                {"income_field": income_field}
+                if income_field != "tenThousandIncomeAmt"
+                else None
+            )
+            product = MarketProduct(
+                self.provider,
+                normalized,
+                name,
+                ProductType.CASH_MANAGEMENT,
+                registration_code,
+                metadata,
+            )
+        else:
+            try:
+                detail = _unwrap_provider_response(
+                    self.client.get_json(
+                        self.DETAIL_PATH,
+                        {"prodCode": normalized, "prodType": 2},
+                    )
+                )
+            except ProviderError:
+                raise
+            except Exception as exc:
+                raise ProviderError("无法可靠识别产品类型") from exc
+            if not isinstance(detail, dict):
+                raise ProviderError("无法可靠识别产品类型")
+            detail_code = str(detail.get("prodCode") or "").strip().upper()
+            name = str(
+                detail.get("prodNameShort")
+                or detail.get("prodName")
+                or ""
+            ).strip()
+            registration_code = str(
+                detail.get("registCode")
+                or detail.get("registerCode")
+                or ""
+            ).strip()
+            if (
+                detail_code != normalized
+                or str(detail.get("productType") or "") != "2"
+                or not name
+                or not registration_code
+            ):
+                raise ProviderError("无法可靠识别产品类型")
+            product = MarketProduct(
+                self.provider,
+                normalized,
+                name,
+                ProductType.WEALTH_NAV,
+                registration_code,
+            )
         try:
             validate_market_quote(
                 product.product_type,
@@ -178,6 +220,52 @@ class CiticPortfolioProvider:
         except Exception as exc:
             raise ProviderError("无法可靠识别产品类型") from exc
         return product
+
+    def search_products(
+        self, query: str, limit: int = 10
+    ) -> list[MarketProduct]:
+        normalized = _normalize_code(query)
+        data = _unwrap_provider_response(
+            self.client.get_json(self.SEARCH_PATH, {"key": normalized})
+        )
+        items = (
+            data
+            if isinstance(data, list)
+            else _first_list(data, "list", "rows", "records", "data")
+        )
+        products = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            # 信银搜索同时返回现金管理类产品；净值理财仅保留
+            # 普通净值型签名，现金产品由系统规则明确排除。
+            if str(item.get("profitType") or "") != "0":
+                continue
+            code = str(item.get("prodCode") or "").strip().upper()
+            name = str(
+                item.get("prodNameShort")
+                or item.get("prodName")
+                or item.get("name")
+                or ""
+            ).strip()
+            if not code or not name:
+                continue
+            products.append(
+                MarketProduct(
+                    self.provider,
+                    code,
+                    name,
+                    ProductType.WEALTH_NAV,
+                    str(
+                        item.get("registCode")
+                        or item.get("registerCode")
+                        or ""
+                    ).strip(),
+                )
+            )
+            if len(products) >= max(1, min(int(limit), 20)):
+                break
+        return products
 
     def fetch_quotes(self, product, start_date, end_date) -> list[MarketQuote]:
         _require_product(self.provider, product)
@@ -241,7 +329,11 @@ class CiticPortfolioProvider:
 
 class NanyinPortfolioProvider:
     provider = "nanyin_wealth"
+    LIST_PATH = "/eportal/ui?moduleId=5&portal.url=/portlet/article-data!queryProductList.portlet&TopModuelId=e7db4f2628cb40548f6101d71695ada2"
+    DETAIL_PATH = "/eportal/ui?moduleId=5&portal.url=/portlet/article-data!queryProductDetail.portlet&TopModuelId=e7db4f2628cb40548f6101d71695ada2"
     NAV_PATH = "/eportal/ui?moduleId=5&portal.url=/portlet/article-data!queryNetValueList.portlet&TopModuelId=e7db4f2628cb40548f6101d71695ada2"
+    PUBLIC_SITE_ID = "64415e9b39814d2faa490ce414e3af26"
+    PUBLIC_PAGE_ID = "0fe153930baa43ffa759433d276f915c"
 
     def __init__(self, client=None):
         self.client = client or NanyinHttpClient()
@@ -261,7 +353,100 @@ class NanyinPortfolioProvider:
         )
 
     def resolve_product(self, code: str) -> MarketProduct:
-        return self.resolve_verified_identity(code)
+        normalized = _normalize_code(code)
+        identity = VERIFIED_CASH_PRODUCTS.get((self.provider, normalized))
+        if identity is not None:
+            return self.resolve_verified_identity(normalized)
+        try:
+            detail = self.client.post_encrypted_json(
+                self.DETAIL_PATH,
+                {"productCode": normalized},
+            )
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError("无法可靠识别产品类型") from exc
+        if not isinstance(detail, dict):
+            raise ProviderError("无法可靠识别产品类型")
+        detail_code = str(
+            detail.get("salesCode") or detail.get("productCode") or ""
+        ).strip().upper()
+        name = str(
+            detail.get("title") or detail.get("productName") or ""
+        ).strip()
+        registration_code = str(
+            detail.get("financingRegisterCode")
+            or detail.get("registerCode")
+            or ""
+        ).strip()
+        template_type = str(detail.get("productTemplateType") or "").strip()
+        if (
+            detail_code != normalized
+            or template_type in ("", "1709")
+            or not name
+            or not registration_code
+        ):
+            raise ProviderError("无法可靠识别产品类型")
+        return MarketProduct(
+            self.provider,
+            normalized,
+            name,
+            ProductType.WEALTH_NAV,
+            registration_code,
+        )
+
+    def search_products(
+        self, query: str, limit: int = 10
+    ) -> list[MarketProduct]:
+        normalized = _normalize_code(query)
+        data = self.client.post_encrypted_json(
+            self.LIST_PATH,
+            {
+                "siteId": self.PUBLIC_SITE_ID,
+                "pageId": self.PUBLIC_PAGE_ID,
+                "currentPage": 1,
+                "status": [],
+                "riskLevel": [],
+                "name": normalized,
+                "raisingMode": "1",
+                "variety": [],
+                # 排除现金管理类（1），仅查询净值型理财。
+                "productTypes": ["2", "3", "4", "5"],
+                "productTerms": [],
+            },
+        )
+        items = _first_list(data, "aaData", "result", "list", "rows", "data")
+        products = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            code = str(
+                item.get("salesCode") or item.get("productCode") or ""
+            ).strip().upper()
+            name = str(
+                item.get("name")
+                or item.get("title")
+                or item.get("productName")
+                or ""
+            ).strip()
+            if not code or not name:
+                continue
+            products.append(
+                MarketProduct(
+                    self.provider,
+                    code,
+                    name,
+                    ProductType.WEALTH_NAV,
+                    str(
+                        item.get("financingRegisterCode")
+                        or item.get("registerCode")
+                        or ""
+                    ).strip(),
+                )
+            )
+            if len(products) >= max(1, min(int(limit), 20)):
+                break
+        return products
 
     def fetch_quotes(self, product, start_date, end_date) -> list[MarketQuote]:
         _require_product(self.provider, product)
@@ -426,13 +611,13 @@ class EastmoneyFundProvider:
     def __init__(self, opener=None):
         self.opener = opener or _open_json_request
 
-    def resolve_product(self, code: str) -> MarketProduct:
-        normalized = _normalize_code(code)
-        if len(normalized) != 6 or not normalized.isdigit():
-            raise ProviderError("公募基金代码必须为6位数字")
-        query = urllib.parse.urlencode({"m": "1", "key": normalized})
+    def search_products(
+        self, query: str, limit: int = 10
+    ) -> list[MarketProduct]:
+        normalized = _normalize_code(query)
+        encoded = urllib.parse.urlencode({"m": "1", "key": normalized})
         request = urllib.request.Request(
-            f"{self.SEARCH_URL}?{query}",
+            f"{self.SEARCH_URL}?{encoded}",
             headers={"User-Agent": "Mozilla/5.0"},
         )
         try:
@@ -442,37 +627,51 @@ class EastmoneyFundProvider:
         except Exception as exc:
             raise ProviderError("公开基金身份接口请求失败") from exc
         candidates = data.get("Datas") if isinstance(data, dict) else None
-        exact = [
-            item
-            for item in (candidates or [])
+        products = []
+        for item in candidates or []:
             if (
-                isinstance(item, dict)
-                and str(item.get("CODE") or "").strip() == normalized
-                and item.get("CATEGORY") == 700
-                and isinstance(item.get("FundBaseInfo"), dict)
+                not isinstance(item, dict)
+                or item.get("CATEGORY") != 700
+                or not isinstance(item.get("FundBaseInfo"), dict)
+            ):
+                continue
+            base = item["FundBaseInfo"]
+            code = str(item.get("CODE") or "").strip()
+            name = str(
+                base.get("SHORTNAME") or item.get("NAME") or ""
+            ).strip()
+            if not code or not name:
+                continue
+            products.append(
+                MarketProduct(
+                    self.provider,
+                    code,
+                    name,
+                    ProductType.PUBLIC_FUND,
+                    code,
+                    metadata={
+                        "fund_company": str(base.get("JJGS") or "").strip(),
+                        "fund_type": str(base.get("FTYPE") or "").strip(),
+                        "source": "eastmoney_public_fund",
+                    },
+                )
             )
+            if len(products) >= max(1, min(int(limit), 20)):
+                break
+        return products
+
+    def resolve_product(self, code: str) -> MarketProduct:
+        normalized = _normalize_code(code)
+        if len(normalized) != 6 or not normalized.isdigit():
+            raise ProviderError("公募基金代码必须为6位数字")
+        exact = [
+            product
+            for product in self.search_products(normalized, limit=20)
+            if product.code == normalized
         ]
         if not exact:
             raise ProviderError("未找到该公募基金")
-        item = exact[0]
-        base = item["FundBaseInfo"]
-        name = str(
-            base.get("SHORTNAME") or item.get("NAME") or ""
-        ).strip()
-        if not name:
-            raise ProviderError("公开基金身份信息不完整")
-        return MarketProduct(
-            self.provider,
-            normalized,
-            name,
-            ProductType.PUBLIC_FUND,
-            normalized,
-            metadata={
-                "fund_company": str(base.get("JJGS") or "").strip(),
-                "fund_type": str(base.get("FTYPE") or "").strip(),
-                "source": "eastmoney_public_fund",
-            },
-        )
+        return exact[0]
 
     def fetch_quotes(self, product, start_date, end_date) -> list[MarketQuote]:
         _require_product(self.provider, product)
