@@ -27,7 +27,7 @@ _TRANSACTION_COLUMNS = """
     id, product_id, transaction_type, status, trade_date, confirmation_date,
     amount, shares, fee_amount, fee_rate, confirmation_nav,
     linked_transaction_id, plan_id, idempotency_key, note, created_by,
-    trade_time
+    trade_time, confirmed_at
 """
 _POSITION_COLUMNS = """
     product_id, available_shares, locked_shares, total_shares, cost_basis
@@ -786,6 +786,7 @@ class PortfolioRepository:
             trade_time=row["trade_time"] or "",
             note=row["note"],
             created_by=row["created_by"],
+            confirmed_at=row["confirmed_at"] or "",
         )
 
     @staticmethod

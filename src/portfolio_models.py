@@ -121,6 +121,7 @@ class Transaction:
     plan_id: str = ""
     note: str = ""
     created_by: str = "system"
+    confirmed_at: Optional[str] = None
 
 
 @dataclass(frozen=True)

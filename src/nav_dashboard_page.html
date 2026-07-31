@@ -1230,7 +1230,7 @@
       const details = [];
       const tradeTime = rowValue(row, 'trade_time');
       const effectiveTradeDate = rowValue(row, 'effective_trade_date', 'trade_date');
-      const confirmationDate = rowValue(row, 'confirmation_date');
+      const confirmationDate = rowValue(row, 'confirmed_at') || rowValue(row, 'confirmation_date');
       const expectedConfirmationDate = rowValue(row, 'expected_confirmation_date');
       const incomeStart = rowValue(row, 'income_start_date');
       const incomeStop = rowValue(row, 'income_stop_date');
