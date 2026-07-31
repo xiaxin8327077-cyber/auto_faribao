@@ -117,14 +117,38 @@ def test_all_position_shares_show_two_decimal_places():
     assert "<span>在途资金</span>" in html
 
 
-def test_position_card_shows_quote_date_next_to_non_cash_nav():
+def test_position_card_merges_quote_date_and_change_below_non_cash_nav():
     html = _read_page()
 
     assert (
         "const quoteDate = row.quote?.date || "
         "rowValue(row, 'nav_date', 'quote_date');"
     ) in html
-    assert "<span>净值日期</span>" in html
+    assert 'class="manage-subvalue"' in html
+    assert "signedPercent(changePct)" in html
+    assert "<span>净值日期</span>" not in html
+    assert "<span>最新收益</span>" in html
+
+
+def test_overview_redemption_status_uses_pending_shares_and_unsettled_amount():
+    html = _read_page()
+
+    assert "赎回待确认 ${money(pendingRedemptionShares)} 份" in html
+    assert "赎回待到账 ${money(unsettledRedemptionAmount)} 元" in html
+
+
+def test_latest_profit_adjustment_has_a_separate_button_and_no_date_input():
+    html = _read_page()
+
+    assert 'id="latestProfitAdjustmentDialog"' in html
+    assert 'data-write-operation="adjust-latest-profit"' in html
+    assert "/api/portfolio/latest-profit-adjustments/preview" in html
+    dialog = html[
+        html.index('id="latestProfitAdjustmentDialog"'):
+        html.index('</dialog>', html.index('id="latestProfitAdjustmentDialog"'))
+    ]
+    assert 'name="effective_date"' not in dialog
+    assert "rowValue(product, 'latest_profit_date')" in html
 
 
 def test_non_nav_amounts_and_shares_use_two_decimal_display():
@@ -347,6 +371,16 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert "function transactionDetailsHtml(" in page
 
 
+def test_sip_cash_outflow_is_labeled_as_sip_deduction():
+    page = _read_page()
+
+    assert "function transactionDisplayLabel(value, row = {})" in page
+    assert "type === 'cash_transfer_out' && rowValue(row, 'plan_id')" in page
+    assert "return '定投扣款';" in page
+    assert "function isVisibleTransaction(row)" in page
+    assert "if (type === 'cash_transfer_out' && rowValue(row, 'plan_id')) return true;" in page
+
+
 def test_transaction_cards_visually_distinguish_purchase_and_redemption():
     page = _read_page()
 
@@ -365,6 +399,13 @@ def test_positions_panel_uses_positive_position_rows_not_all_products():
 
     assert "const rows = positions;" in page
     assert "const rows = products.map" not in page
+
+
+def test_overview_does_not_remerge_catalog_products_into_authoritative_products():
+    page = PAGE_PATH.read_text(encoding="utf-8")
+
+    assert "const portfolioByCode = new Map" not in page
+    assert "data.products = baseProducts.map" not in page
 
 
 def test_holding_controls_support_delete_and_profit_calibration_without_reversal():

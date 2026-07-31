@@ -270,6 +270,7 @@
     .manage-stat { padding: 9px; border-radius: 7px; background: var(--bg); }
     .manage-stat span { display: block; color: var(--muted); font-size: 10px; }
     .manage-stat b { display: block; margin-top: 4px; overflow: hidden; font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+    .manage-subvalue { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; }
     .position-stat-grid .manage-stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
     .row-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
     .row-action { min-height: 31px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--blue); font-size: 12px; font-weight: 750; cursor: pointer; }
@@ -539,6 +540,13 @@
     <form id="adjustmentForm" method="dialog"><header class="dialog-head"><h2 id="adjustmentDialogTitle">校准持仓</h2><button class="icon-button" type="button" data-close-dialog="adjustmentDialog" aria-label="关闭">×</button></header><div class="dialog-body">
       <input name="product_id" id="adjustmentProductId" type="hidden"><label class="form-field">调整后持仓份额<input name="shares" type="number" min="0" step="0.01" required inputmode="decimal"></label><label class="form-field">平台累计持有收益（元）<input name="profit" type="number" step="0.01" required inputmode="decimal"></label><label class="form-field">校准日期<input name="effective_date" type="date" required></label><label class="form-field">说明<textarea name="note" maxlength="300" required></textarea></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="adjustmentDialog">取消</button><button class="action-button" type="submit">预览</button></div>
+    </div></form>
+  </dialog>
+
+  <dialog class="management-dialog" id="latestProfitAdjustmentDialog" aria-labelledby="latestProfitAdjustmentDialogTitle">
+    <form id="latestProfitAdjustmentForm" method="dialog"><header class="dialog-head"><h2 id="latestProfitAdjustmentDialogTitle">校准最新收益</h2><button class="icon-button" type="button" data-close-dialog="latestProfitAdjustmentDialog" aria-label="关闭">×</button></header><div class="dialog-body">
+      <input name="product_id" id="latestProfitAdjustmentProductId" type="hidden"><label class="form-field">最新披露日期<input id="latestProfitAdjustmentDate" type="text" readonly></label><label class="form-field">调整后最新收益（元）<input name="profit" type="number" step="0.01" required inputmode="decimal"></label><label class="form-field">说明<textarea name="note" maxlength="300" required></textarea></label>
+      <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="latestProfitAdjustmentDialog">取消</button><button class="action-button" type="submit">预览</button></div>
     </div></form>
   </dialog>
 
@@ -1217,6 +1225,8 @@
           const availableShares = rowValue(row, 'available_shares');
           const inTransitAmount = rowValue(row, 'in_transit_amount');
           const quoteDate = row.quote?.date || rowValue(row, 'nav_date', 'quote_date');
+          const changePct = rowValue(row, 'change_pct');
+          const latestProfit = rowValue(row, 'latest_profit');
           const sharesDisplay = money(shares);
           const availableSharesDisplay = money(availableShares);
           const holdingProfit = rowValue(row, 'holding_profit', 'cumulative_profit');
@@ -1226,9 +1236,10 @@
           const shareStats = `<div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div><div class="manage-stat"><span>可用份额</span><b>${esc(availableSharesDisplay || '--')}</b></div><div class="manage-stat"><span>在途资金</span><b>${money(inTransitAmount || 0)} 元</b></div>`;
           const navStat = group === 'cash_management'
             ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b></div>`
-            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div><div class="manage-stat"><span>净值日期</span><b>${esc(quoteDate || '--')}</b></div>`;
+            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b><small class="manage-subvalue">${esc(shortDate(quoteDate) || '--')} · ${changePct === '' ? '--' : esc(signedPercent(changePct))}</small></div>`;
+          const latestProfitStat = `<div class="manage-stat"><span>最新收益</span><b>${latestProfit === '' ? '--' : signedMoney(latestProfit) + ' 元'}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
-          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">详情</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
+          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${latestProfitStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准持仓</button><button class="row-action" type="button" data-write-operation="adjust-latest-profit" data-product-id="${esc(id)}">校准最新收益</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">详情</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
         }).join('')}</section>`;
       }).join('') || '<div class="empty">暂无可展示的分类持仓。</div>';
     }
@@ -1254,9 +1265,17 @@
         income_accrual: '收益入账',
         holding_adjustment: '持仓校准',
         profit_adjustment: '收益校准',
+        latest_profit_adjustment: '最新收益校准',
         cash_dividend: '现金分红',
         reversal: '交易冲正',
       })[String(value || '').toLowerCase()] || '其他交易';
+    }
+    function transactionDisplayLabel(value, row = {}) {
+      const type = String(value || '').toLowerCase();
+      if (type === 'cash_transfer_out' && rowValue(row, 'plan_id')) {
+        return '定投扣款';
+      }
+      return transactionTypeLabel(value);
     }
     function transactionKindMeta(value) {
       const type = String(value || '').toLowerCase();
@@ -1266,7 +1285,7 @@
       if (type === 'manual_redemption') {
         return {label: '赎回', className: 'redemption'};
       }
-      if (['holding_adjustment', 'profit_adjustment'].includes(type)) {
+      if (['holding_adjustment', 'profit_adjustment', 'latest_profit_adjustment'].includes(type)) {
         return {label: '校准', className: 'adjustment'};
       }
       return {label: '其他', className: 'other'};
@@ -1323,13 +1342,15 @@
       if (note) add('备注', note, true);
       return `<div class="transaction-details">${details.join('')}</div>`;
     }
+    function isVisibleTransaction(row) {
+      const notMigrated = String(rowValue(row, 'created_by')) !== 'wallet_migration';
+      if (!notMigrated) return false;
+      const type = String(rowValue(row, 'transaction_type', 'type')).toLowerCase();
+      if (type === 'cash_transfer_out' && rowValue(row, 'plan_id')) return true;
+      return !INTERNAL_TRANSACTION_TYPES.has(type);
+    }
     function renderTransactions() {
-      const rows = portfolioRows('transactions').filter(row => (
-        String(rowValue(row, 'created_by')) !== 'wallet_migration'
-        && !INTERNAL_TRANSACTION_TYPES.has(
-          String(rowValue(row, 'transaction_type', 'type')).toLowerCase()
-        )
-      ));
+      const rows = portfolioRows('transactions').filter(isVisibleTransaction);
       const visible = transactionFilter === 'all' ? rows : rows.filter(row => normalStatus(rowValue(row, 'status')) === transactionFilter);
       $('transactionsList').innerHTML = visible.length ? visible.map(row => {
         const id = rowValue(row, 'id', 'transaction_id');
@@ -1339,7 +1360,7 @@
         const normalizedTransactionType = String(transactionType || '').toLowerCase();
         const kind = transactionKindMeta(normalizedTransactionType);
         const actions = status === 'pending' ? `<button class="row-action" type="button" data-write-operation="cancel" data-transaction-id="${esc(id)}">取消</button>` : '';
-        return `<article class="manage-card transaction-card ${kind.className}"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="transaction-subhead"><span class="transaction-kind ${kind.className}">${kind.label}</span><span class="manage-meta">${esc(transactionTypeLabel(transactionType))} · ${transactionStatusLabel(status)}</span></div></div><div class="transaction-head-actions">${actions}</div></div>${transactionValueHtml(row, kind)}${transactionDetailsHtml(row, normalizedTransactionType)}</article>`;
+        return `<article class="manage-card transaction-card ${kind.className}"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="transaction-subhead"><span class="transaction-kind ${kind.className}">${kind.label}</span><span class="manage-meta">${esc(transactionDisplayLabel(transactionType, row))} · ${transactionStatusLabel(status)}</span></div></div><div class="transaction-head-actions">${actions}</div></div>${transactionValueHtml(row, kind)}${transactionDetailsHtml(row, normalizedTransactionType)}</article>`;
       }).join('') : '<div class="empty">当前筛选条件下暂无交易记录。</div>';
       updateWriteControls();
     }
@@ -1532,16 +1553,6 @@
       const pfTxList = data.portfolio?.transactions || [];
       const roundCent = v => Math.round(number(v) * 100) / 100;
       const holdingsValue = pfList.reduce((sum, p) => sum + roundCent(rowValue(p, 'market_value', 'value', 'holding_value')), 0);
-      // 合并 portfolio 系统的产品到 data.products(按 code 去重,portfolio 字段优先;inactive 不并入)
-      const baseProducts = Array.isArray(data.products) ? data.products : [];
-      const portfolioByCode = new Map(pfList.filter(p => String(p.status || 'active').toLowerCase() === 'active').map(p => [String(rowValue(p, 'code', '')), p]));
-      data.products = baseProducts.map(item => {
-        const code = String(rowValue(item, 'code', ''));
-        const pf = portfolioByCode.get(code);
-        if (!pf) return item;
-        portfolioByCode.delete(code);
-        return {...item, ...pf};
-      }).concat(Array.from(portfolioByCode.values()));
       const pendingBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase'))
         .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
       const pendingSell = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('redemption'))
@@ -1587,11 +1598,20 @@
           const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
           return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('purchase');
         }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
-        const pendingSellAmt = pfTxList.filter(t => {
+        const pendingRedemptionShares = pfTxList.filter(t => {
           const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
           return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('redemption');
+        }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'shares') || 0) * 100) / 100, 0);
+        const unsettledRedemptionAmount = pfTxList.filter(t => {
+          const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
+          const settleDate = rowValue(t, 'settlement_date');
+          return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'confirmed' && type.includes('redemption') && settleDate && settleDate >= todayStr;
         }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
-        const inTransitText = pendingBuyAmt > 0 ? `申购在途 ${money(pendingBuyAmt)} 元` : pendingSellAmt > 0 ? `赎回在途 ${money(pendingSellAmt)} 元` : '';
+        const inTransitText = [
+          pendingBuyAmt > 0 ? `申购在途 ${money(pendingBuyAmt)} 元` : '',
+          pendingRedemptionShares > 0 ? `赎回待确认 ${money(pendingRedemptionShares)} 份` : '',
+          unsettledRedemptionAmount > 0 ? `赎回待到账 ${money(unsettledRedemptionAmount)} 元` : '',
+        ].filter(Boolean).join(' · ');
         return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div></div><div class="nav"><div>${item.latest_nav ? number(item.latest_nav).toFixed(6) : '--'}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div>${(() => { const h = formatHolding(item.shares, item.latest_nav); const text = h && inTransitText ? `${h} · ${inTransitText}` : (h || inTransitText); return text ? `<div class="holding">${esc(text)}</div>` : ''; })()}</article>`;
       }).join('') : '<div class="empty">暂无已配置的净值产品</div>';
       $('positiveRanking').innerHTML = rankingRows(monthlyPositives, '本月无正贡献');
@@ -1704,6 +1724,9 @@
         'current_shares': '当前份额',
         'difference': '份额差额',
         'actual_profit': '校准后累计持有收益（元）',
+        'actual_latest_profit': '校准后最新收益（元）',
+        'current_latest_profit': '当前最新收益（元）',
+        'latest_profit_date': '最新披露日期',
         'current_profit': '当前累计持有收益（元）',
         'profit_difference': '收益校准差额（元）',
         'effective_date': '生效日期',
@@ -2020,6 +2043,19 @@
       form.elements.effective_date.value = new Date().toLocaleDateString('en-CA');
       dialogOpen('adjustmentDialog');
     }
+    function openLatestProfitAdjustment(productId) {
+      if (!state.writeEnabled) return;
+      const form = $('latestProfitAdjustmentForm');
+      const product = portfolioRows('positions', portfolioRows('products', [])).find(
+        row => String(rowValue(row, 'product_id', 'id', 'code')) === String(productId)
+      );
+      form.reset();
+      $('latestProfitAdjustmentProductId').value = productId;
+      $('latestProfitAdjustmentDate').value = rowValue(product, 'latest_profit_date') || product?.quote?.date || rowValue(product, 'nav_date', 'quote_date') || '--';
+      const latestProfit = rowValue(product, 'latest_profit');
+      form.elements.profit.value = latestProfit === '' ? '' : number(latestProfit).toFixed(2);
+      dialogOpen('latestProfitAdjustmentDialog');
+    }
     async function ensureInlineFund(form, payload) {
       const scope = form.id === 'sipForm' ? 'sip' : 'trade';
       const input = $(PRODUCT_SEARCH_CONTROLS[scope].query);
@@ -2205,6 +2241,7 @@
       const operation = control.dataset.writeOperation;
       if (operation === 'trade') openTrade(control.dataset.productId);
       if (operation === 'adjust') openAdjustment(control.dataset.productId);
+      if (operation === 'adjust-latest-profit') openLatestProfitAdjustment(control.dataset.productId);
       if (operation === 'cancel') simpleOperation(operation, control.dataset.transactionId);
       if (operation === 'delete-holding') previewAction({
         previewPath: '/api/portfolio/positions/adjustments/preview',
@@ -2259,6 +2296,10 @@
     $('adjustmentForm').addEventListener('submit', event => {
       event.preventDefault();
       previewAction({previewPath: '/api/portfolio/positions/adjustments/preview', submitPath: '/api/portfolio/positions/adjustments', payload: formPayload(event.currentTarget), originDialog: 'adjustmentDialog'});
+    });
+    $('latestProfitAdjustmentForm').addEventListener('submit', event => {
+      event.preventDefault();
+      previewAction({previewPath: '/api/portfolio/latest-profit-adjustments/preview', submitPath: '/api/portfolio/latest-profit-adjustments', payload: formPayload(event.currentTarget), originDialog: 'latestProfitAdjustmentDialog'});
     });
     $('sipForm').addEventListener('submit', async event => {
       event.preventDefault();

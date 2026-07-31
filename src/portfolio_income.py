@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -46,9 +47,21 @@ class CashIncomeService:
             if quote is None or quote.income_per_10k is None:
                 return None
 
-            position = self.projector._calculate(product_id, conn)
-            effective_shares = (
-                position.total_shares - position.locked_shares
+            opening_position = self.projector._calculate(
+                product_id,
+                conn,
+                as_of=quote_date - timedelta(days=1),
+                use_confirmation_date=True,
+            )
+            current_position = self.projector._calculate(
+                product_id,
+                conn,
+                as_of=quote_date,
+                use_confirmation_date=True,
+            )
+            effective_shares = max(
+                Decimal("0"),
+                opening_position.total_shares - current_position.locked_shares,
             )
             income_amount = (
                 effective_shares

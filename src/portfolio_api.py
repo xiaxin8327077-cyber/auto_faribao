@@ -32,7 +32,7 @@ from src.portfolio_models import (
     decimal_text,
 )
 from src.portfolio_positions import PositionProjector
-from src.portfolio_profit import calculate_holding_profit
+from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
 from src.portfolio_sip import SipService
 from src.portfolio_transactions import PortfolioTransactionService
 
@@ -173,7 +173,7 @@ def _identity_fingerprint(identity):
 
 
 def _today():
-    return date.today()
+    return beijing_now().date()
 
 
 def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
@@ -1025,6 +1025,46 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             )
         return preview
 
+    def latest_profit_adjustment_preview(body):
+        repo, _, _, _ = services()
+        product_id = _required_text(body.get("product_id"), "product_id")
+        product = repo.require_product(product_id)
+        actual_profit = _decimal(
+            body.get("latest_profit", body.get("profit")),
+            "latest_profit",
+        )
+        reason = _required_text(
+            body.get("reason") or body.get("note"), "reason"
+        )
+        profit_date, current_profit = calculate_latest_profit(
+            repo,
+            product,
+            _today(),
+        )
+        if profit_date is None or current_profit is None:
+            raise ValueError("product has no latest disclosed profit")
+        requested_date = body.get("effective_date") or body.get(
+            "latest_profit_date"
+        )
+        if requested_date not in (None, ""):
+            requested_date = _parse_date(
+                requested_date,
+                "latest_profit_date",
+            )
+            if requested_date != profit_date:
+                raise ValueError(
+                    "latest profit can only be adjusted on the latest disclosed date"
+                )
+        return {
+            "product_id": product_id,
+            "latest_profit_date": profit_date.isoformat(),
+            "actual_latest_profit": decimal_text(actual_profit),
+            "current_latest_profit": decimal_text(current_profit),
+            "profit_difference": decimal_text(actual_profit - current_profit),
+            "reason": reason,
+            "message": "latest disclosed profit will be calibrated",
+        }
+
     @blueprint.get("/api/portfolio")
     def portfolio():
         guard = read_guard()
@@ -1561,6 +1601,86 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
     @blueprint.post("/api/portfolio/positions/adjustments")
     def adjust_mobile_position():
         return adjust_position()
+
+    @blueprint.post("/api/portfolio/latest-profit-adjustments/preview")
+    def preview_latest_profit_adjustment():
+        idem, guard = write_guard()
+        if guard:
+            return guard
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return _error(
+                "invalid_request",
+                "JSON body must be an object",
+                400,
+            )
+        try:
+            return jsonify(
+                {"preview": latest_profit_adjustment_preview(body)}
+            )
+        except ValueError as exc:
+            return business_error(
+                "portfolio_latest_profit_adjustment_preview",
+                "product",
+                str(body.get("product_id") or ""),
+                body,
+                exc,
+                idem,
+            )
+
+    @blueprint.post("/api/portfolio/latest-profit-adjustments")
+    def adjust_latest_profit():
+        idem, guard = write_guard()
+        if guard:
+            return guard
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return _error(
+                "invalid_request",
+                "JSON body must be an object",
+                400,
+            )
+        product_id = str(body.get("product_id") or "")
+        try:
+            preview = latest_profit_adjustment_preview(body)
+            action = f"adjust-latest-profit:{preview['product_id']}"
+            cached = replay(action, idem, body)
+            if cached:
+                return cached
+            _, _, service, _ = services()
+            transaction = service.adjust_latest_profit(
+                preview["product_id"],
+                preview["actual_latest_profit"],
+                _parse_date(
+                    preview["latest_profit_date"],
+                    "latest_profit_date",
+                ),
+                preview["reason"],
+                idem,
+                as_of=_today(),
+            )
+            payload = {
+                "preview": preview,
+                "transaction": _json_value(transaction),
+            }
+            remember(action, idem, body, payload, 200)
+            return jsonify(payload)
+        except ValueError as exc:
+            return business_error(
+                "portfolio_latest_profit_adjustment",
+                "product",
+                product_id,
+                body,
+                exc,
+                idem,
+                operation_action=f"adjust-latest-profit:{product_id}",
+            )
+        except Exception:
+            return _error(
+                "portfolio_write_failed",
+                "portfolio latest profit adjustment failed",
+                500,
+            )
 
     @blueprint.post("/api/portfolio/sip-plans/preview")
     def preview_sip_plan():

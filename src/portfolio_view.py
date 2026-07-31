@@ -9,8 +9,7 @@ from src.portfolio_models import (
     decimal_text,
 )
 from src.portfolio_confirmation import confirmation_schedule
-from src.portfolio_positions import PositionProjector
-from src.portfolio_profit import calculate_holding_profit
+from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
 
 
 _ZERO = Decimal("0")
@@ -18,6 +17,7 @@ _LEDGER_PROFIT_TYPES = {
     TransactionType.INCOME_ACCRUAL,
     TransactionType.CASH_DIVIDEND,
     TransactionType.PROFIT_ADJUSTMENT,
+    TransactionType.LATEST_PROFIT_ADJUSTMENT,
 }
 _PENDING_STATUSES = {
     TransactionStatus.PENDING_QUOTE,
@@ -34,6 +34,7 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
     as_of = as_of or date.today()
     products = repository.list_products()
     products_by_id = {product.id: product for product in products}
+    transactions = repository.list_transactions()
     rows = [
         _product_row(repository, product, as_of)
         for product in products
@@ -41,14 +42,10 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
     positions = [
         row
         for row in rows
-        if (
-            Decimal(row["shares"]) > _ZERO
-            or Decimal(row["in_transit_amount"]) > _ZERO
-        )
+        if _is_overview_position(row, transactions, as_of)
     ]
     profit_history = _profit_history(repository)
     summary = _summary(rows, profit_history, as_of)
-    transactions = repository.list_transactions()
     transactions_by_id = {
         transaction.id: transaction for transaction in transactions
     }
@@ -85,6 +82,29 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
     }
 
 
+def _is_overview_position(row, transactions, as_of):
+    if Decimal(row["shares"]) > _ZERO:
+        return True
+    product_id = row["product_id"]
+    for transaction in transactions:
+        if transaction.product_id != product_id:
+            continue
+        if (
+            transaction.status in _PENDING_STATUSES
+            and transaction.transaction_type
+            in _PURCHASE_TYPES | {TransactionType.MANUAL_REDEMPTION}
+        ):
+            return True
+        if (
+            transaction.transaction_type is TransactionType.MANUAL_REDEMPTION
+            and transaction.status is TransactionStatus.CONFIRMED
+            and transaction.settlement_date is not None
+            and transaction.settlement_date >= as_of
+        ):
+            return True
+    return False
+
+
 def _product_row(repository, product, as_of):
     position = repository.get_position(product.id)
     quote = repository.latest_quote(product.id, on_or_before=as_of)
@@ -103,7 +123,11 @@ def _product_row(repository, product, as_of):
         ),
         _ZERO,
     )
-    latest_profit = _latest_product_profit(repository, product, as_of)
+    latest_profit_date, latest_profit = calculate_latest_profit(
+        repository,
+        product,
+        as_of,
+    )
     holding_profit = calculate_holding_profit(
         repository,
         product,
@@ -128,6 +152,9 @@ def _product_row(repository, product, as_of):
         "cost_basis": decimal_text(position.cost_basis),
         "market_value": _optional_decimal_text(market_value),
         "latest_profit": _optional_decimal_text(latest_profit),
+        "latest_profit_date": (
+            latest_profit_date.isoformat() if latest_profit_date else None
+        ),
         "holding_profit": decimal_text(holding_profit),
         "cumulative_profit": decimal_text(holding_profit),
         "quote_status": "ready" if market_value is not None else "pending",
@@ -145,7 +172,33 @@ def _product_row(repository, product, as_of):
         )
     else:
         unit_nav = quote_payload.get("unit_nav")
-        row.update({"latest_nav": unit_nav, "unit_nav": unit_nav})
+        previous_quote = (
+            repository.latest_quote(
+                product.id,
+                on_or_before=quote.quote_date - timedelta(days=1),
+            )
+            if quote is not None
+            else None
+        )
+        change_pct = None
+        if (
+            quote is not None
+            and quote.unit_nav is not None
+            and previous_quote is not None
+            and previous_quote.unit_nav not in (None, _ZERO)
+        ):
+            change_pct = (
+                (quote.unit_nav - previous_quote.unit_nav)
+                / previous_quote.unit_nav
+                * Decimal("100")
+            )
+        row.update(
+            {
+                "latest_nav": unit_nav,
+                "unit_nav": unit_nav,
+                "change_pct": _optional_decimal_text(change_pct),
+            }
+        )
     return row
 
 
@@ -179,52 +232,33 @@ def _market_value(product_type, shares, quote):
     return shares * quote.unit_nav
 
 
-def _latest_product_profit(repository, product, as_of):
-    if product.product_type is not ProductType.CASH_MANAGEMENT:
-        latest = repository.latest_quote(product.id, on_or_before=as_of)
-        if latest is None or latest.unit_nav is None:
-            return None
-        previous = repository.latest_quote(
-            product.id,
-            on_or_before=latest.quote_date - timedelta(days=1),
-        )
-        if previous is None or previous.unit_nav is None:
-            return None
-        # 用最新日持仓(确认份额) × 净值差,与累计收益算法保持一致
-        eligible_shares = PositionProjector(
-            repository
-        ).calculate_confirmed_as_of(product.id, latest.quote_date).total_shares
-        return eligible_shares * (latest.unit_nav - previous.unit_nav)
-    entries = [
-        transaction.amount or _ZERO
-        for transaction in repository.list_transactions(product_id=product.id)
-        if (
-            transaction.transaction_type is TransactionType.INCOME_ACCRUAL
-            and transaction.status is TransactionStatus.CONFIRMED
-            and transaction.trade_date == as_of
-        )
-    ]
-    return sum(entries, _ZERO) if entries else None
-
-
 def _profit_history(repository):
     rows = _legacy_profit_rows(repository)
-    ledger_by_date = defaultdict(lambda: _ZERO)
+    ledger_by_date_and_source = defaultdict(lambda: _ZERO)
     for transaction in repository.list_transactions():
         if (
             transaction.status is TransactionStatus.CONFIRMED
             and transaction.transaction_type in _LEDGER_PROFIT_TYPES
         ):
-            ledger_by_date[transaction.trade_date.isoformat()] += (
+            source = (
+                "ledger_cumulative_adjustment"
+                if transaction.transaction_type
+                is TransactionType.PROFIT_ADJUSTMENT
+                else "ledger_income"
+            )
+            ledger_by_date_and_source[
+                (transaction.trade_date.isoformat(), source)
+            ] += (
                 transaction.amount or _ZERO
             )
     rows.extend(
         {
             "date": profit_date,
             "amount": decimal_text(amount),
-            "source": "ledger_income",
+            "source": source,
         }
-        for profit_date, amount in ledger_by_date.items()
+        for (profit_date, source), amount
+        in ledger_by_date_and_source.items()
     )
     return sorted(rows, key=lambda row: (row["date"], row["source"]))
 
@@ -255,9 +289,21 @@ def _summary(products, profit_history, as_of):
     cumulative_profit = sum(
         (Decimal(row["amount"]) for row in profit_history), _ZERO
     )
-    latest_date = max((row["date"] for row in profit_history), default="")
+    daily_profit_history = [
+        row
+        for row in profit_history
+        if row.get("source") != "ledger_cumulative_adjustment"
+    ]
+    latest_date = max(
+        (row["date"] for row in daily_profit_history),
+        default="",
+    )
     latest_profit = sum(
-        (Decimal(row["amount"]) for row in profit_history if row["date"] == latest_date),
+        (
+            Decimal(row["amount"])
+            for row in daily_profit_history
+            if row["date"] == latest_date
+        ),
         _ZERO,
     )
     return {
@@ -346,6 +392,10 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
         "confirmation_date": (
             transaction.confirmation_date.isoformat()
             if transaction.confirmation_date else None
+        ),
+        "settlement_date": (
+            transaction.settlement_date.isoformat()
+            if transaction.settlement_date else None
         ),
         "amount": _optional_decimal_text(transaction.amount),
         "shares": _optional_decimal_text(transaction.shares),

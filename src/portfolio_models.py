@@ -29,6 +29,7 @@ class TransactionType(str, Enum):
     REVERSAL = "reversal"
     HOLDING_ADJUSTMENT = "holding_adjustment"
     PROFIT_ADJUSTMENT = "profit_adjustment"
+    LATEST_PROFIT_ADJUSTMENT = "latest_profit_adjustment"
 
 
 class TransactionStatus(str, Enum):

@@ -112,6 +112,64 @@ def test_cash_income_uses_effective_shares_and_compounds_next_day(
     assert second.shares == Decimal("0.40002")
 
 
+def test_same_day_cash_purchase_starts_earning_on_next_day(
+    income_services,
+):
+    repository, projector, income = income_services
+    seed_cash(repository, "cash", "10000")
+    repository.create_transaction(
+        Transaction(
+            id="same-day-purchase:cash",
+            product_id="cash",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=INCOME_DATE,
+            confirmation_date=INCOME_DATE,
+            idempotency_key="same-day-purchase:cash",
+            amount=Decimal("5000"),
+            shares=Decimal("5000"),
+            confirmation_nav=Decimal("1"),
+        )
+    )
+    projector.rebuild("cash")
+    seed_quote(repository, "cash", INCOME_DATE, "0.5")
+
+    first = income.accrue("cash", INCOME_DATE)
+
+    assert first.amount == Decimal("0.5")
+
+    next_date = date(2026, 7, 30)
+    seed_quote(repository, "cash", next_date, "0.5")
+    second = income.accrue("cash", next_date)
+
+    assert second.amount == Decimal("0.750025")
+
+
+def test_future_pending_cash_out_does_not_reduce_earlier_income(
+    income_services,
+):
+    repository, projector, income = income_services
+    seed_cash(repository, "cash", "10000")
+    repository.create_transaction(
+        Transaction(
+            id="future-locked:cash",
+            product_id="cash",
+            transaction_type=TransactionType.CASH_TRANSFER_OUT,
+            status=TransactionStatus.PENDING_CONFIRMATION,
+            trade_date=date(2026, 8, 10),
+            idempotency_key="future-locked:cash",
+            amount=Decimal("2000"),
+            shares=Decimal("2000"),
+        )
+    )
+    projector.rebuild("cash")
+    seed_quote(repository, "cash", INCOME_DATE, "0.5")
+
+    result = income.accrue("cash", INCOME_DATE)
+
+    assert result.amount == Decimal("0.5")
+
+
 def test_duplicate_accrual_returns_existing_event(income_services):
     repository, _projector, income = income_services
     seed_cash(repository, "cash", "10000")

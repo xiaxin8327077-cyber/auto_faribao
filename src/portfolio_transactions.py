@@ -15,7 +15,7 @@ from src.portfolio_models import (
     TransactionStatus,
     TransactionType,
 )
-from src.portfolio_profit import calculate_holding_profit
+from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
 
 
 ZERO = Decimal("0")
@@ -1085,6 +1085,123 @@ class PortfolioTransactionService:
                     "current_profit": self._decimal_audit_text(
                         current_profit
                     ),
+                    "product_id": product_id,
+                },
+                {
+                    **request,
+                    "adjustment_id": adjustment.id,
+                    "difference": self._decimal_audit_text(difference),
+                },
+                actor,
+                conn,
+            )
+            return adjustment
+
+    def adjust_latest_profit(
+        self,
+        product_id,
+        actual_profit,
+        latest_profit_date,
+        reason,
+        idempotency_key,
+        actor="web",
+        as_of=None,
+    ) -> Transaction:
+        try:
+            actual_profit = Decimal(str(actual_profit))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("actual_profit must be finite") from exc
+        if not actual_profit.is_finite():
+            raise ValueError("actual_profit must be finite")
+        reason = self._nonempty_text(reason, "reason")
+        idempotency_key = self._nonempty_text(
+            idempotency_key,
+            "idempotency_key",
+        )
+        actor = self._nonempty_text(actor, "actor")
+        request = {
+            "actor": actor,
+            "actual_profit": self._decimal_audit_text(actual_profit),
+            "latest_profit_date": latest_profit_date.isoformat(),
+            "product_id": product_id,
+            "reason": reason,
+        }
+
+        with self.repository.database.transaction() as conn:
+            retry = self._operation_retry(
+                idempotency_key,
+                "adjust_latest_profit",
+                "product",
+                product_id,
+                request,
+                conn,
+                include_before=True,
+            )
+            if retry is not None:
+                _before_retry, after_retry = retry
+                adjustment = self.repository.get_transaction_by_idempotency(
+                    idempotency_key,
+                    conn=conn,
+                )
+                if (
+                    adjustment is None
+                    or adjustment.id != after_retry.get("adjustment_id")
+                    or adjustment.transaction_type
+                    is not TransactionType.LATEST_PROFIT_ADJUSTMENT
+                    or adjustment.product_id != product_id
+                    or adjustment.trade_date != latest_profit_date
+                    or adjustment.note != reason
+                    or adjustment.created_by != actor
+                    or adjustment.amount is None
+                    or self._decimal_audit_text(adjustment.amount)
+                    != after_retry.get("difference")
+                ):
+                    raise ValueError(
+                        "idempotency key conflicts with existing request"
+                    )
+                return adjustment
+            self._reject_transaction_idempotency_collision(
+                idempotency_key,
+                conn,
+            )
+
+            product = self.repository.require_product(product_id, conn=conn)
+            disclosed_date, current_profit = calculate_latest_profit(
+                self.repository,
+                product,
+                as_of or latest_profit_date,
+                conn=conn,
+            )
+            if disclosed_date != latest_profit_date:
+                raise ValueError("latest disclosed date changed; preview again")
+            if current_profit is None:
+                raise ValueError("product has no latest disclosed profit")
+            difference = actual_profit - current_profit
+            adjustment = Transaction(
+                id=str(uuid4()),
+                product_id=product_id,
+                transaction_type=TransactionType.LATEST_PROFIT_ADJUSTMENT,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=latest_profit_date,
+                idempotency_key=idempotency_key,
+                amount=difference,
+                shares=ZERO,
+                confirmation_date=latest_profit_date,
+                note=reason,
+                created_by=actor,
+                trade_time=datetime.now().strftime("%H:%M:%S"),
+            )
+            self.repository.create_transaction(adjustment, conn)
+            self._append_operation_audit(
+                idempotency_key,
+                "adjust_latest_profit",
+                "product",
+                product_id,
+                {
+                    "current_latest_profit": self._decimal_audit_text(
+                        current_profit
+                    ),
+                    "latest_profit_date": latest_profit_date.isoformat(),
                     "product_id": product_id,
                 },
                 {

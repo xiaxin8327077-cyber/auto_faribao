@@ -150,6 +150,99 @@ def test_dashboard_overview_includes_products_created_in_portfolio_ledger(
     assert payload["shares_count"] == 1
 
 
+def test_dashboard_latest_profit_only_uses_latest_disclosure_date(
+    tmp_path, monkeypatch
+):
+    import src.nav_dashboard as dashboard
+
+    store = NavDashboardStore(tmp_path / "state.json")
+    store.state["initialized"] = True
+    store.state["products"] = {
+        "citic_wealth:P1": {
+            "provider": "citic_wealth",
+            "code": "P1",
+            "name": "旧系统产品",
+            "shares": "100",
+            "active": True,
+        }
+    }
+    store.state["snapshots"] = {
+        "citic_wealth:P1": {
+            "latest": {"nav_date": "2026-07-30", "unit_nav": "1.10"},
+            "previous": {"nav_date": "2026-07-29", "unit_nav": "1.00"},
+        }
+    }
+    store.state["profit_entries"] = [
+        {
+            "product_key": "citic_wealth:P1",
+            "provider": "citic_wealth",
+            "code": "P1",
+            "name": "旧系统产品",
+            "nav_date": "2026-07-30",
+            "amount": "6.93",
+        }
+    ]
+    store.save()
+
+    portfolio_positions = [
+        {
+            "id": "fund",
+            "provider": "citic_wealth",
+            "code": "P1",
+            "name": "迁移后的同一产品",
+            "status": "active",
+            "shares": "100",
+            "latest_profit": "0.77",
+            "latest_profit_date": "2026-07-31",
+            "quote": {"date": "2026-07-31"},
+        },
+        {
+            "id": "wallet",
+            "provider": "wallet_plus",
+            "code": "WALLETPLUS",
+            "name": "钱包Plus",
+            "status": "active",
+            "shares": "100",
+            "latest_profit": "2.26",
+            "latest_profit_date": "2026-07-31",
+            "quote": {"date": "2026-08-01"},
+        },
+        {
+            "id": "cash-without-income",
+            "provider": "wallet_plus",
+            "code": "CASH-NEXT-DAY",
+            "name": "次日尚未入账的现金产品",
+            "status": "active",
+            "shares": "100",
+            "latest_profit": None,
+            "quote": {"date": "2026-08-01"},
+        },
+    ]
+    portfolio = {
+        "summary": {},
+        "products": portfolio_positions,
+        "positions": portfolio_positions,
+        "transactions": [],
+        "sip_plans": [],
+        "profit_history": [],
+    }
+    monkeypatch.setattr(
+        dashboard,
+        "_get_portfolio_runtime",
+        lambda: SimpleNamespace(repository=object(), write_enabled=True),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "build_portfolio_payload",
+        lambda repository: portfolio,
+    )
+
+    payload = get_dashboard_payload(_cfg(), state_path=tmp_path / "state.json")
+
+    assert payload["latest_profit_date"] == "2026-07-31"
+    assert Decimal(payload["latest_profit"]) == Decimal("3.03")
+
+
 def test_dashboard_overview_hides_legacy_product_disabled_by_ledger(
     tmp_path, monkeypatch
 ):
@@ -210,6 +303,35 @@ def test_dashboard_overview_hides_legacy_product_disabled_by_ledger(
     payload = get_dashboard_payload(cfg, state_path=tmp_path / "state.json")
 
     assert [row["code"] for row in payload["products"]] == ["WALLETPLUS"]
+
+
+def test_ledger_product_clears_stale_legacy_profit_when_new_profit_is_unknown():
+    import src.nav_dashboard as dashboard
+
+    legacy = {
+        "provider": "wallet_plus",
+        "code": "WALLETPLUS",
+        "nav_date": "2026-07-31",
+        "latest_profit": "2.26",
+    }
+    ledger = {
+        "id": "wallet",
+        "provider": "wallet_plus",
+        "code": "WALLETPLUS",
+        "status": "active",
+        "shares": "100",
+        "latest_profit": None,
+        "quote": {"date": "2026-08-01"},
+    }
+
+    merged = dashboard._merge_overview_products(
+        [legacy],
+        [ledger],
+        [ledger],
+    )
+
+    assert merged[0]["nav_date"] == "2026-08-01"
+    assert merged[0]["latest_profit"] is None
 
 
 def test_dashboard_overview_hides_fully_redeemed_ledger_position(

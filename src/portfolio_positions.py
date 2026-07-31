@@ -99,6 +99,7 @@ class PositionProjector:
             if transaction.transaction_type in {
                 TransactionType.CASH_DIVIDEND,
                 TransactionType.PROFIT_ADJUSTMENT,
+                TransactionType.LATEST_PROFIT_ADJUSTMENT,
             }:
                 continue
 

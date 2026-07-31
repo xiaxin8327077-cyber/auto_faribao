@@ -718,7 +718,7 @@ def _merge_overview_products(
             continue
         target = merged[index_by_key[key]]
         for field, value in ledger_item.items():
-            if value not in (None, ""):
+            if field == "latest_profit" or value not in (None, ""):
                 target[field] = value
     return merged
 
@@ -764,13 +764,30 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
     )
     legacy_cumulative = Decimal(str(payload.get("cumulative_profit") or "0"))
     payload["cumulative_profit"] = str(legacy_cumulative + pf_profit)
-    # 合并 portfolio 产品的最新日收益
-    pf_latest = sum(
-        (Decimal(str(p.get("latest_profit") or "0")) for p in portfolio.get("products", [])),
-        Decimal("0"),
-    )
-    legacy_latest = Decimal(str(payload.get("latest_profit") or "0"))
-    payload["latest_profit"] = str(legacy_latest + pf_latest)
+    # 最新收益只汇总全局最新一次净值披露日期对应的产品，避免跨日期相加。
+    dated_products = []
+    for product in payload["products"]:
+        quote = product.get("quote") if isinstance(product.get("quote"), dict) else {}
+        disclosed_date = str(
+            product.get("latest_profit_date")
+            or product.get("nav_date")
+            or quote.get("date")
+            or ""
+        )
+        if disclosed_date and product.get("latest_profit") not in (None, ""):
+            dated_products.append((disclosed_date, product))
+    if dated_products:
+        latest_profit_date = max(item[0] for item in dated_products)
+        latest_profit = sum(
+            (
+                Decimal(str(product.get("latest_profit") or "0"))
+                for disclosed_date, product in dated_products
+                if disclosed_date == latest_profit_date
+            ),
+            Decimal("0"),
+        )
+        payload["latest_profit_date"] = latest_profit_date
+        payload["latest_profit"] = str(latest_profit)
     payload["write_enabled"] = write_enabled
     if not write_enabled:
         payload["write_disabled_reason"] = "portfolio_migration_failed"

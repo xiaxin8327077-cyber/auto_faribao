@@ -1144,3 +1144,145 @@ def test_position_adjustment_accepts_shares_and_cumulative_profit(api_setup):
         "profit_adjustment"
     )
     assert repository.get_position("cash").total_shares == Decimal("900")
+
+
+def test_latest_profit_adjustment_updates_latest_and_cumulative_profit(api_setup):
+    client, _, repository, _ = api_setup
+    repository.create_transaction(
+        Transaction(
+            id="opening:fund",
+            product_id="fund",
+            transaction_type=TransactionType.OPENING_POSITION,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 29),
+            confirmation_date=date(2026, 7, 29),
+            idempotency_key="opening:fund",
+            amount=Decimal("100"),
+            shares=Decimal("100"),
+        )
+    )
+    for quote_date, nav in (
+        (date(2026, 7, 29), "1"),
+        (date(2026, 7, 30), "1.1"),
+    ):
+        repository.upsert_quote(
+            "fund",
+            MarketQuote(
+                "fund",
+                quote_date,
+                "official",
+                f"fund:{quote_date}",
+                unit_nav=Decimal(nav),
+            ),
+            f"{quote_date}T18:00:00+08:00",
+        )
+    PositionProjector(repository).rebuild()
+
+    response = client.post(
+        "/api/portfolio/latest-profit-adjustments",
+        headers=write_headers(idem="adjust-latest-profit"),
+        json={
+            "product_id": "fund",
+            "profit": "7.50",
+            "note": "校准最新收益",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["preview"]["latest_profit_date"] == "2026-07-30"
+    assert payload["preview"]["current_latest_profit"] == "10"
+    assert payload["preview"]["profit_difference"] == "-2.5"
+    assert payload["transaction"]["transaction_type"] == (
+        "latest_profit_adjustment"
+    )
+
+    portfolio = client.get(
+        "/api/portfolio",
+        headers={"X-Nav-Dashboard-Key": "secret"},
+    ).get_json()
+    fund = next(row for row in portfolio["products"] if row["id"] == "fund")
+    assert fund["latest_profit"] == "7.5"
+    assert fund["holding_profit"] == "7.5"
+
+
+def test_latest_profit_adjustment_rejects_a_historical_date(api_setup):
+    client, _, repository, _ = api_setup
+    repository.create_transaction(
+        Transaction(
+            id="income:cash:latest",
+            product_id="cash",
+            transaction_type=TransactionType.INCOME_ACCRUAL,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 30),
+            confirmation_date=date(2026, 7, 30),
+            idempotency_key="income:cash:latest",
+            amount=Decimal("1.25"),
+            shares=Decimal("1.25"),
+        )
+    )
+    PositionProjector(repository).rebuild()
+
+    response = client.post(
+        "/api/portfolio/latest-profit-adjustments/preview",
+        headers=write_headers(idem="historical-latest-profit"),
+        json={
+            "product_id": "cash",
+            "profit": "0",
+            "effective_date": "2026-07-29",
+            "note": "不允许改历史收益",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "latest disclosed date" in response.get_json()["message"]
+
+
+def test_latest_profit_adjustment_uses_api_beijing_date_on_submit(
+    api_setup, monkeypatch
+):
+    client, _, repository, _ = api_setup
+    opening_date = date(2099, 1, 1)
+    latest_date = date(2099, 1, 2)
+    repository.create_transaction(
+        Transaction(
+            id="opening:future-fund",
+            product_id="fund",
+            transaction_type=TransactionType.OPENING_POSITION,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=opening_date,
+            confirmation_date=opening_date,
+            idempotency_key="opening:future-fund",
+            amount=Decimal("100"),
+            shares=Decimal("100"),
+        )
+    )
+    for quote_date, nav in ((opening_date, "1"), (latest_date, "1.1")):
+        repository.upsert_quote(
+            "fund",
+            MarketQuote(
+                "fund",
+                quote_date,
+                "official",
+                f"future:{quote_date}",
+                unit_nav=Decimal(nav),
+            ),
+            f"{quote_date}T18:00:00+08:00",
+        )
+    PositionProjector(repository).rebuild()
+    monkeypatch.setattr("src.portfolio_api._today", lambda: latest_date)
+
+    response = client.post(
+        "/api/portfolio/latest-profit-adjustments",
+        headers=write_headers(idem="adjust-future-latest-profit"),
+        json={
+            "product_id": "fund",
+            "profit": "8",
+            "note": "北京时间日期校准",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["preview"]["latest_profit_date"] == (
+        latest_date.isoformat()
+    )

@@ -117,6 +117,63 @@ def test_payload_keeps_overview_fields_and_cash_value_is_shares(portfolio_fixtur
     assert cash["latest_nav"] is None
     assert cash["market_value"] == "100.4475"
     assert cash["latest_profit"] == "0.4475"
+    assert cash["latest_profit_date"] == "2026-07-30"
+
+
+def test_cash_latest_profit_date_stays_on_latest_income_not_newer_quote(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    repository.upsert_quote(
+        "cash",
+        MarketQuote(
+            "NYRR000007",
+            date(2026, 7, 31),
+            "official",
+            "cash-newer-quote",
+            income_per_10k=Decimal("0.4500"),
+            seven_day_annualized_rate=Decimal("0.0164"),
+        ),
+        "2026-07-31T10:00:00",
+    )
+
+    cash = next(
+        row
+        for row in build_portfolio_payload(
+            repository,
+            as_of=date(2026, 7, 31),
+        )["products"]
+        if row["code"] == "NYRR000007"
+    )
+
+    assert cash["quote"]["date"] == "2026-07-31"
+    assert cash["latest_profit_date"] == "2026-07-30"
+    assert cash["latest_profit"] == "0.4475"
+
+
+def test_non_cash_product_row_includes_latest_quote_change(portfolio_fixture):
+    repository = portfolio_fixture
+    repository.upsert_quote(
+        "wealth",
+        MarketQuote(
+            "AF233276B",
+            date(2026, 7, 29),
+            "official",
+            "wealth-previous",
+            unit_nav=Decimal("1.070"),
+        ),
+        "2026-07-29T10:00:00",
+    )
+
+    payload = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 7, 30),
+    )
+    wealth = next(
+        row for row in payload["products"] if row["code"] == "AF233276B"
+    )
+
+    assert wealth["change_pct"] == "0.7476635514018691588785046729"
 
 
 def test_transactions_are_newest_first_and_show_cash_route(portfolio_fixture):
@@ -314,6 +371,47 @@ def test_confirmed_full_redemption_removes_product_from_positions_only(
     }
 
 
+@pytest.mark.parametrize(
+    ("settlement_date", "as_of", "is_visible"),
+    (
+        (date(2026, 7, 31), date(2026, 7, 30), True),
+        (date(2026, 7, 31), date(2026, 7, 31), True),
+        (date(2026, 7, 31), date(2026, 8, 1), False),
+    ),
+)
+def test_confirmed_full_redemption_is_visible_until_settlement_date(
+    portfolio_fixture, settlement_date, as_of, is_visible
+):
+    repository = portfolio_fixture
+    repository.create_transaction(
+        Transaction(
+            id="redeem-all:wealth:settlement",
+            product_id="wealth",
+            transaction_type=TransactionType.MANUAL_REDEMPTION,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 30),
+            confirmation_date=date(2026, 7, 30),
+            settlement_date=settlement_date,
+            idempotency_key="redeem-all:wealth:settlement",
+            amount=Decimal("107.8"),
+            shares=Decimal("100"),
+            confirmation_nav=Decimal("1.078"),
+        )
+    )
+    PositionProjector(repository).rebuild()
+
+    payload = build_portfolio_payload(repository, as_of=as_of)
+    position_ids = {row["product_id"] for row in payload["positions"]}
+    redemption = next(
+        row
+        for row in payload["transactions"]
+        if row["id"] == "redeem-all:wealth:settlement"
+    )
+
+    assert ("wealth" in position_ids) is is_visible
+    assert redemption["settlement_date"] == "2026-07-31"
+
+
 def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
     database = PortfolioDatabase(tmp_path / "portfolio.db")
     database.initialize()
@@ -381,9 +479,12 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
         )
     PositionProjector(repository).rebuild()
 
-    profit_on_sip_confirmation = build_portfolio_payload(
+    sip_confirmation_payload = build_portfolio_payload(
         repository, as_of=date(2026, 7, 31)
-    )["products"][0]["latest_profit"]
+    )
+    profit_on_sip_confirmation = sip_confirmation_payload["products"][0][
+        "latest_profit"
+    ]
     profit_on_redemption_confirmation = build_portfolio_payload(
         repository, as_of=date(2026, 8, 3)
     )["products"][0]["latest_profit"]
@@ -392,8 +493,27 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
     )["products"][0]["latest_profit"]
 
     assert profit_on_sip_confirmation == "10"
+    assert sip_confirmation_payload["products"][0]["holding_profit"] == "10"
     assert profit_on_redemption_confirmation == "15"
     assert profit_after_redemption == "13"
+
+    service = PortfolioTransactionService(
+        repository,
+        PositionProjector(repository),
+    )
+    service.adjust_latest_profit(
+        "fund",
+        Decimal("7.5"),
+        date(2026, 8, 4),
+        "校准最新收益",
+        "web:latest-profit-consistency",
+    )
+    calibrated = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 8, 4),
+    )["products"][0]
+    assert calibrated["latest_profit"] == "7.5"
+    assert calibrated["holding_profit"] == "32.5"
 
 
 def test_profit_calibration_sets_baseline_then_future_nav_profit_continues(
@@ -450,10 +570,11 @@ def test_profit_calibration_sets_baseline_then_future_nav_profit_continues(
         "平台累计收益校准",
         "web:profit-baseline",
     )
-    calibrated = build_portfolio_payload(
+    calibrated_payload = build_portfolio_payload(
         repository,
         as_of=date(2026, 7, 30),
-    )["products"][0]
+    )
+    calibrated = calibrated_payload["products"][0]
     repository.upsert_quote(
         "fund",
         MarketQuote(
@@ -471,6 +592,7 @@ def test_profit_calibration_sets_baseline_then_future_nav_profit_continues(
     )["products"][0]
 
     assert calibrated["holding_profit"] == "25"
+    assert calibrated_payload["summary"]["latest_profit"] == "0"
     assert advanced["holding_profit"] == "35"
 
 
