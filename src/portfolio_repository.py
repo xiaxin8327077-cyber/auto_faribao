@@ -1,4 +1,5 @@
-from datetime import date
+from dataclasses import replace
+from datetime import date, datetime
 from decimal import Decimal
 import sqlite3
 from uuid import NAMESPACE_URL, uuid5
@@ -143,6 +144,8 @@ class PortfolioRepository:
     def create_transaction(
         self, tx: Transaction, conn: sqlite3.Connection | None = None
     ) -> Transaction:
+        if not tx.trade_time:
+            tx = replace(tx, trade_time=datetime.now().strftime("%H:%M:%S"))
         if conn is None:
             with self.database.transaction() as owned:
                 return self.create_transaction(tx, owned)

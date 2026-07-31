@@ -949,6 +949,7 @@ class PortfolioTransactionService:
                 confirmation_nav=unit_cost,
                 note=reason,
                 created_by=actor,
+                trade_time=datetime.now().strftime("%H:%M:%S"),
             )
             self.repository.create_transaction(adjustment, conn)
             self._rebuild_positions({product_id}, conn)
@@ -1070,6 +1071,7 @@ class PortfolioTransactionService:
                 confirmation_date=effective_date,
                 note=reason,
                 created_by=actor,
+                trade_time=datetime.now().strftime("%H:%M:%S"),
             )
             self.repository.create_transaction(adjustment, conn)
             self._append_operation_audit(
