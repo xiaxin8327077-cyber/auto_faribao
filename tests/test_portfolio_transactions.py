@@ -1419,6 +1419,38 @@ def test_adjust_holding_is_idempotent_against_original_actual_request(
         ).fetchone()[0] == 1
 
 
+def test_adjustment_services_allow_reason_to_be_omitted(services):
+    repository, transactions, _ = services
+    seed_cash(repository, "cash", "1000")
+
+    holding_adjustment = transactions.adjust_holding(
+        "cash",
+        Decimal("999"),
+        TRADE_DATE,
+        idempotency_key="web:adjust-without-reason",
+    )
+    profit_adjustment = transactions.adjust_holding_profit(
+        "cash",
+        Decimal("1"),
+        TRADE_DATE,
+        idempotency_key="web:adjust-profit-without-reason",
+    )
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_opening_position(repository, "fund", "100")
+    seed_quote(repository, fund, date(2026, 7, 29), Decimal("1"))
+    seed_quote(repository, fund, TRADE_DATE, Decimal("1.1"))
+    latest_profit_adjustment = transactions.adjust_latest_profit(
+        "fund",
+        Decimal("7.5"),
+        TRADE_DATE,
+        idempotency_key="web:adjust-latest-without-reason",
+    )
+
+    assert holding_adjustment.note == ""
+    assert profit_adjustment.note == ""
+    assert latest_profit_adjustment.note == ""
+
+
 def test_adjust_holding_retry_rejects_corrupt_cost_payload(services):
     repository, transactions, _ = services
     seed_cash(repository, "cash", "1000")
@@ -1636,7 +1668,6 @@ def test_concurrent_holding_adjustments_serialize_without_negative_holding(
     [
         ("reverse", " ", "web", "reason must not be empty"),
         ("reverse", "录入错误", " ", "actor must not be empty"),
-        ("adjust", " ", "web", "reason must not be empty"),
         ("adjust", "平台份额校准", " ", "actor must not be empty"),
     ],
 )

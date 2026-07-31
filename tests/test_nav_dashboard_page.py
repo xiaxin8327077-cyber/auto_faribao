@@ -335,10 +335,10 @@ def test_product_create_preserves_preview_identity_for_submit():
     assert "registration_code" in html
 
 
-def test_disable_payload_and_transaction_note_are_preserved():
+def test_management_dialogs_do_not_render_note_or_description_fields():
     html = _read_page()
     assert "payload: {operation: 'disable', product_id: control.dataset.productId}" in html
-    assert '<textarea name="note" maxlength="300"></textarea>' in html
+    assert '<textarea name="note"' not in html
     trade_submit = html[html.index("$('tradeForm').addEventListener"):html.index(
         "$('adjustmentForm').addEventListener"
     )]
@@ -469,7 +469,12 @@ def test_holding_controls_support_delete_and_profit_calibration_without_reversal
     page = PAGE_PATH.read_text(encoding="utf-8")
 
     assert 'name="profit"' in page
-    assert 'data-write-operation="delete-holding"' in page
+    assert 'class="manage-name-row"' in page
+    assert 'class="manage-icon-action" type="button" data-write-operation="disable-product"' in page
+    assert 'class="manage-icon-action" type="button" data-write-operation="delete-holding"' in page
+    assert 'class="row-action" type="button" data-write-operation="disable-product"' not in page
+    assert 'class="row-action" type="button" data-write-operation="delete-holding"' not in page
+    assert ".manage-icon-action" in page
     assert 'data-write-operation="reverse"' not in page
 
 
@@ -485,6 +490,22 @@ def test_transaction_list_hides_internal_ledger_rows():
         "reversal",
     ):
         assert transaction_type in page
+
+
+def test_calibration_transactions_have_an_exclusive_filter():
+    page = PAGE_PATH.read_text(encoding="utf-8")
+
+    assert 'data-transaction-filter="adjustment">校准</button>' in page
+    assert "const CALIBRATION_TRANSACTION_TYPES = new Set([" in page
+    for transaction_type in (
+        "holding_adjustment",
+        "profit_adjustment",
+        "latest_profit_adjustment",
+    ):
+        assert transaction_type in page
+    assert "if (transactionFilter === 'adjustment') return calibration;" in page
+    assert "if (calibration) return false;" in page
+    assert "status === 'reversed' ? 'cancelled' : status" in page
 
 
 def test_top_metrics_unchanged():

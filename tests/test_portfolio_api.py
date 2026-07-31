@@ -1161,7 +1161,7 @@ def test_mobile_compatibility_preview_and_adjustment_routes_are_not_404(client):
         assert response.status_code != 404
 
 
-def test_position_adjustment_accepts_shares_and_cumulative_profit(api_setup):
+def test_position_adjustment_accepts_shares_and_profit_without_note(api_setup):
     client, _, repository, _ = api_setup
 
     response = client.post(
@@ -1172,7 +1172,6 @@ def test_position_adjustment_accepts_shares_and_cumulative_profit(api_setup):
             "shares": "900",
             "profit": "12.34",
             "effective_date": "2026-07-30",
-            "note": "平台校准",
         },
     )
 
@@ -1185,7 +1184,7 @@ def test_position_adjustment_accepts_shares_and_cumulative_profit(api_setup):
     assert repository.get_position("cash").total_shares == Decimal("900")
 
 
-def test_latest_profit_adjustment_updates_latest_and_cumulative_profit(api_setup):
+def test_latest_profit_adjustment_updates_profits_without_note(api_setup):
     client, _, repository, _ = api_setup
     repository.create_transaction(
         Transaction(
@@ -1223,7 +1222,6 @@ def test_latest_profit_adjustment_updates_latest_and_cumulative_profit(api_setup
         json={
             "product_id": "fund",
             "profit": "7.50",
-            "note": "校准最新收益",
         },
     )
 

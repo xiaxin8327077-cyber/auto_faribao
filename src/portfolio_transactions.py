@@ -870,8 +870,8 @@ class PortfolioTransactionService:
         product_id,
         actual_shares,
         effective_date,
-        reason,
-        idempotency_key,
+        reason="",
+        idempotency_key=None,
         actor="web",
     ) -> Transaction:
         try:
@@ -882,7 +882,7 @@ class PortfolioTransactionService:
             ) from exc
         if not actual_shares.is_finite() or actual_shares < ZERO:
             raise ValueError("actual_shares must be non-negative and finite")
-        reason = self._nonempty_text(reason, "reason")
+        reason = str(reason or "").strip()
         idempotency_key = self._nonempty_text(
             idempotency_key, "idempotency_key"
         )
@@ -990,8 +990,8 @@ class PortfolioTransactionService:
         product_id,
         actual_profit,
         effective_date,
-        reason,
-        idempotency_key,
+        reason="",
+        idempotency_key=None,
         actor="web",
     ) -> Transaction:
         try:
@@ -1000,7 +1000,7 @@ class PortfolioTransactionService:
             raise ValueError("actual_profit must be finite") from exc
         if not actual_profit.is_finite():
             raise ValueError("actual_profit must be finite")
-        reason = self._nonempty_text(reason, "reason")
+        reason = str(reason or "").strip()
         idempotency_key = self._nonempty_text(
             idempotency_key,
             "idempotency_key",
@@ -1102,8 +1102,8 @@ class PortfolioTransactionService:
         product_id,
         actual_profit,
         latest_profit_date,
-        reason,
-        idempotency_key,
+        reason="",
+        idempotency_key=None,
         actor="web",
         as_of=None,
     ) -> Transaction:
@@ -1113,7 +1113,7 @@ class PortfolioTransactionService:
             raise ValueError("actual_profit must be finite") from exc
         if not actual_profit.is_finite():
             raise ValueError("actual_profit must be finite")
-        reason = self._nonempty_text(reason, "reason")
+        reason = str(reason or "").strip()
         idempotency_key = self._nonempty_text(
             idempotency_key,
             "idempotency_key",

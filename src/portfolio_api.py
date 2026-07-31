@@ -994,9 +994,9 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         effective = _parse_date(
             body.get("effective_date"), "effective_date", date.today()
         )
-        reason = _required_text(
-            body.get("reason") or body.get("note"), "reason"
-        )
+        reason = str(
+            body.get("reason") or body.get("note") or ""
+        ).strip()
         preview = {
             "product_id": product_id,
             "actual_shares": decimal_text(actual),
@@ -1033,9 +1033,9 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             body.get("latest_profit", body.get("profit")),
             "latest_profit",
         )
-        reason = _required_text(
-            body.get("reason") or body.get("note"), "reason"
-        )
+        reason = str(
+            body.get("reason") or body.get("note") or ""
+        ).strip()
         profit_date, current_profit = calculate_latest_profit(
             repo,
             product,
