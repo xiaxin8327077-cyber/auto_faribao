@@ -13,7 +13,7 @@ def test_page_has_four_management_tabs_and_quick_trade():
     for element_id in (
         "overviewTab", "positionsTab", "transactionsTab", "sipTab",
         "overviewPanel", "positionsPanel", "transactionsPanel", "sipPanel",
-        "quickTradeButton", "productDialog", "tradeDialog",
+        "quickTradeButton", "tradeDialog",
         "confirmDialog", "sipDialog", "adjustmentDialog",
     ):
         assert f'id="{element_id}"' in html
@@ -103,12 +103,27 @@ def test_public_fund_position_shares_show_two_decimal_places():
     assert "number(shares).toFixed(2)" in html
 
 
+def test_products_are_added_inline_from_trade_or_sip_dialog_only():
+    html = _read_page()
+
+    assert 'data-write-action="product"' not in html
+    assert 'id="productDialog"' not in html
+    assert 'id="productForm"' not in html
+    assert 'name="new_fund_code"' in html
+    assert 'id="tradeFundCode"' in html
+    assert 'id="sipFundCode"' in html
+    assert "async function ensureInlineFund" in html
+    assert "await ensureInlineFund" in html
+    assert "productOptions('sipProduct', 'public_fund')" in html
+
+
 def test_product_create_preserves_preview_identity_for_submit():
     html = _read_page()
-    # 服务器契约：previewAction 统一从 previewData.product 取产品身份。
+    # 单弹窗添加基金时，仍将预览返回的完整身份带入产品提交。
     assert "const previewIdentity = previewData.product || null" in html
     assert "submitPayload = {...payload, ...previewIdentity" in html
-    assert "capturePreviewIdentity: true" in html
+    assert "const identity = preview.product;" in html
+    assert "identity_fingerprint: preview.identity_fingerprint" in html
     assert "registration_code" in html
 
 
@@ -119,7 +134,8 @@ def test_disable_payload_and_transaction_note_are_preserved():
     trade_submit = html[html.index("$('tradeForm').addEventListener"):html.index(
         "$('adjustmentForm').addEventListener"
     )]
-    assert "payload: formPayload(event.currentTarget)" in trade_submit
+    assert "formPayload(event.currentTarget)" in trade_submit
+    assert "await ensureInlineFund" in trade_submit
 
 
 def test_holding_css_rule_exists():

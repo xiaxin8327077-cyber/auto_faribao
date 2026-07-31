@@ -10,6 +10,7 @@ from src.nav_monitor import ProviderError
 from src.portfolio_models import MarketProduct, ProductType
 from src.portfolio_providers import (
     CiticPortfolioProvider,
+    EastmoneyFundProvider,
     NanyinPortfolioProvider,
     get_market_provider,
 )
@@ -462,6 +463,7 @@ def test_quote_item_rejects_different_product_code(provider, product, item):
 def test_market_provider_factory_returns_bank_adapters_and_rejects_unknown():
     assert isinstance(get_market_provider("citic_wealth"), CiticPortfolioProvider)
     assert isinstance(get_market_provider("nanyin_wealth"), NanyinPortfolioProvider)
+    assert isinstance(get_market_provider("eastmoney_fund"), EastmoneyFundProvider)
     with pytest.raises(ProviderError, match="不支持的行情机构"):
         get_market_provider("unknown")
     assert (
@@ -470,6 +472,69 @@ def test_market_provider_factory_returns_bank_adapters_and_rejects_unknown():
         .product_type
         is ProductType.CASH_MANAGEMENT
     )
+
+
+def test_eastmoney_provider_resolves_arbitrary_public_fund_and_latest_nav():
+    def opener(request, timeout=10):
+        assert timeout == 10
+        if "FundSearchAPI" in request.full_url:
+            return {
+                "ErrCode": 0,
+                "Datas": [
+                    {
+                        "CODE": "000001",
+                        "NAME": "华夏成长混合",
+                        "CATEGORY": 700,
+                        "FundBaseInfo": {
+                            "FCODE": "000001",
+                            "SHORTNAME": "华夏成长混合",
+                            "JJGS": "华夏基金",
+                            "FTYPE": "混合型-灵活",
+                        },
+                    }
+                ],
+            }
+        assert "fundCode=000001" in request.full_url
+        query = urllib.parse.parse_qs(
+            urllib.parse.urlparse(request.full_url).query
+        )
+        assert query["pageSize"] == ["100"]
+        return {
+            "ErrCode": 0,
+            "Data": {
+                "LSJZList": [
+                    {
+                        "FSRQ": "2026-07-30",
+                        "DWJZ": "1.2210",
+                        "LJJZ": "3.7940",
+                    },
+                    {
+                        "FSRQ": "2026-07-29",
+                        "DWJZ": "1.3040",
+                        "LJJZ": "3.8770",
+                    },
+                ]
+            },
+        }
+
+    provider = EastmoneyFundProvider(opener=opener)
+    product = provider.resolve_product("000001")
+    quotes = provider.fetch_quotes(
+        product,
+        date(2026, 7, 29),
+        date(2026, 7, 30),
+    )
+
+    assert product.code == "000001"
+    assert product.name == "华夏成长混合"
+    assert product.product_type is ProductType.PUBLIC_FUND
+    assert product.metadata["fund_company"] == "华夏基金"
+    assert [quote.quote_date for quote in quotes] == [
+        date(2026, 7, 30),
+        date(2026, 7, 29),
+    ]
+    assert quotes[0].unit_nav == Decimal("1.2210")
+    assert quotes[0].cumulative_nav == Decimal("3.7940")
 
 
 def test_market_provider_factory_constructs_changsheng_seam(monkeypatch):

@@ -143,7 +143,7 @@ def _runtime_reason(runtime):
 def _infer_provider(code, product_type):
     normalized = code.strip().upper()
     if product_type == ProductType.PUBLIC_FUND.value:
-        return "changsheng_fund"
+        return "eastmoney_fund"
     if normalized.startswith(("AF", "AM")):
         return "citic_wealth"
     if normalized.startswith("NY"):
@@ -615,7 +615,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             "product": identity,
             "identity_fingerprint": fingerprint,
             "quote": _json_value(quote),
-            "message": "official identity and quote verified",
+            "message": "product identity and latest quote verified",
         }, resolved, quote
 
     def transaction_preview(body):

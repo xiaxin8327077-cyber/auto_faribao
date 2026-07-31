@@ -369,7 +369,7 @@
       </section>
 
       <section id="positionsPanel" class="management-panel" role="tabpanel" aria-labelledby="positionsTab" hidden>
-        <div class="panel-heading"><h2>产品持仓</h2><button class="action-button" type="button" data-write-action="product">添加产品</button></div>
+        <div class="panel-heading"><h2>产品持仓</h2></div>
         <div class="write-notice" id="positionsWriteNotice" hidden></div>
         <div class="manage-list" id="positionsList"><div class="empty">正在读取持仓...</div></div>
       </section>
@@ -417,18 +417,10 @@
     </section>
   </div>
 
-  <dialog class="management-dialog" id="productDialog" aria-labelledby="productDialogTitle">
-    <form id="productForm" method="dialog"><header class="dialog-head"><h2 id="productDialogTitle">添加产品</h2><button class="icon-button" type="button" data-close-dialog="productDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <label class="form-field">产品名称<input name="name" required maxlength="100" autocomplete="off"></label>
-      <label class="form-field">产品类型<select name="wealth_type"><option value="wealth_nav">净值型理财</option><option value="cash_management">现金管理</option><option value="public_fund">公募基金</option></select></label>
-      <label class="form-field">产品代码<input name="code" maxlength="80" autocomplete="off"></label>
-      <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="productDialog">取消</button><button class="action-button" type="submit">预览</button></div>
-    </div></form>
-  </dialog>
-
   <dialog class="management-dialog" id="tradeDialog" aria-labelledby="tradeDialogTitle">
     <form id="tradeForm" method="dialog"><header class="dialog-head"><h2 id="tradeDialogTitle">新建交易</h2><button class="icon-button" type="button" data-close-dialog="tradeDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <label class="form-field">产品<select name="product_id" id="tradeProduct" required></select></label>
+      <label class="form-field">已有产品<select name="product_id" id="tradeProduct"></select></label>
+      <label class="form-field">或输入新公募基金代码<input name="new_fund_code" id="tradeFundCode" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="例如：000001" autocomplete="off"></label>
       <label class="form-field">交易类型<select name="transaction_type" id="tradeKind"><option value="purchase">申购</option><option value="redemption">赎回</option></select></label>
       <label class="form-field" id="tradeValueLabel">申购金额（元）<input id="tradeValueInput" name="amount" type="number" min="0.0001" step="0.0001" required inputmode="decimal"></label>
       <label class="form-field" id="tradeTimeLabel">申购时间<input id="tradeTimeInput" name="trade_time" type="datetime-local" required></label>
@@ -446,7 +438,7 @@
 
   <dialog class="management-dialog" id="sipDialog" aria-labelledby="sipDialogTitle">
     <form id="sipForm" method="dialog"><header class="dialog-head"><h2 id="sipDialogTitle">定投计划</h2><button class="icon-button" type="button" data-close-dialog="sipDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <label class="form-field">产品<select name="product_id" id="sipProduct" required></select></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
+      <label class="form-field">已有公募基金<select name="product_id" id="sipProduct"></select></label><label class="form-field">或输入新公募基金代码<input name="new_fund_code" id="sipFundCode" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="例如：000001" autocomplete="off"></label><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存计划</button></div>
     </div></form>
   </dialog>
@@ -586,9 +578,12 @@
     function positionTypeLabel(value) {
       return ({wealth_nav: '净值型理财', cash_management: '现金管理', public_fund: '公募基金'})[value] || '其他产品';
     }
-    function productOptions(selectId) {
+    function productOptions(selectId, productType = '') {
       const select = $(selectId);
-      const rows = portfolioRows('products', []);
+      const rows = portfolioRows('products', []).filter(row => (
+        !productType
+        || String(rowValue(row, 'product_type', 'type')) === productType
+      ));
       select.innerHTML = `<option value="">请选择产品</option>${rows.map(row => {
         const id = rowValue(row, 'product_id', 'id', 'code');
         const label = rowValue(row, 'name', 'product_name', 'code') || '未命名产品';
@@ -614,7 +609,7 @@
       const rows = positions;
       const groups = ['wealth_nav', 'cash_management', 'public_fund'];
       const list = $('positionsList');
-      if (!rows.length) { list.innerHTML = '<div class="empty">暂无持仓，请先添加产品。</div>'; return; }
+      if (!rows.length) { list.innerHTML = '<div class="empty">暂无持仓，可在交易或定投中添加产品。</div>'; return; }
       list.innerHTML = groups.map(group => {
         const groupRows = rows.filter(row => rowValue(row, 'wealth_type', 'type', 'category', 'product_type') === group);
         if (!groupRows.length) return '';
@@ -1039,6 +1034,7 @@
         'The trade will remain pending until a quote arrives.': '当前尚无交易日净值，系统获取净值后会自动确认。',
         'This operation changes immutable ledger state.': '此操作会保留原始流水，并新增取消或冲正记录。',
         'official identity and quote verified': '已核验官网产品身份和最新行情。',
+        'product identity and latest quote verified': '已核验基金身份和最新公开净值。',
         'SIP plan will be updated': '将保存定投计划修改，计划状态保持不变。',
         'SIP plan will be activated': '将保存并启用定投计划。',
         'SIP plan will be saved as draft': '将定投计划保存为草稿。',
@@ -1176,7 +1172,7 @@
     }
     function openSip(sipId = '') {
       if (!state.writeEnabled) return;
-      productOptions('sipProduct');
+      productOptions('sipProduct', 'public_fund');
       fillSipSource();
       const existing = portfolioRows('sip_plans', portfolioRows('sips', [])).find(row => String(rowValue(row, 'id', 'sip_id')) === String(sipId));
       const form = $('sipForm');
@@ -1211,6 +1207,69 @@
       form.elements.effective_date.value = new Date().toLocaleDateString('en-CA');
       dialogOpen('adjustmentDialog');
     }
+    async function ensureInlineFund(form, payload) {
+      const code = String(payload.new_fund_code || '').trim();
+      delete payload.new_fund_code;
+      if (!code) {
+        if (!payload.product_id) throw new Error('请选择已有产品或输入6位基金代码');
+        return payload;
+      }
+      if (!/^\d{6}$/.test(code)) throw new Error('公募基金代码必须为6位数字');
+      const existing = portfolioRows('products', []).find(row => (
+        String(rowValue(row, 'code', 'product_code')) === code
+        && String(rowValue(row, 'product_type', 'type')) === 'public_fund'
+      ));
+      if (existing) {
+        payload.product_id = rowValue(existing, 'id', 'product_id');
+        return payload;
+      }
+
+      const productPayload = {code, product_type: 'public_fund'};
+      const idempotencyKey = newIdempotencyKey();
+      const previewResult = await requestJson(
+        '/api/portfolio/products/preview',
+        productPayload,
+        idempotencyKey
+      );
+      const preview = previewResult?.preview || previewResult || {};
+      const identity = preview.product;
+      if (!identity?.registration_code || !preview.identity_fingerprint) {
+        throw new Error('基金代码校验未返回完整产品身份');
+      }
+      const submitPayload = {
+        ...productPayload,
+        ...identity,
+        identity: {
+          provider: identity.provider,
+          code: identity.code,
+          name: identity.name,
+          product_type: identity.product_type,
+          registration_code: identity.registration_code,
+        },
+        identity_fingerprint: preview.identity_fingerprint,
+      };
+      const created = await requestJson(
+        '/api/portfolio/products',
+        submitPayload,
+        idempotencyKey
+      );
+      const product = created?.product;
+      if (!product?.id) throw new Error('基金添加成功但未返回产品编号');
+      const portfolio = state.data?.portfolio || state.data;
+      if (Array.isArray(portfolio?.products)) portfolio.products.push(product);
+      payload.product_id = product.id;
+      return payload;
+    }
+    function showFormError(form, error) {
+      let element = form.querySelector('.form-error');
+      if (!element) {
+        element = document.createElement('p');
+        element.className = 'form-error';
+        element.style.cssText = 'color:#b91c1c;margin:8px 0 0;font-size:14px;word-break:break-word;';
+        form.querySelector('.dialog-body')?.appendChild(element);
+      }
+      element.textContent = error.message;
+    }
     async function simpleOperation(operation, id) {
       if (!state.writeEnabled) return;
       const isSipOperation = operation === 'sip-activate' || operation === 'sip-pause' || operation === 'sip-resume' || operation === 'sip-delete';
@@ -1235,7 +1294,6 @@
         updateWriteControls();
         return;
       }
-      if (button.dataset.writeAction === 'product') dialogOpen('productDialog');
       if (button.dataset.writeAction === 'trade') openTrade();
       if (button.dataset.writeAction === 'sip') openSip();
     }));
@@ -1275,27 +1333,38 @@
       const product = portfolioRows('positions', portfolioRows('products', [])).find(row => String(rowValue(row, 'product_id', 'id', 'code')) === String(view.dataset.viewProduct));
       $('statusText').textContent = product ? `${rowValue(product, 'name', 'product_name', 'code')}：当前市值 ${rowValue(product, 'market_value', 'value', 'holding_value') || '--'} 元` : '未找到该产品详情。';
     });
-    $('productForm').addEventListener('submit', event => {
+    $('tradeForm').addEventListener('submit', async event => {
       event.preventDefault();
-      previewAction({previewPath: '/api/portfolio/products/preview', submitPath: '/api/portfolio/products', payload: formPayload(event.currentTarget), originDialog: 'productDialog', capturePreviewIdentity: true});
-    });
-    $('tradeForm').addEventListener('submit', event => {
-      event.preventDefault();
-      previewAction({previewPath: '/api/portfolio/transactions/preview', submitPath: '/api/portfolio/transactions', payload: formPayload(event.currentTarget), originDialog: 'tradeDialog'});
+      try {
+        const payload = await ensureInlineFund(
+          event.currentTarget,
+          formPayload(event.currentTarget)
+        );
+        previewAction({previewPath: '/api/portfolio/transactions/preview', submitPath: '/api/portfolio/transactions', payload, originDialog: 'tradeDialog'});
+      } catch (error) {
+        showFormError(event.currentTarget, error);
+      }
     });
     $('adjustmentForm').addEventListener('submit', event => {
       event.preventDefault();
       previewAction({previewPath: '/api/portfolio/positions/adjustments/preview', submitPath: '/api/portfolio/positions/adjustments', payload: formPayload(event.currentTarget), originDialog: 'adjustmentDialog'});
     });
-    $('sipForm').addEventListener('submit', event => {
+    $('sipForm').addEventListener('submit', async event => {
       event.preventDefault();
       if (!state.writeEnabled) return;
       const form = event.currentTarget;
-      const payload = {...formPayload(form), activate: true, sip_id: form.dataset.sipId || undefined};
-      previewAction({
-        previewPath: '/api/portfolio/sip-plans/preview', submitPath: '/api/portfolio/sip-plans',
-        payload, originDialog: 'sipDialog',
-      });
+      try {
+        const payload = await ensureInlineFund(
+          form,
+          {...formPayload(form), activate: true, sip_id: form.dataset.sipId || undefined}
+        );
+        previewAction({
+          previewPath: '/api/portfolio/sip-plans/preview', submitPath: '/api/portfolio/sip-plans',
+          payload, originDialog: 'sipDialog',
+        });
+      } catch (error) {
+        showFormError(form, error);
+      }
     });
     $('confirmSubmitButton').addEventListener('click', submitPendingAction);
     $('dailyProfitBackdrop').addEventListener('click', event => {

@@ -415,6 +415,127 @@ class ChangshengFundProvider:
         )
 
 
+class EastmoneyFundProvider:
+    provider = "eastmoney_fund"
+    SEARCH_URL = (
+        "https://fundsuggest.eastmoney.com/"
+        "FundSearch/api/FundSearchAPI.ashx"
+    )
+    NAV_URL = "https://api.fund.eastmoney.com/f10/lsjz"
+
+    def __init__(self, opener=None):
+        self.opener = opener or _open_json_request
+
+    def resolve_product(self, code: str) -> MarketProduct:
+        normalized = _normalize_code(code)
+        if len(normalized) != 6 or not normalized.isdigit():
+            raise ProviderError("公募基金代码必须为6位数字")
+        query = urllib.parse.urlencode({"m": "1", "key": normalized})
+        request = urllib.request.Request(
+            f"{self.SEARCH_URL}?{query}",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        try:
+            data = self.opener(request, timeout=10)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError("公开基金身份接口请求失败") from exc
+        candidates = data.get("Datas") if isinstance(data, dict) else None
+        exact = [
+            item
+            for item in (candidates or [])
+            if (
+                isinstance(item, dict)
+                and str(item.get("CODE") or "").strip() == normalized
+                and item.get("CATEGORY") == 700
+                and isinstance(item.get("FundBaseInfo"), dict)
+            )
+        ]
+        if not exact:
+            raise ProviderError("未找到该公募基金")
+        item = exact[0]
+        base = item["FundBaseInfo"]
+        name = str(
+            base.get("SHORTNAME") or item.get("NAME") or ""
+        ).strip()
+        if not name:
+            raise ProviderError("公开基金身份信息不完整")
+        return MarketProduct(
+            self.provider,
+            normalized,
+            name,
+            ProductType.PUBLIC_FUND,
+            normalized,
+            metadata={
+                "fund_company": str(base.get("JJGS") or "").strip(),
+                "fund_type": str(base.get("FTYPE") or "").strip(),
+                "source": "eastmoney_public_fund",
+            },
+        )
+
+    def fetch_quotes(self, product, start_date, end_date) -> list[MarketQuote]:
+        _require_product(self.provider, product)
+        resolved = self.resolve_product(product.code)
+        query = urllib.parse.urlencode(
+            {
+                "fundCode": resolved.code,
+                "pageIndex": 1,
+                "pageSize": 100,
+                "startDate": start_date.isoformat(),
+                "endDate": end_date.isoformat(),
+            }
+        )
+        request = urllib.request.Request(
+            f"{self.NAV_URL}?{query}",
+            headers={
+                "Referer": "https://fundf10.eastmoney.com/",
+                "User-Agent": "Mozilla/5.0",
+            },
+        )
+        try:
+            data = self.opener(request, timeout=10)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError("公开基金净值接口请求失败") from exc
+        if not isinstance(data, dict) or data.get("ErrCode") != 0:
+            raise ProviderError("公开基金净值接口状态异常")
+        payload = data.get("Data")
+        rows = payload.get("LSJZList") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise ProviderError("公开基金净值数据格式异常")
+
+        quotes = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                quote_date = datetime.strptime(
+                    str(row.get("FSRQ") or "").strip(),
+                    "%Y-%m-%d",
+                ).date()
+                if not start_date <= quote_date <= end_date:
+                    continue
+                quote = MarketQuote(
+                    product_code=resolved.code,
+                    quote_date=quote_date,
+                    unit_nav=_parse_decimal(row.get("DWJZ")),
+                    cumulative_nav=_optional_decimal(row.get("LJJZ")),
+                    source=self.provider,
+                    raw_hash=_raw_hash(row),
+                )
+                validate_market_quote(ProductType.PUBLIC_FUND, quote)
+            except Exception as exc:
+                raise ProviderError("公开基金净值数据无效") from exc
+            quotes.append(quote)
+        return sorted(
+            quotes,
+            key=lambda quote: quote.quote_date,
+            reverse=True,
+        )
+
+
 def get_market_provider(provider: str):
     if provider == "citic_wealth":
         return CiticPortfolioProvider()
@@ -422,4 +543,6 @@ def get_market_provider(provider: str):
         return NanyinPortfolioProvider()
     if provider == "changsheng_fund":
         return ChangshengFundProvider()
+    if provider == "eastmoney_fund":
+        return EastmoneyFundProvider()
     raise ProviderError(f"不支持的行情机构：{provider}")
