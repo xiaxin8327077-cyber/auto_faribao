@@ -673,9 +673,17 @@ def _merge_overview_products(legacy_products, ledger_products):
             str(row.get("id") or row.get("product_id") or ""),
         )
 
+    inactive_ledger_keys = {
+        product_key(row)
+        for row in ledger_products or []
+        if str(row.get("status") or "active").lower() != "active"
+    }
     for row in legacy_products or []:
         item = dict(row)
-        index_by_key[product_key(item)] = len(merged)
+        key = product_key(item)
+        if key in inactive_ledger_keys:
+            continue
+        index_by_key[key] = len(merged)
         merged.append(item)
 
     for row in ledger_products or []:

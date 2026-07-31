@@ -419,10 +419,13 @@
 
   <dialog class="management-dialog" id="tradeDialog" aria-labelledby="tradeDialogTitle">
     <form id="tradeForm" method="dialog"><header class="dialog-head"><h2 id="tradeDialogTitle">新建交易</h2><button class="icon-button" type="button" data-close-dialog="tradeDialog" aria-label="关闭">×</button></header><div class="dialog-body">
+      <label class="form-field">产品类型<select id="tradeProductType" required><option value="wealth_nav">理财</option><option value="cash_management">现金</option><option value="public_fund">公募基金</option></select></label>
       <label class="form-field">已有产品<select name="product_id" id="tradeProduct"></select></label>
-      <label class="form-field">或输入新公募基金代码<input name="new_fund_code" id="tradeFundCode" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="例如：000001" autocomplete="off"></label>
+      <label class="form-field" id="tradeFundCodeField" hidden>或输入新公募基金代码<input name="new_fund_code" id="tradeFundCode" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="例如：000001" autocomplete="off" disabled></label>
       <label class="form-field">交易类型<select name="transaction_type" id="tradeKind"><option value="purchase">申购</option><option value="redemption">赎回</option></select></label>
-      <label class="form-field" id="tradeValueLabel">申购金额（元）<input id="tradeValueInput" name="amount" type="number" min="0.0001" step="0.0001" required inputmode="decimal"></label>
+      <label class="form-field" id="tradeValueLabel">申购金额（元）<input id="tradeValueInput" name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label>
+      <label class="form-field" id="tradeFeeRateField" hidden>申购费率（%）<input name="fee_rate_percent" id="tradeFeeRateInput" type="number" min="0" max="100" step="0.0001" inputmode="decimal" required disabled></label>
+      <label class="form-field" id="tradeDestinationField" hidden>赎回到账<select name="destination_cash_product_id" id="tradeDestination" disabled><option value="">钱包</option></select></label>
       <label class="form-field" id="tradeTimeLabel">申购时间<input id="tradeTimeInput" name="trade_time" type="datetime-local" required></label>
       <label class="form-field">备注<textarea name="note" maxlength="300"></textarea></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="tradeDialog">取消</button><button class="action-button" type="submit">预览</button></div>
@@ -581,8 +584,11 @@
     function productOptions(selectId, productType = '') {
       const select = $(selectId);
       const rows = portfolioRows('products', []).filter(row => (
-        !productType
-        || String(rowValue(row, 'product_type', 'type')) === productType
+        String(rowValue(row, 'status') || 'active') === 'active'
+        && (
+          !productType
+          || String(rowValue(row, 'product_type', 'type')) === productType
+        )
       ));
       select.innerHTML = `<option value="">请选择产品</option>${rows.map(row => {
         const id = rowValue(row, 'product_id', 'id', 'code');
@@ -593,7 +599,10 @@
     function fillSipSource() {
       const select = $('sipSource');
       const products = portfolioRows('products', []);
-      const cashProducts = products.filter(p => String(rowValue(p, 'product_type', 'type')).toLowerCase() === 'cash_management');
+      const cashProducts = products.filter(p => (
+        String(rowValue(p, 'product_type', 'type')).toLowerCase() === 'cash_management'
+        && String(rowValue(p, 'status') || 'active') === 'active'
+      ));
       select.innerHTML = '<option value="">请选择现金管理产品</option>';
       cashProducts.forEach(p => {
         const id = rowValue(p, 'id');
@@ -602,6 +611,20 @@
         opt.value = id;
         opt.textContent = name;
         select.appendChild(opt);
+      });
+    }
+    function fillTradeDestination() {
+      const select = $('tradeDestination');
+      const cashProducts = portfolioRows('products', []).filter(product => (
+        String(rowValue(product, 'product_type', 'type')).toLowerCase() === 'cash_management'
+        && String(rowValue(product, 'status') || 'active') === 'active'
+      ));
+      select.innerHTML = '<option value="">钱包</option>';
+      cashProducts.forEach(product => {
+        const option = document.createElement('option');
+        option.value = rowValue(product, 'id', 'product_id');
+        option.textContent = rowValue(product, 'name', 'product_name', 'code') || '钱包Plus';
+        select.appendChild(option);
       });
     }
     function renderPositions() {
@@ -625,8 +648,9 @@
           const holdingProfit = rowValue(row, 'holding_profit', 'cumulative_profit');
           const cashYield = rowValue(row, 'per_10k_yield', 'per_ten_thousand_yield');
           const sevenDay = rowValue(row, 'seven_day_yield', 'seven_day_annualized_yield');
+          const sevenDayDisplay = sevenDay === '' ? '--' : `${(number(sevenDay) * 100).toFixed(2)}%`;
           const navStat = group === 'cash_management'
-            ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDay || '--')}</b></div>`
+            ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b></div>`
             : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b></div><div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
           return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(name)}</div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid">${navStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准</button><button class="row-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}">删除持仓</button><button class="row-action" type="button" data-view-product="${esc(id)}">查看</button><button class="row-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}">停用</button></div></article>`;
@@ -669,7 +693,8 @@
     }
     function renderTransactions() {
       const rows = portfolioRows('transactions').filter(row => (
-        !INTERNAL_TRANSACTION_TYPES.has(
+        String(rowValue(row, 'created_by')) !== 'wallet_migration'
+        && !INTERNAL_TRANSACTION_TYPES.has(
           String(rowValue(row, 'transaction_type', 'type')).toLowerCase()
         )
       ));
@@ -1043,16 +1068,17 @@
         true: '是', false: '否',
       };
       if (translations[text]) return translations[text];
+      if (path === 'normalized_input.fee_rate') return `${number(text) * 100}%`;
       if (path.endsWith('product_id') || path.endsWith('_cash_product_id')) return previewProductName(text);
       if (path === 'source_impact' || path === 'destination_impact') {
         const pending = text.match(/^(.+):pending_quote$/);
         if (pending) {
-          const target = pending[1] === 'external_cash' ? '外部资金' : previewProductName(pending[1]);
+          const target = pending[1] === 'external_cash' ? '钱包' : previewProductName(pending[1]);
           return `${target}：待净值确认`;
         }
         const match = text.match(/^(.+):([+-])(.+)$/);
         if (match) {
-          const target = match[1] === 'external_cash' ? '外部资金' : previewProductName(match[1]);
+          const target = match[1] === 'external_cash' ? '钱包' : previewProductName(match[1]);
           const action = match[2] === '-' ? '扣减' : '增加';
           const quantity = match[3] === 'pending_quote' ? '待净值确认' : match[3];
           return `${target} ${action} ${quantity}`;
@@ -1153,22 +1179,47 @@
     }
     function openTrade(productId = '') {
       if (!state.writeEnabled) return;
-      $('tradeForm').reset();
-      productOptions('tradeProduct');
+      const form = $('tradeForm');
+      form.reset();
+      const selectedProduct = portfolioRows('products', []).find(row => (
+        String(rowValue(row, 'id', 'product_id', 'code')) === String(productId)
+      ));
+      $('tradeProductType').value = rowValue(
+        selectedProduct,
+        'product_type',
+        'type'
+      ) || 'wealth_nav';
+      updateTradeProductType();
       $('tradeProduct').value = productId;
+      fillTradeDestination();
       const now = new Date();
       $('tradeTimeInput').value = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
       updateTradeValueField();
       dialogOpen('tradeDialog');
     }
+    function updateTradeProductType() {
+      const productType = $('tradeProductType').value;
+      const publicFund = productType === 'public_fund';
+      productOptions('tradeProduct', productType);
+      $('tradeFundCodeField').hidden = !publicFund;
+      $('tradeFundCode').disabled = !publicFund;
+      if (!publicFund) $('tradeFundCode').value = '';
+      updateTradeValueField();
+    }
     function updateTradeValueField() {
       const redemption = $('tradeKind').value === 'redemption';
+      const publicFund = $('tradeProductType').value === 'public_fund';
       const input = $('tradeValueInput');
       const label = $('tradeValueLabel');
       input.name = redemption ? 'shares' : 'amount';
       input.step = redemption ? '0.0001' : '0.01';
+      input.min = redemption ? '0.0001' : '0.01';
       label.firstChild.textContent = redemption ? '赎回份额' : '申购金额（元）';
       $('tradeTimeLabel').firstChild.textContent = redemption ? '赎回时间' : '申购时间';
+      $('tradeFeeRateField').hidden = !(publicFund && !redemption);
+      $('tradeFeeRateInput').disabled = !(publicFund && !redemption);
+      $('tradeDestinationField').hidden = !redemption;
+      $('tradeDestination').disabled = !redemption;
     }
     function openSip(sipId = '') {
       if (!state.writeEnabled) return;
@@ -1282,6 +1333,7 @@
     }
     $('refreshButton').addEventListener('click', refresh);
     $('tradeKind').addEventListener('change', updateTradeValueField);
+    $('tradeProductType').addEventListener('change', updateTradeProductType);
     $('cumulativeProfitTrigger').addEventListener('click', openDailyProfits);
     $('dailyProfitClose').addEventListener('click', closeDailyProfits);
     document.querySelectorAll('[data-profit-view]').forEach(tab => {
@@ -1336,11 +1388,16 @@
     $('tradeForm').addEventListener('submit', async event => {
       event.preventDefault();
       try {
-        const payload = await ensureInlineFund(
+        const payload = formPayload(event.currentTarget);
+        if (payload.fee_rate_percent !== undefined) {
+          payload.fee_rate = String(number(payload.fee_rate_percent) / 100);
+        }
+        delete payload.fee_rate_percent;
+        const normalizedPayload = await ensureInlineFund(
           event.currentTarget,
-          formPayload(event.currentTarget)
+          payload
         );
-        previewAction({previewPath: '/api/portfolio/transactions/preview', submitPath: '/api/portfolio/transactions', payload, originDialog: 'tradeDialog'});
+        previewAction({previewPath: '/api/portfolio/transactions/preview', submitPath: '/api/portfolio/transactions', payload: normalizedPayload, originDialog: 'tradeDialog'});
       } catch (error) {
         showFormError(event.currentTarget, error);
       }

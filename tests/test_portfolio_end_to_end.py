@@ -14,6 +14,7 @@ from src.portfolio_reports import build_portfolio_query_report
 from src.portfolio_repository import PortfolioRepository
 from src.portfolio_runtime import initialize_portfolio
 from src.portfolio_view import build_portfolio_payload
+from src.portfolio_wallet import WALLET_PRODUCT_ID
 
 
 def _seed_runtime(tmp_path, with_legacy=True):
@@ -45,6 +46,12 @@ def test_first_start_migrates_legacy_cash(tmp_path):
     payload = build_portfolio_payload(runtime.repository)
     codes = {row["code"] for row in payload["products"]}
     assert "NYRR000007" in codes
+    assert "WALLETPLUS" in codes
+    old_cash = next(row for row in payload["products"] if row["code"] == "NYRR000007")
+    wallet = next(row for row in payload["products"] if row["code"] == "WALLETPLUS")
+    assert old_cash["status"] == "inactive"
+    assert old_cash["shares"] == "0"
+    assert wallet["shares"] == "10936.1"
     assert payload["write_enabled"] is True
 
 
@@ -52,7 +59,7 @@ def test_manual_purchase_and_sip_settlement(tmp_path):
     runtime, _cfg = _seed_runtime(tmp_path)
     repo = runtime.repository
 
-    cash = repo.list_products()[0]
+    cash = repo.require_product(WALLET_PRODUCT_ID)
     _add_product(repo, "fund", "changsheng_fund", "003103", "长盛盛裕纯债C", ProductType.PUBLIC_FUND)
     repo.upsert_quote("fund", MarketQuote(
         product_code="003103", quote_date=date(2026, 7, 30),
@@ -61,9 +68,9 @@ def test_manual_purchase_and_sip_settlement(tmp_path):
     ), fetched_at="2026-07-30T09:00:00")
     repo.upsert_quote(cash.id, MarketQuote(
         product_code=cash.code, quote_date=date(2026, 7, 30),
-        source="nanyin_wealth", raw_hash="c1",
-        income_per_10k=Decimal("0.4475"),
-        seven_day_annualized_rate=Decimal("0.016315"),
+        source="wallet_plus_fixed", raw_hash="c1",
+        income_per_10k=Decimal("0.3644"),
+        seven_day_annualized_rate=Decimal("0.0133"),
     ), fetched_at="2026-07-30T09:00:00")
 
     result = run_portfolio_cycle(runtime, datetime(2026, 7, 30, 18, 0))
@@ -81,12 +88,12 @@ def test_cycle_database_idempotent_across_runs(tmp_path):
     runtime, _cfg = _seed_runtime(tmp_path)
     repo = runtime.repository
     _add_product(repo, "fund", "changsheng_fund", "003103", "长盛盛裕纯债C", ProductType.PUBLIC_FUND)
-    cash = repo.list_products()[0]
+    cash = repo.require_product(WALLET_PRODUCT_ID)
     repo.upsert_quote(cash.id, MarketQuote(
         product_code=cash.code, quote_date=date(2026, 7, 30),
-        source="nanyin_wealth", raw_hash="idem1",
-        income_per_10k=Decimal("0.4475"),
-        seven_day_annualized_rate=Decimal("0.016315"),
+        source="wallet_plus_fixed", raw_hash="idem1",
+        income_per_10k=Decimal("0.3644"),
+        seven_day_annualized_rate=Decimal("0.0133"),
     ), fetched_at="2026-07-30T09:00:00")
 
     run_portfolio_cycle(runtime, datetime(2026, 7, 30, 18, 0))
@@ -102,18 +109,18 @@ def test_cycle_database_idempotent_across_runs(tmp_path):
 
 def test_read_only_report_uses_repository(tmp_path):
     runtime, _cfg = _seed_runtime(tmp_path)
-    cash = runtime.repository.list_products()[0]
+    cash = runtime.repository.require_product(WALLET_PRODUCT_ID)
     runtime.repository.upsert_quote(cash.id, MarketQuote(
         product_code=cash.code, quote_date=date(2026, 7, 30),
-        source="nanyin_wealth", raw_hash="c2",
-        income_per_10k=Decimal("0.4475"),
-        seven_day_annualized_rate=Decimal("0.016315"),
+        source="wallet_plus_fixed", raw_hash="c2",
+        income_per_10k=Decimal("0.3644"),
+        seven_day_annualized_rate=Decimal("0.0133"),
     ), fetched_at="2026-07-30T09:00:00")
 
     text = build_portfolio_query_report(runtime.repository, target_date=date(2026, 7, 30))
-    assert "NYRR000007" in text
-    assert "每万份收益：0.4475 元" in text
-    assert "七日年化：1.6315%" in text
+    assert "WALLETPLUS" in text
+    assert "每万份收益：0.3644 元" in text
+    assert "七日年化：1.33%" in text
 
 
 def test_migration_failure_keeps_runtime_read_only(tmp_path, monkeypatch):

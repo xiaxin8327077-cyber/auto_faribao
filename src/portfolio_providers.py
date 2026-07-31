@@ -537,6 +537,10 @@ class EastmoneyFundProvider:
 
 
 def get_market_provider(provider: str):
+    if provider == "wallet_plus":
+        from src.portfolio_wallet import WalletPlusProvider
+
+        return WalletPlusProvider()
     if provider == "citic_wealth":
         return CiticPortfolioProvider()
     if provider == "nanyin_wealth":

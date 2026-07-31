@@ -647,6 +647,23 @@ def test_product_disable_preview_and_submit_need_only_product_id(api_setup):
     assert repository.require_product("fund").status.value == "inactive"
 
 
+def test_product_preview_rejects_new_cash_management_products(api_setup):
+    client, _, _, _ = api_setup
+
+    response = client.post(
+        "/api/portfolio/products/preview",
+        headers=write_headers(idem="reject-real-cash"),
+        json={
+            "provider": "test",
+            "code": "NEW-CASH",
+            "product_type": "cash_management",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["message"] == "系统仅支持钱包Plus现金产品"
+
+
 def test_provider_failure_is_json_audited_and_creates_no_partial_product(
     api_setup
 ):

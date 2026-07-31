@@ -25,6 +25,7 @@ from src.portfolio_runtime import (
     initialize_portfolio,
     validate_existing_database,
 )
+from src.portfolio_wallet import WALLET_PRODUCT_ID
 
 
 def _seed_v2_database(db_path):
@@ -48,9 +49,14 @@ def test_first_start_migrates_then_exposes_repository(tmp_path):
     )
 
     assert runtime.write_enabled is True
-    assert len(runtime.repository.list_products()) == 1
+    assert len(runtime.repository.list_products()) == 2
+    wealth_product = next(
+        product
+        for product in runtime.repository.list_products()
+        if product.product_type is ProductType.WEALTH_NAV
+    )
     assert runtime.repository.get_position(
-        runtime.repository.list_products()[0].id
+        wealth_product.id
     ).total_shares == Decimal("1000")
     assert get_portfolio_runtime() is runtime
 
@@ -112,7 +118,7 @@ def test_incompatible_existing_schema_disables_writes_without_reset(tmp_path):
     assert tables == {"schema_migrations"}
 
 
-def test_rebuild_runs_after_migration(tmp_path):
+def test_rebuild_consolidates_legacy_cash_into_wallet_plus(tmp_path):
     cfg = Config({"nav_monitor": {"products": [
         {"provider": "nanyin_wealth", "code": "NYRR000007", "name": "日日聚宝", "shares": 5000},
     ]}})
@@ -126,8 +132,16 @@ def test_rebuild_runs_after_migration(tmp_path):
         backup_root=tmp_path / "backups",
     )
 
-    product = runtime.repository.list_products()[0]
-    assert runtime.repository.get_position(product.id).total_shares == Decimal("5000")
+    old_cash = next(
+        product
+        for product in runtime.repository.list_products()
+        if product.id != WALLET_PRODUCT_ID
+    )
+    assert old_cash.status.value == "inactive"
+    assert runtime.repository.get_position(old_cash.id).total_shares == 0
+    assert runtime.repository.get_position(
+        WALLET_PRODUCT_ID
+    ).total_shares == Decimal("5000")
 
 
 def test_corrupt_database_disables_writes(tmp_path):
@@ -180,7 +194,8 @@ def test_initialize_on_valid_database_loads_repository(tmp_path):
 
     assert runtime.write_enabled is True
     assert runtime.repository is not None
-    assert len(runtime.repository.list_products()) == 1
+    assert len(runtime.repository.list_products()) == 2
+    assert runtime.repository.get_product(WALLET_PRODUCT_ID) is not None
 
 
 def test_initialize_upgrades_existing_v2_database_before_validation(tmp_path):

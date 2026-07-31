@@ -150,6 +150,68 @@ def test_dashboard_overview_includes_products_created_in_portfolio_ledger(
     assert payload["shares_count"] == 1
 
 
+def test_dashboard_overview_hides_legacy_product_disabled_by_ledger(
+    tmp_path, monkeypatch
+):
+    import src.nav_dashboard as dashboard
+
+    portfolio = {
+        "summary": {},
+        "products": [
+            {
+                "id": "old-cash",
+                "provider": "nanyin_wealth",
+                "code": "NYRR000007",
+                "name": "旧现金产品",
+                "status": "inactive",
+                "shares": "0",
+            },
+            {
+                "id": "wallet-plus",
+                "provider": "wallet_plus",
+                "code": "WALLETPLUS",
+                "name": "钱包Plus",
+                "status": "active",
+                "shares": "100",
+                "quote": {"date": "2026-07-31"},
+            },
+        ],
+        "transactions": [],
+        "sip_plans": [],
+        "profit_history": [],
+    }
+    monkeypatch.setattr(
+        dashboard,
+        "_get_portfolio_runtime",
+        lambda: SimpleNamespace(repository=object(), write_enabled=True),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "build_portfolio_payload",
+        lambda repository: portfolio,
+    )
+    cfg = Config(
+        {
+            "nav_monitor": {
+                "products": [
+                    {
+                        "provider": "nanyin_wealth",
+                        "code": "NYRR000007",
+                        "name": "旧现金产品",
+                        "shares": "100",
+                    }
+                ]
+            }
+        }
+    )
+    store = NavDashboardStore(tmp_path / "state.json")
+    store.sync_portfolio(cfg, _dt("2026-07-31 10:00"))
+
+    payload = get_dashboard_payload(cfg, state_path=tmp_path / "state.json")
+
+    assert [row["code"] for row in payload["products"]] == ["WALLETPLUS"]
+
+
 def test_dashboard_keeps_legacy_payload_readonly_after_migration_failure(
     tmp_path, monkeypatch
 ):

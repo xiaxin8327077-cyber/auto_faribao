@@ -8,6 +8,8 @@ from src.portfolio_db import DEFAULT_DB_PATH, PortfolioDatabase, SCHEMA_VERSION
 from src.portfolio_migration import migrate_legacy_portfolio
 from src.portfolio_positions import PositionProjector
 from src.portfolio_repository import PortfolioRepository
+from src.portfolio_wallet import consolidate_cash_products
+from src.beijing_time import now as beijing_now
 
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,7 @@ def initialize_portfolio(
         database.initialize()
         validate_existing_database(database, expected_version=SCHEMA_VERSION)
         repository = PortfolioRepository(database)
+        consolidate_cash_products(repository, beijing_now().date())
         PositionProjector(repository).rebuild()
         _runtime = PortfolioRuntime(database, repository, True)
     except Exception as exc:

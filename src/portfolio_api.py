@@ -554,6 +554,8 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         declared_type = (
             body.get("product_type") or body.get("wealth_type") or ""
         )
+        if str(declared_type) == ProductType.CASH_MANAGEMENT.value:
+            raise ValueError("系统仅支持钱包Plus现金产品")
         provider_name = (
             body.get("provider")
             or _infer_provider(code, str(declared_type))

@@ -162,13 +162,37 @@ def test_overview_count_uses_merged_root_product_list_without_double_counting():
 
 def test_trade_form_switches_between_purchase_amount_and_redemption_shares():
     page = _read_page()
+    assert 'id="tradeProductType"' in page
+    assert '<option value="wealth_nav">理财</option>' in page
+    assert '<option value="cash_management">现金</option>' in page
+    assert '<option value="public_fund">公募基金</option>' in page
     assert 'id="tradeKind"' in page
     assert 'id="tradeValueLabel"' in page
     assert 'id="tradeValueInput"' in page
     assert 'name="trade_time"' in page
     assert "input.name = redemption ? 'shares' : 'amount';" in page
+    assert "input.min = redemption ? '0.0001' : '0.01';" in page
     assert "label.firstChild.textContent = redemption ? '赎回份额' : '申购金额（元）';" in page
     assert "$('tradeTimeLabel').firstChild.textContent = redemption ? '赎回时间' : '申购时间';" in page
+
+
+def test_trade_form_filters_products_and_shows_type_specific_fields():
+    page = _read_page()
+
+    assert 'id="tradeFundCodeField"' in page
+    assert 'id="tradeFeeRateField"' in page
+    assert 'name="fee_rate_percent"' in page
+    assert 'id="tradeDestinationField"' in page
+    assert 'name="destination_cash_product_id"' in page
+    assert '<option value="">钱包</option>' in page
+    assert "productOptions('tradeProduct', productType);" in page
+    assert "$('tradeFundCodeField').hidden = !publicFund;" in page
+    assert "$('tradeFeeRateField').hidden = !(publicFund && !redemption);" in page
+    assert "$('tradeDestinationField').hidden = !redemption;" in page
+    assert "payload.fee_rate = String(number(payload.fee_rate_percent) / 100);" in page
+    assert "delete payload.fee_rate_percent;" in page
+    assert "const sevenDayDisplay = sevenDay === '' ? '--' : `${(number(sevenDay) * 100).toFixed(2)}%`;" in page
+    assert "pending[1] === 'external_cash' ? '钱包'" in page
 
 
 def test_transactions_and_preview_use_chinese_business_labels():
@@ -181,6 +205,7 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert "'status_prediction': '预计状态'" in page
     assert "The trade will remain pending until a quote arrives." in page
     assert "等待交易日净值后自动确认" in page
+    assert "String(rowValue(row, 'created_by')) !== 'wallet_migration'" in page
 
 
 def test_positions_panel_uses_positive_position_rows_not_all_products():
