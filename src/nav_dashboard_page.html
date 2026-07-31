@@ -1305,8 +1305,13 @@
       state.writeEnabled = state.data.write_enabled === true || state.data.portfolio?.write_enabled === true;
       const positions = portfolioRows('positions', portfolioRows('products', []));
       const transactions = portfolioRows('transactions');
-      const pending = transactions.filter(row => normalStatus(rowValue(row, 'status')) === 'pending').length;
-      $('pendingStatus').textContent = `待处理 ${pending} 笔`;
+      const pendingRows = transactions.filter(row => normalStatus(rowValue(row, 'status')) === 'pending');
+      const pendingIds = new Set(pendingRows.map(t => rowValue(t, 'id')));
+      const dedupedPending = pendingRows.filter(t => {
+        const linkId = rowValue(t, 'linked_transaction_id');
+        return !linkId || !pendingIds.has(linkId);
+      });
+      $('pendingStatus').textContent = `待处理 ${dedupedPending.length} 笔`;
       $('typeSummary').innerHTML = ['wealth_nav', 'cash_management', 'public_fund'].map(group => {
         const rows = positions.filter(row => rowValue(row, 'wealth_type', 'type', 'category') === group);
         const total = rows.reduce((sum, row) => sum + number(rowValue(row, 'market_value', 'value', 'holding_value')), 0);
