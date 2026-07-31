@@ -5,7 +5,12 @@ from decimal import Decimal
 import pytest
 
 from src.config import Config
-from src.portfolio_db import PortfolioDatabase, SCHEMA_VERSION
+from src.portfolio_db import (
+    BASE_SCHEMA_SQL,
+    V2_SCHEMA_SQL,
+    PortfolioDatabase,
+    SCHEMA_VERSION,
+)
 from src.portfolio_models import (
     ProductType,
     Transaction,
@@ -176,3 +181,37 @@ def test_initialize_on_valid_database_loads_repository(tmp_path):
     assert runtime.write_enabled is True
     assert runtime.repository is not None
     assert len(runtime.repository.list_products()) == 1
+
+
+def test_initialize_upgrades_existing_v2_database_before_validation(tmp_path):
+    db_path = tmp_path / "portfolio.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(BASE_SCHEMA_SQL)
+        conn.executescript(V2_SCHEMA_SQL)
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (2)"
+        )
+
+    runtime = initialize_portfolio(
+        Config({"nav_monitor": {"products": []}}),
+        db_path=db_path,
+        backup_root=tmp_path / "backups",
+    )
+
+    assert runtime.write_enabled is True
+    with sqlite3.connect(db_path) as conn:
+        versions = {
+            row[0]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations"
+            )
+        }
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(transactions)"
+            )
+        }
+    assert versions == {SCHEMA_VERSION}
+    assert "trade_time" in columns

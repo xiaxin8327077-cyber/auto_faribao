@@ -73,6 +73,7 @@ def initialize_portfolio(
                 install=True,
             )
         database = PortfolioDatabase(db_path)
+        database.initialize()
         validate_existing_database(database, expected_version=SCHEMA_VERSION)
         repository = PortfolioRepository(database)
         PositionProjector(repository).rebuild()
