@@ -1168,19 +1168,24 @@
       const rows = positions.filter(p => !isClearedAndSettled(rowValue(p, 'product_id', 'id', 'code'), positions, transactions));
       const groups = ['wealth_nav', 'cash_management', 'public_fund'];
       const list = $('positionsList');
-      // 在途资金提示
+      // 在途资金提示(区分申购和赎回)
       const todayStr = new Date().toISOString().slice(0, 10);
-      const inTransit = transactions.filter(t => {
+      const inTransitBuy = transactions.filter(t => {
         const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
-        const status = normalStatus(rowValue(t, 'status'));
-        const settleDate = rowValue(t, 'settlement_date');
-        if (status === 'pending' && type.includes('purchase')) return true;
-        if (status === 'confirmed' && type.includes('redemption')) return settleDate && settleDate >= todayStr;
-        return false;
+        return normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('purchase');
       }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
+      const inTransitSell = transactions.filter(t => {
+        const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
+        const settleDate = rowValue(t, 'settlement_date');
+        return normalStatus(rowValue(t, 'status')) === 'confirmed' && type.includes('redemption') && settleDate && settleDate >= todayStr;
+      }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
+      const inTransitText = [
+        inTransitBuy > 0 ? `申购在途 ${money(inTransitBuy)} 元` : '',
+        inTransitSell > 0 ? `赎回在途 ${money(inTransitSell)} 元` : '',
+      ].filter(Boolean).join('，');
       if (!rows.length) { list.innerHTML = '<div class="empty">暂无持仓，可在交易或定投中添加产品。</div>'; return; }
-      if (inTransit > 0) {
-        list.insertAdjacentHTML('beforebegin', `<div class="in-transit-hint">在途资金 ${money(inTransit)} 元</div>`);
+      if (inTransitText) {
+        list.insertAdjacentHTML('beforebegin', `<div class="in-transit-hint">${inTransitText}</div>`);
       }
       list.innerHTML = groups.map(group => {
         const groupRows = rows.filter(row => rowValue(row, 'wealth_type', 'type', 'category', 'product_type') === group);
@@ -1515,16 +1520,20 @@
         .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
       $('totalAssets').textContent = money(roundCent(holdingsValue + pendingBuy - pendingSell));
       $('marketValue').textContent = money(holdingsValue);
-      // 在途资金:待确认申购 + 已确认未到账赎回
+      // 在途资金:区分申购和赎回
       const todayStr = new Date().toISOString().slice(0, 10);
-      const inTransit = pfTxList.filter(t => {
+      const inTransitBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase'))
+        .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
+      const inTransitSell = pfTxList.filter(t => {
         const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
-        const status = normalStatus(rowValue(t, 'status'));
         const settleDate = rowValue(t, 'settlement_date');
-        if (status === 'pending' && type.includes('purchase')) return true;
-        if (status === 'confirmed' && type.includes('redemption')) return settleDate && settleDate >= todayStr;
-        return false;
+        return normalStatus(rowValue(t, 'status')) === 'confirmed' && type.includes('redemption') && settleDate && settleDate >= todayStr;
       }).reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
+      const inTransitText = [
+        inTransitBuy > 0 ? `申购在途 ${money(inTransitBuy)} 元` : '',
+        inTransitSell > 0 ? `赎回在途 ${money(inTransitSell)} 元` : '',
+      ].filter(Boolean).join('，');
+      $('inTransitAmount').textContent = inTransitText ? `在途资金 ${inTransitText}` : '';
       $('inTransitAmount').textContent = inTransit > 0 ? `在途资金 ${money(inTransit)} 元` : '';
       const totalConfigured = (data.products || []).length;
       $('disclosedCount').textContent = `${data.today_disclosed_count || 0}/${totalConfigured}`;
@@ -1544,8 +1553,19 @@
       });
       $('productTitle').textContent = `产品持仓（${products.length}）`;
       $('productList').innerHTML = products.length ? products.map((item, index) => {
+        const pid = rowValue(item, 'product_id', 'id', 'code');
         const profit = item.latest_profit;
-        return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div></div><div class="nav"><div>${item.latest_nav ? number(item.latest_nav).toFixed(6) : '--'}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div>${(() => { const h = formatHolding(item.shares, item.latest_nav); return h ? `<div class="holding">${esc(h)}</div>` : ''; })()}</article>`;
+        // 计算该产品的在途申购和赎回
+        const pendingBuyAmt = pfTransactions.filter(t => {
+          const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
+          return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('purchase');
+        }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
+        const pendingSellAmt = pfTransactions.filter(t => {
+          const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
+          return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('redemption');
+        }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
+        const inTransitText = pendingBuyAmt > 0 ? `申购在途 ${money(pendingBuyAmt)} 元` : pendingSellAmt > 0 ? `赎回在途 ${money(pendingSellAmt)} 元` : '';
+        return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div></div><div class="nav"><div>${item.latest_nav ? number(item.latest_nav).toFixed(6) : '--'}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div>${(() => { const h = formatHolding(item.shares, item.latest_nav); return h ? `<div class="holding">${esc(h)}</div>` : ''; })()}${inTransitText ? `<div class="in-transit-hint">${esc(inTransitText)}</div>` : ''}</article>`;
       }).join('') : '<div class="empty">暂无已配置的净值产品</div>';
       $('positiveRanking').innerHTML = rankingRows(monthlyPositives, '本月无正贡献');
       $('negativeRanking').innerHTML = rankingRows(monthlyNegatives, '本月无拖累');
