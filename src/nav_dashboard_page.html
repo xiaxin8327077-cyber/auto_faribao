@@ -250,6 +250,8 @@
     .management-panel[hidden] { display: none; }
     .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 2px 14px; }
     .panel-heading h2 { font-size: 20px; }
+    .in-transit-hint { margin: -6px 2px 10px; font-size: 12px; color: var(--muted); min-height: 18px; }
+    .in-transit-hint:empty { margin: 0; min-height: 0; }
     .action-button { min-height: 36px; padding: 0 12px; border: 1px solid var(--blue); border-radius: 7px; background: var(--blue); color: #fff; font-size: 13px; font-weight: 800; cursor: pointer; }
     .action-button.secondary { border-color: var(--line); background: var(--panel); color: var(--blue); }
     .action-button.danger { border-color: #c73737; background: #c73737; }
@@ -423,6 +425,7 @@
         <div class="metric"><div class="metric-label">估算市值(元)</div><div class="metric-value" id="marketValue">--</div></div>
         <div class="metric"><div class="metric-label">今日披露</div><div class="metric-value" id="disclosedCount">--</div></div>
       </section>
+      <div class="in-transit-hint" id="inTransitAmount"></div>
 
       <section class="card section" aria-label="组合类型与待处理事项">
         <div class="section-head"><h2>组合概况</h2><span class="section-meta" id="pendingStatus">待处理 0 笔</span></div>
@@ -1165,7 +1168,20 @@
       const rows = positions.filter(p => !isClearedAndSettled(rowValue(p, 'product_id', 'id', 'code'), positions, transactions));
       const groups = ['wealth_nav', 'cash_management', 'public_fund'];
       const list = $('positionsList');
+      // 在途资金提示
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const inTransit = transactions.filter(t => {
+        const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
+        const status = normalStatus(rowValue(t, 'status'));
+        const settleDate = rowValue(t, 'settlement_date');
+        if (status === 'pending' && type.includes('purchase')) return true;
+        if (status === 'confirmed' && type.includes('redemption')) return settleDate && settleDate >= todayStr;
+        return false;
+      }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
       if (!rows.length) { list.innerHTML = '<div class="empty">暂无持仓，可在交易或定投中添加产品。</div>'; return; }
+      if (inTransit > 0) {
+        list.insertAdjacentHTML('beforebegin', `<div class="in-transit-hint">在途资金 ${money(inTransit)} 元</div>`);
+      }
       list.innerHTML = groups.map(group => {
         const groupRows = rows.filter(row => rowValue(row, 'wealth_type', 'type', 'category', 'product_type') === group);
         if (!groupRows.length) return '';
@@ -1254,6 +1270,9 @@
       const incomeStart = rowValue(row, 'income_start_date');
       const incomeStop = rowValue(row, 'income_stop_date');
       const note = rowValue(row, 'note');
+      const settlementDate = rowValue(row, 'settlement_date', 'settlement_date');
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const notSettled = settlementDate && settlementDate >= todayStr;
       const add = (label, value, full = false) => {
         if (value === '') return;
         details.push(`<div class="transaction-detail${full ? ' full' : ''}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`);
@@ -1270,8 +1289,7 @@
         confirmationDate ? '确认日期' : '预计确认',
         confirmationDate || expectedConfirmationDate || '等待行情'
       );
-      const settlementDate = rowValue(row, 'settlement_date', 'settlement_date');
-      if (settlementDate) add('预计到账日', settlementDate);
+      if (settlementDate) add('预计到账日', `${settlementDate}${notSettled ? '（未到账）' : ''}`);
       if (incomeStart) add('收益起算', `确认份额后（${incomeStart}）`);
       if (incomeStop) add('收益停止', `确认赎回后（${incomeStop}）`);
       if (['manual_purchase', 'sip_purchase'].includes(normalizedTransactionType)) {
@@ -1497,6 +1515,17 @@
         .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
       $('totalAssets').textContent = money(roundCent(holdingsValue + pendingBuy - pendingSell));
       $('marketValue').textContent = money(holdingsValue);
+      // 在途资金:待确认申购 + 已确认未到账赎回
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const inTransit = pfTxList.filter(t => {
+        const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
+        const status = normalStatus(rowValue(t, 'status'));
+        const settleDate = rowValue(t, 'settlement_date');
+        if (status === 'pending' && type.includes('purchase')) return true;
+        if (status === 'confirmed' && type.includes('redemption')) return settleDate && settleDate >= todayStr;
+        return false;
+      }).reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
+      $('inTransitAmount').textContent = inTransit > 0 ? `在途资金 ${money(inTransit)} 元` : '';
       const totalConfigured = (data.products || []).length;
       $('disclosedCount').textContent = `${data.today_disclosed_count || 0}/${totalConfigured}`;
       const positives = data.positive_rankings || [];
