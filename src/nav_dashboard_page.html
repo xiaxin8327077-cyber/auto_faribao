@@ -1147,9 +1147,11 @@
       });
     }
     // 判断产品是否应隐藏(已清仓且到账日已过)
+    // 注意:旧系统产品没有 portfolio 数据,默认不过滤
     function isClearedAndSettled(productId, positions, transactions) {
       const pos = positions.find(p => rowValue(p, 'product_id', 'id', 'code') === productId);
-      if (!pos || Number(rowValue(pos, 'total_shares', 'shares')) > 0) return false;
+      if (!pos) return false;
+      if (Number(rowValue(pos, 'total_shares', 'shares')) > 0) return false;
       // 找到该产品的最近一笔已确认赎回的 settlement_date
       const txns = transactions.filter(t =>
         rowValue(t, 'product_id') === productId &&
