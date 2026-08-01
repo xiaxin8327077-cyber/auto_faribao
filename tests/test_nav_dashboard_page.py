@@ -415,6 +415,7 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert "opening_position: '初始持仓'" in page
     assert "function previewFieldLabel(path)" in page
     assert "'normalized_input.amount': '申购金额（元）'" in page
+    assert "'normalized_input.settlement_date': '预计到账日期'" in page
     assert "'status_prediction': '预计状态'" in page
     assert "The trade will remain pending until a quote arrives." in page
     assert "等待交易日净值后自动确认" in page
