@@ -186,7 +186,6 @@ def test_non_nav_amounts_and_shares_use_two_decimal_display():
     assert "return money(text);" in html
     assert "const quantity = Number.isFinite(number(match[3]))" in html
     assert "<span>${sharesLabel}</span><b>${esc(money(shares))} 份</b>" in html
-    assert "const shareText = value => money(value);" in html
     assert (
         "form.amount.value = number("
         "rowValue(existing, 'amount', 'daily_amount')).toFixed(2);"
@@ -210,11 +209,19 @@ def test_position_detail_opens_a_real_dialog():
     assert "涨跌幅" in html
     assert "当日收益" in html
     assert "dialogOpen('productDetailDialog');" in html
-    assert "grid-template-columns: minmax(0, 1.35fr) minmax(0, .95fr) minmax(0, .95fr) minmax(0, 1fr);" in html
+    assert "grid-template-columns: 82px repeat(3, minmax(0, 1fr));" in html
     assert ".product-history-head span, .product-history-row span { min-width: 0; white-space: nowrap; }" in html
     assert "align-items: center; gap: 2px; padding: 9px 4px;" in html
-    assert ".product-history-head { color: var(--muted); background: var(--blue-soft); font-size: 9px;" in html
+    assert "background: var(--blue-soft); font-size: 9px;" in html
     assert ".product-history-row { min-height: 42px; border-top: 1px solid var(--line-soft); font-size: 10px;" in html
+    assert ".product-history { margin-top: 0; max-height: min(58vh, 460px);" in html
+    assert "overflow-x: hidden; overflow-y: auto;" in html
+    assert "position: sticky; top: 0; z-index: 1;" in html
+    assert "font-variant-numeric: tabular-nums; text-align: center;" in html
+    assert ".product-history-head span:first-child" not in html
+    assert ".product-history-head span:nth-child(2)" not in html
+    assert "const summary = fields.map" not in html
+    assert "$('productDetailContent').innerHTML = `<div class=\"product-history\">" in html
 
 
 def test_stale_product_detail_request_cannot_overwrite_newer_dialog():

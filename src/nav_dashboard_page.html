@@ -282,12 +282,11 @@
     .manage-stat > span { display: block; color: var(--muted); font-size: 10px; }
     .manage-stat b { display: block; margin-top: 4px; overflow: hidden; font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
     .manage-subvalue { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; }
-    .product-history { margin-top: 4px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
-    .product-history-head, .product-history-row { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, .95fr) minmax(0, .95fr) minmax(0, 1fr); align-items: center; gap: 2px; padding: 9px 4px; font-variant-numeric: tabular-nums; text-align: right; }
+    .product-history { margin-top: 0; max-height: min(58vh, 460px); overflow-x: hidden; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+    .product-history-head, .product-history-row { display: grid; grid-template-columns: 82px repeat(3, minmax(0, 1fr)); align-items: center; gap: 2px; padding: 9px 4px; font-variant-numeric: tabular-nums; text-align: center; }
     .product-history-head span, .product-history-row span { min-width: 0; white-space: nowrap; }
-    .product-history-head { color: var(--muted); background: var(--blue-soft); font-size: 9px; font-weight: 800; }
+    .product-history-head { position: sticky; top: 0; z-index: 1; color: var(--muted); background: var(--blue-soft); font-size: 9px; font-weight: 800; }
     .product-history-row { min-height: 42px; border-top: 1px solid var(--line-soft); font-size: 10px; font-weight: 700; }
-    .product-history-head span:first-child, .product-history-row span:first-child { text-align: left; }
     .product-history-row .positive { color: var(--positive); }
     .product-history-row .negative { color: var(--negative); }
     .position-stat-grid .manage-stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
@@ -2123,16 +2122,6 @@
         'type',
         'category'
       );
-      const shareText = value => money(value);
-      const fields = [
-        ['产品代码', rowValue(product, 'code', 'product_code') || '--'],
-        ['产品类型', positionTypeLabel(productType)],
-        ['当前市值', `${money(rowValue(product, 'market_value', 'value', 'holding_value') || 0)} 元`],
-        ['持有份额', shareText(rowValue(product, 'shares', 'share'))],
-        ['可用份额', shareText(rowValue(product, 'available_shares'))],
-        ['在途资金', `${money(rowValue(product, 'in_transit_amount') || 0)} 元`],
-        ['累计持有收益', `${signedMoney(rowValue(product, 'holding_profit', 'cumulative_profit') || 0)} 元`],
-      ];
       $('productDetailDialogTitle').textContent = rowValue(
         product,
         'name',
@@ -2170,10 +2159,7 @@
           const middleTone = cashProduct ? '' : tone(changePct);
           return `<div class="product-history-row"><span>${esc(row.date || '--')}</span><span>${esc(middle[0])}</span><span class="${middleTone}">${esc(middle[1])}</span><span class="${tone(profit)}">${profit === '' ? '--' : `${esc(signedMoney(profit))} 元`}</span></div>`;
         }).join('');
-        const summary = fields.map(
-          ([label, value]) => `<p><strong>${esc(label)}：</strong>${esc(value)}</p>`
-        ).join('');
-        $('productDetailContent').innerHTML = `${summary}<div class="product-history"><div class="product-history-head">${headings.map(label => `<span>${esc(label)}</span>`).join('')}</div>${historyRows || '<div class="empty">暂无每日行情记录</div>'}</div>`;
+        $('productDetailContent').innerHTML = `<div class="product-history"><div class="product-history-head">${headings.map(label => `<span>${esc(label)}</span>`).join('')}</div>${historyRows || '<div class="empty">暂无每日行情记录</div>'}</div>`;
       } catch (error) {
         if (requestId !== productDetailRequestId) return;
         $('productDetailContent').innerHTML = `<div class="empty">${esc(error.message || '读取产品历史失败')}</div>`;
