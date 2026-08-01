@@ -688,6 +688,18 @@ def _is_nav_command_message(text: str) -> bool:
         return False
     if "日报" in content and "净值" not in content and "理财" not in content:
         return False
+    if _contains_any(
+        content,
+        (
+            "申购",
+            "赎回",
+            "定投",
+            "校准持仓",
+            "删除持仓",
+            "停用产品",
+        ),
+    ):
+        return True
     if _contains_any(content, ("净值", "理财", "收益", "份额", "持仓", "画像", "预估", "涨跌")):
         return True
     if content.startswith("添加产品") or content.startswith("确认添加净值产品") or content == "取消添加净值产品":
@@ -719,7 +731,7 @@ def _help_index_text() -> str:
 • **今天日报提交了吗** <font color="comment">查询日报状态</font>
 • **本月日报提交情况** <font color="comment">查看月度统计</font>
 • **帮我看一下最近1个月的理财净值** <font color="comment">查询近一月净值统计</font>
-• **把 AF233276B 份额改成 401133.95** <font color="comment">修改持仓份额</font>
+• **查看净值配置** <font color="comment">查看看板产品配置</font>
 • **问助手 最近债券市场怎么样** <font color="comment">调用当前AI模型</font>
 
 **回复数字查看**
@@ -811,42 +823,21 @@ def _nav_query_help_text() -> str:
 
 
 def _nav_holdings_help_text() -> str:
-    return """## 📈 理财收益预估指令
+    return """## 📈 理财持仓查询
 
-> 持仓画像默认后台使用，不主动推送；需要时可手动查看。
-• **收盘后预估一下理财涨跌**  按画像和行情预估方向
-• **用昨天行情预估理财涨跌**  指定使用昨日行情
-• **更新持仓画像**  手动抓取最新定期报告
+> 企业微信只保留只读查询；画像更新和其他操作请在理财看板网页完成。
 • **查看持仓画像**  查看全部产品画像摘要
 • **查看 AF233276B 持仓画像**  查看指定产品画像
 • **查看画像状态**  查看报告期和更新时间"""
 
 
 def _nav_settings_help_text() -> str:
-    return """## 💹 理财净值指令 · 产品设置
+    return """## 💹 理财看板说明
 
-> <font color="info">产品管理</font>
-• **查看净值配置** <font color="comment">查看监控产品与份额</font>
-• **看下净值的配置** <font color="comment">自然语言查看配置</font>
-• **添加净值产品 信银 AF233276B** <font color="comment">添加前会候选确认</font>
-• **加一下信银 AF233276B** <font color="comment">自然语言添加</font>
-• **删除净值产品 AF233276B** <font color="comment">移除监控产品</font>
-• **删除一下 AF233276B 产品** <font color="comment">自然语言删除</font>
-• **确认添加净值产品 1** <font color="comment">确认候选序号</font>
-• **取消添加净值产品** <font color="comment">取消候选</font>
+• **查看净值配置** <font color="comment">只读查看产品配置</font>
+• **看下净值的配置** <font color="comment">自然语言只读查询</font>
 
-> <font color="info">份额管理</font>
-• **设置净值份额 AF233276B 10000** <font color="comment">设置持仓份额</font>
-• **把 AF233276B 份额改成 401133.95** <font color="comment">自然语言设置份额</font>
-• **批量设置净值份额** <font color="comment">多行批量更新</font>
-
-> <font color="info">收益修正</font>
-• **设置收益 2026-07-21 150.5** <font color="comment">仅支持修改看板当前最新收益日期</font>
-• **把最新收益改成200** <font color="comment">自然语言修正最新收益</font>
-
-> <font color="info">监控开关</font>
-• **开启净值监控** <font color="comment">启用工作日定时推送</font>
-• **关闭净值监控** <font color="comment">停用工作日定时推送</font>"""
+> 添加、删除产品，申购、赎回、份额校准、收益校准、定投和推送设置等操作，统一在理财看板网页完成。"""
 
 
 def _nav_help_messages() -> list[str]:
@@ -871,9 +862,6 @@ def _system_help_text() -> str:
 • **设置统计推送时间 21:00** <font color="comment">日报统计推送时间</font>
 • **设置Cookies检查时间 09:45** <font color="comment">Cookies 自动检查时间</font>
 • **设置缓存清理时间 04:00** <font color="comment">缓存清理时间</font>
-• **设置净值推送时间 08:00** <font color="comment">净值工作日推送时间</font>
-• **设置收益预估时间 17:30** <font color="comment">理财收益预估时间</font>
-
 > <font color="info">登录与数据</font>
 • **生成二维码** <font color="comment">扫码续期 Cookies</font>
 • **重新登录** <font color="comment">重新生成登录二维码</font>
@@ -935,16 +923,46 @@ def _format_schedule_config(cfg) -> str:
 3️⃣ 统计自动推送：{s.stats_push_hour:02d}:{s.stats_push_minute:02d}（周日/月末）
 4️⃣ 缓存自动清理：{s.cache_cleanup_hour:02d}:{s.cache_cleanup_minute:02d}（每月1号）
 5️⃣ 净值自动推送：{nav.push_hour:02d}:{nav.push_minute:02d}（工作日，{'开启' if nav.enabled else '关闭'}）
-6️⃣ 净值晚间补发：{nav.evening_push_hour:02d}:{nav.evening_push_minute:02d}（工作日，有当日净值才发，{'开启' if nav.evening_push_enabled else '关闭'}）
+6️⃣ 净值晚间补发：{nav.evening_push_hour:02d}:{nav.evening_push_minute:02d}（工作日，{'开启' if nav.evening_push_enabled else '关闭'}）
 7️⃣ 理财收益预估：{nav.estimate_hour:02d}:{nav.estimate_minute:02d}（工作日，{'开启' if nav.estimate_enabled else '关闭'}）
 
 📝 修改指令：
 • 设置Cookies检查时间 09:45
 • 设置日报提交时间 20:00
 • 设置统计推送时间 21:00
-  • 设置缓存清理时间 04:00
-  • 设置净值推送时间 08:00
-  • 设置收益预估时间 17:30"""
+• 设置缓存清理时间 04:00
+
+理财推送时间和开关请在理财看板网页中维护。"""
+
+
+def _format_system_config(cfg) -> str:
+    """Format read-only runtime status without legacy portfolio product data."""
+    return f"""⚙️ 当前系统配置
+
+⏰ 定时任务（工作日）：
+  • Cookies 检查：{cfg.scheduler.cookie_check_hour:02d}:{cfg.scheduler.cookie_check_minute:02d}
+  • 日报提交：{cfg.scheduler.report_submit_hour:02d}:{cfg.scheduler.report_submit_minute:02d}
+  • 统计推送：{cfg.scheduler.stats_push_hour:02d}:{cfg.scheduler.stats_push_minute:02d}（周日/月末）
+
+🎯 OA 目标系统：
+  • 地址：{cfg.target.url}
+  • 用户名：{cfg.target.username}
+  • 默认项目：{cfg.target.default_project}
+
+💬 企业微信：
+  • 企业ID：{cfg.wechat.corpid if cfg.wechat else '未配置'}
+  • 状态：{'已配置' if cfg.wechat and cfg.wechat.corpid else '未配置'}
+
+📊 智能文档：
+  • 文档ID：{cfg.source.doc_id}
+  • 负责人：{', '.join(cfg.source.person_names)}
+
+💹 理财收益推送（只读）：
+  • 状态：{'开启' if cfg.nav_monitor.enabled else '关闭'}
+  • 推送时间：{cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d}
+  • 晚间补发：{cfg.nav_monitor.evening_push_hour:02d}:{cfg.nav_monitor.evening_push_minute:02d}（有当日净值才发，{'开启' if cfg.nav_monitor.evening_push_enabled else '关闭'}）
+  • 收益预估：{cfg.nav_monitor.estimate_hour:02d}:{cfg.nav_monitor.estimate_minute:02d}（{'开启' if cfg.nav_monitor.estimate_enabled else '关闭'}）
+  • 持仓产品以理财看板当前实际份额为准"""
 
 
 def _build_help_messages(text: str) -> list[str]:
@@ -984,13 +1002,10 @@ def _is_existing_command(text: str) -> bool:
         logger.warning("Failed to classify deterministic command", exc_info=True)
 
     if _is_nav_command_message(content):
-        try:
-            from src.nav_monitor import parse_nav_command
-
-            if parse_nav_command(content):
-                return True
-        except Exception:
-            logger.warning("Failed to parse deterministic NAV command", exc_info=True)
+        # All portfolio-related messages stay on the deterministic path.
+        # Read commands are handled below; retired write commands receive the
+        # fixed dashboard-only reply and must never be re-routed through AI.
+        return True
 
     if _match_proxy_cmd(content, "xray") or _match_proxy_cmd(content, "hysteria", "hy2"):
         return True
@@ -1257,12 +1272,19 @@ def create_app(
                     nav_command = parse_nav_command(content)
                     if nav_command:
                         from_user_id = msg.get("FromUserName", "")
-                        _handle_nav_command(cfg, nav_command, from_user_id)
+                        _handle_nav_command(
+                            cfg,
+                            nav_command,
+                            from_user_id,
+                            portfolio_runtime=portfolio_runtime,
+                        )
                         return "", 200
                     from_user_id = msg.get("FromUserName", "")
                     _send_wechat_text(
                         cfg.wechat,
-                        "❌ 无法识别净值指令\n\n示例：立即查询净值\n查询昨天净值\n查询净值 20260707\n查询月度净值\n查询近7天净值\n添加净值产品 信银 AF233276B\n批量设置净值份额",
+                        "企业微信仅支持理财只读查询和收益推送。\n\n"
+                        "可用示例：立即查询净值、查询昨天净值、查询月度净值、查看净值配置。\n"
+                        "产品、交易、份额、收益和定投等操作请在理财看板网页完成。",
                         from_user_id,
                     )
                     return "", 200
@@ -1290,15 +1312,7 @@ def create_app(
 **查询近7天净值** / **查询近一月净值**
 **查询近三月净值** / **查询近半年净值** / **查询近一年净值**
 **查看净值配置**
-**设置净值推送时间 08:00**
-**设置净值份额 AF233276B 10000**
-**批量设置净值份额**
-AF233276B 10000
-AF233262B 20000
-**添加净值产品 信银 AF233276B**
-**添加净值产品 南银 NYZY000022**
-**确认添加净值产品 1** / **取消添加净值产品**
-**删除净值产品 AF233276B**
+产品、交易、份额、收益、定投和推送设置请在理财看板网页完成。
 
 ## 📄 内容查询
 **读取日报** — 读取智能文档
@@ -1569,32 +1583,7 @@ AF233262B 20000
                 elif "查看配置" in content or "当前配置" in content:
                     from_user_id = msg.get("FromUserName", "")
                     try:
-                        reply = f"""⚙️ 当前系统配置
-
-⏰ 定时任务（工作日）：
-  • Cookies 检查：{cfg.scheduler.cookie_check_hour:02d}:{cfg.scheduler.cookie_check_minute:02d}
-  • 日报提交：{cfg.scheduler.report_submit_hour:02d}:{cfg.scheduler.report_submit_minute:02d}
-  • 统计推送：{cfg.scheduler.stats_push_hour:02d}:{cfg.scheduler.stats_push_minute:02d}（周日/月末）
-
-🎯 OA 目标系统：
-  • 地址：{cfg.target.url}
-  • 用户名：{cfg.target.username}
-  • 默认项目：{cfg.target.default_project}
-
-💬 企业微信：
-  • 企业ID：{cfg.wechat.corpid if cfg.wechat else '未配置'}
-  • 状态：{'已配置' if cfg.wechat and cfg.wechat.corpid else '未配置'}
-
-📊 智能文档：
-  • 文档ID：{cfg.source.doc_id}
-  • 负责人：{', '.join(cfg.source.person_names)}
-
-💹 净值监控：
-  • 状态：{'开启' if cfg.nav_monitor.enabled else '关闭'}
-  • 推送时间：{cfg.nav_monitor.push_hour:02d}:{cfg.nav_monitor.push_minute:02d}
-  • 晚间补发：{cfg.nav_monitor.evening_push_hour:02d}:{cfg.nav_monitor.evening_push_minute:02d}（有当日净值才发，{'开启' if cfg.nav_monitor.evening_push_enabled else '关闭'}）
-  • 收益预估：{cfg.nav_monitor.estimate_hour:02d}:{cfg.nav_monitor.estimate_minute:02d}（{'开启' if cfg.nav_monitor.estimate_enabled else '关闭'}）
-  • 产品数量：{len(cfg.nav_monitor.products)}"""
+                        reply = _format_system_config(cfg)
                         _send_wechat_text(cfg.wechat, reply, from_user_id)
                     except Exception as e:
                         logger.error(f"View config command failed: {e}", exc_info=True)
@@ -2342,13 +2331,12 @@ def _build_text_reply(msg: dict, content: str) -> str:
 </xml>"""
 
 
-def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
-    from src.nav_monitor import (
-        format_nav_config,
-        push_nav_period_report,
-        push_nav_report,
-    )
-
+def _handle_nav_command(
+    cfg: Config,
+    nav_command,
+    from_user_id: str,
+    portfolio_runtime=None,
+):
     action = nav_command.action
 
     # 组合写操作（添加/删除产品、设置份额、设置收益、启停监控、修改时间、更新画像、预估）
@@ -2369,19 +2357,70 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
         return
 
     if action == "view_config":
-        _send_wechat_markdown(cfg.wechat, format_nav_config(cfg), from_user_id)
+        repository = getattr(portfolio_runtime, "repository", None)
+        if repository is None:
+            _send_wechat_text(
+                cfg.wechat,
+                "理财组合账本暂不可用，请稍后在理财看板中查看。",
+                from_user_id,
+            )
+            return
+        from src.beijing_time import today as beijing_today
+        from src.portfolio_reports import format_portfolio_config
+
+        report = format_portfolio_config(repository, as_of=beijing_today())
+        _send_wechat_markdown(cfg.wechat, report, from_user_id)
         return
 
     if action == "view_holdings":
         from src.nav_holdings import format_holdings_profiles
+        from src.beijing_time import today as beijing_today
+        from src.portfolio_reports import list_portfolio_position_products
 
-        _send_wechat_markdown(cfg.wechat, format_holdings_profiles(code=nav_command.code), from_user_id)
+        repository = getattr(portfolio_runtime, "repository", None)
+        if repository is None:
+            _send_wechat_text(
+                cfg.wechat,
+                "理财组合账本暂不可用，请稍后在理财看板中查看。",
+                from_user_id,
+            )
+            return
+        products = list_portfolio_position_products(repository, as_of=beijing_today())
+        _send_wechat_markdown(
+            cfg.wechat,
+            format_holdings_profiles(
+                code=nav_command.code,
+                allowed_identities={
+                    (product.provider, product.code) for product in products
+                },
+            ),
+            from_user_id,
+        )
         return
 
     if action == "view_holdings_status":
         from src.nav_holdings import format_holdings_status
+        from src.beijing_time import today as beijing_today
+        from src.portfolio_reports import list_portfolio_position_products
 
-        _send_wechat_markdown(cfg.wechat, format_holdings_status(), from_user_id)
+        repository = getattr(portfolio_runtime, "repository", None)
+        if repository is None:
+            _send_wechat_text(
+                cfg.wechat,
+                "理财组合账本暂不可用，请稍后在理财看板中查看。",
+                from_user_id,
+            )
+            return
+        products = list_portfolio_position_products(repository, as_of=beijing_today())
+        _send_wechat_markdown(
+            cfg.wechat,
+            format_holdings_status(
+                allowed_identities={
+                    (product.provider, product.code) for product in products
+                },
+            ),
+            from_user_id,
+        )
         return
 
     if action in ("query_latest", "query_date", "query_period"):
@@ -2393,10 +2432,20 @@ def _handle_nav_command(cfg: Config, nav_command, from_user_id: str):
 
         def process_nav_query():
             try:
-                if action == "query_period":
-                    push_nav_period_report(cfg, nav_command.period, to_user=from_user_id)
-                else:
-                    push_nav_report(cfg, target_date=target_date, to_user=from_user_id)
+                repository = getattr(portfolio_runtime, "repository", None)
+                if repository is None:
+                    raise RuntimeError(
+                        "理财组合账本暂不可用，已停止旧配置查询以避免持仓不一致"
+                    )
+                from src.portfolio_reports import push_portfolio_report
+
+                push_portfolio_report(
+                    cfg,
+                    repository,
+                    target_date=target_date,
+                    period=(nav_command.period if action == "query_period" else ""),
+                    to_user=from_user_id,
+                )
             except Exception as e:
                 logger.error(f"NAV query command failed: {e}", exc_info=True)
                 _send_wechat_text(cfg.wechat, f"❌ 净值查询失败\n{e}", from_user_id)

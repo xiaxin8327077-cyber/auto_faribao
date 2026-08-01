@@ -1351,22 +1351,28 @@ def test_scheduler_nav_weekly_period_push_rolls_to_first_workday(monkeypatch):
 
 
 def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
-    import src.nav_monitor
+    import src.portfolio_reports
     import src.scheduler
     from src.scheduler import _run_nav_monitor_push
 
     calls = []
+    repository = object()
+    runtime = type("Runtime", (), {"repository": repository})()
 
-    def fake_daily(cfg):
-        calls.append(("daily", None))
-        return "daily"
-
-    def fake_period(cfg, period, base_date, to_user=None):
-        calls.append((period, base_date))
+    def fake_push(
+        cfg,
+        repo,
+        target_date=None,
+        period="",
+        to_user=None,
+        holdings_as_of=None,
+    ):
+        assert repo is repository
+        calls.append((period or "daily", target_date, to_user, holdings_as_of))
         return period
 
-    monkeypatch.setattr(src.nav_monitor, "push_nav_report", fake_daily)
-    monkeypatch.setattr(src.nav_monitor, "push_nav_period_report", fake_period)
+    monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fake_push)
+    monkeypatch.setattr(src.scheduler, "_portfolio_runtime", runtime)
     monkeypatch.setattr(
         src.scheduler,
         "_nav_period_push_jobs",
@@ -1376,30 +1382,47 @@ def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
     _run_nav_monitor_push(Config({}), day=date(2026, 7, 6))
 
     assert calls == [
-        ("daily", None),
-        ("week", date(2026, 7, 5)),
-        ("month", date(2026, 6, 30)),
+        ("daily", date(2026, 7, 6), "@all", date(2026, 7, 6)),
+        ("week", date(2026, 7, 5), "@all", date(2026, 7, 6)),
+        ("month", date(2026, 6, 30), "@all", date(2026, 7, 6)),
     ]
 
 
 def test_scheduler_nav_evening_push_calls_evening_report(monkeypatch):
-    import src.nav_monitor
+    import src.portfolio_reports
+    import src.scheduler
     from src.scheduler import _run_nav_evening_push
 
     calls = []
+    repository = object()
+    runtime = type("Runtime", (), {"repository": repository})()
 
-    def fake_evening(cfg, as_of_date=None, to_user=None):
-        calls.append((as_of_date, to_user))
+    def fake_push(
+        cfg,
+        repo,
+        target_date=None,
+        period="",
+        to_user=None,
+        holdings_as_of=None,
+    ):
+        assert repo is repository
+        calls.append((target_date, period, to_user, holdings_as_of))
         return "ok"
 
-    monkeypatch.setattr(src.nav_monitor, "push_nav_evening_report", fake_evening)
+    monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fake_push)
+    monkeypatch.setattr(src.scheduler, "_portfolio_runtime", runtime)
 
     _run_nav_evening_push(
         Config({"wechat": {"to_user": "user1"}}),
         day=date(2026, 7, 9),
     )
 
-    assert calls == [(date(2026, 7, 9), "user1")]
+    assert calls == [(
+        date(2026, 7, 9),
+        "",
+        "user1",
+        date(2026, 7, 9),
+    )]
 
 
 def test_scheduler_nav_estimate_runs_on_workday(monkeypatch):
@@ -1417,26 +1440,47 @@ def test_scheduler_nav_estimate_runs_on_workday(monkeypatch):
 
 def test_scheduler_nav_estimate_push_updates_profiles_before_estimate(monkeypatch):
     import src.nav_holdings
+    import src.portfolio_reports
+    import src.scheduler
+    from src.portfolio_models import ProductType
     from src.scheduler import _run_nav_estimate_push
 
     calls = []
+    repository = object()
+    wealth = type(
+        "Product",
+        (),
+        {"code": "AF233276B", "product_type": ProductType.WEALTH_NAV},
+    )()
+    fund = type(
+        "Product",
+        (),
+        {"code": "003103", "product_type": ProductType.PUBLIC_FUND},
+    )()
+    runtime = type("Runtime", (), {"repository": repository})()
 
-    def fake_update(cfg, today=None, notify=False):
-        calls.append(("update", today, notify))
+    def fake_update(cfg, today=None, notify=False, products=None):
+        calls.append(("update", today, notify, products))
         return []
 
-    def fake_push(cfg, to_user=None):
-        calls.append(("estimate", to_user))
+    def fake_push(cfg, to_user=None, products=None):
+        calls.append(("estimate", to_user, products))
         return "ok"
 
+    monkeypatch.setattr(src.scheduler, "_portfolio_runtime", runtime)
+    monkeypatch.setattr(
+        src.portfolio_reports,
+        "list_portfolio_position_products",
+        lambda repo, as_of=None: [wealth, fund],
+    )
     monkeypatch.setattr(src.nav_holdings, "refresh_quarterly_profiles_if_due", fake_update)
     monkeypatch.setattr(src.nav_holdings, "push_estimate_report", fake_push)
 
     _run_nav_estimate_push(Config({"wechat": {"to_user": "XiaXin"}}), day=date(2026, 7, 9))
 
     assert calls == [
-        ("update", date(2026, 7, 9), False),
-        ("estimate", "XiaXin"),
+        ("update", date(2026, 7, 9), False, [wealth]),
+        ("estimate", "XiaXin", [wealth]),
     ]
 
 

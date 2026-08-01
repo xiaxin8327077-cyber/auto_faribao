@@ -67,7 +67,7 @@ def _product_metadata(product):
     return None
 
 
-def build_portfolio_jobs(runtime):
+def build_portfolio_jobs(runtime, strict=False):
     repository = runtime.repository
     projector = PositionProjector(repository)
     transaction_service = PortfolioTransactionService(repository, projector)
@@ -96,6 +96,8 @@ def build_portfolio_jobs(runtime):
                     product.code,
                     exc_info=True,
                 )
+                if strict:
+                    raise
                 continue
             synced += len(quotes)
         return synced
@@ -121,6 +123,8 @@ def build_portfolio_jobs(runtime):
                     plan.id,
                     exc_info=True,
                 )
+                if strict:
+                    raise
                 continue
             created += sum(
                 execution.id not in existing_ids
@@ -147,6 +151,8 @@ def build_portfolio_jobs(runtime):
                     product.code,
                     exc_info=True,
                 )
+                if strict:
+                    raise
                 continue
             if result is not None:
                 accrued += 1
@@ -155,16 +161,18 @@ def build_portfolio_jobs(runtime):
     return PortfolioJobs(sync_quotes, create_intents, settle_pending, accrue_income)
 
 
-def run_portfolio_cycle(runtime, now=None):
+def run_portfolio_cycle(runtime, now=None, raise_on_error=False):
     now = now or beijing_now()
     if not getattr(runtime, "write_enabled", False):
         logger.warning("Portfolio runtime is read-only; skipping cycle")
         return PortfolioCycleResult(0, 0, 0, 0)
-    jobs = build_portfolio_jobs(runtime)
+    jobs = build_portfolio_jobs(runtime, strict=raise_on_error)
     try:
         result = jobs.run_cycle(now)
     except Exception:
         logger.error("Portfolio cycle failed", exc_info=True)
+        if raise_on_error:
+            raise
         return PortfolioCycleResult(0, 0, 0, 0)
     logger.info(
         "Portfolio cycle: quotes=%d intents=%d settled=%d income=%d",

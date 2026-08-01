@@ -87,17 +87,27 @@ def _run(cfg):
 
         ch, cm, rh, rm, sh, sm, cch, ccm = _get_times(current_cfg)
 
-        if _should_run_nav_monitor(current_cfg, now, last_nav_push_date):
+        # 收益查询和推送完全以组合账本为准，因此先完成当前时段的
+        # 行情/交易/收益同步，避免先发送旧持仓、随后才刷新看板。
+        with _scheduler_lock:
+            runtime = _portfolio_runtime
+        last_portfolio_slot, portfolio_ready = _prepare_portfolio_cycle(
+            runtime,
+            last_portfolio_slot,
+            now,
+        )
+
+        if portfolio_ready and _should_run_nav_monitor(current_cfg, now, last_nav_push_date):
             last_nav_push_date = today_str
             logger.info("Scheduler triggered: nav monitor push")
             _run_nav_monitor_push(current_cfg, now.date())
 
-        if _should_run_nav_estimate(current_cfg, now, last_nav_estimate_date):
+        if portfolio_ready and _should_run_nav_estimate(current_cfg, now, last_nav_estimate_date):
             last_nav_estimate_date = today_str
             logger.info("Scheduler triggered: nav estimate push")
             _run_nav_estimate_push(current_cfg, now.date())
 
-        if _should_run_nav_evening_push(current_cfg, now, last_nav_evening_push_date):
+        if portfolio_ready and _should_run_nav_evening_push(current_cfg, now, last_nav_evening_push_date):
             last_nav_evening_push_date = today_str
             logger.info("Scheduler triggered: nav evening push")
             _run_nav_evening_push(current_cfg, now.date())
@@ -139,15 +149,6 @@ def _run(cfg):
             last_calendar_update_year = now.year
             _run_calendar_update(current_cfg)
 
-        # 组合行情同步、定投意图、pending结算、现金收益计提
-        # 每个30分钟slot只执行一次；业务写入通过数据库唯一键保证幂等
-        if _portfolio_due(last_portfolio_slot, now):
-            last_portfolio_slot = _portfolio_slot(now)
-            with _scheduler_lock:
-                runtime = _portfolio_runtime
-            if runtime is not None and getattr(runtime, "write_enabled", False):
-                _run_portfolio_cycle(runtime, now)
-
         time.sleep(30)
 
 
@@ -157,6 +158,21 @@ def _portfolio_slot(now):
 
 def _portfolio_due(last_portfolio_slot, now):
     return _portfolio_slot(now) != last_portfolio_slot
+
+
+def _prepare_portfolio_cycle(runtime, last_portfolio_slot, now):
+    """Refresh the ledger before any WeChat portfolio report is sent."""
+    if not _portfolio_due(last_portfolio_slot, now):
+        return last_portfolio_slot, True
+    if runtime is None:
+        return last_portfolio_slot, False
+    if getattr(runtime, "repository", None) is None:
+        return last_portfolio_slot, False
+    if not getattr(runtime, "write_enabled", False):
+        return _portfolio_slot(now), True
+    if not _run_portfolio_cycle(runtime, now):
+        return last_portfolio_slot, False
+    return _portfolio_slot(now), True
 
 
 def _is_workday(day):
@@ -337,13 +353,28 @@ def _run_auto_submit(cfg):
 
 def _run_nav_monitor_push(cfg, day: date = None):
     try:
-        from src.nav_monitor import push_nav_period_report, push_nav_report
-        push_nav_report(cfg)
+        from src.portfolio_reports import push_portfolio_report
+
         target_day = day or today()
         to_user = getattr(cfg.wechat, "to_user", None)
+        repository = _require_portfolio_repository()
+        push_portfolio_report(
+            cfg,
+            repository,
+            target_date=target_day,
+            to_user=to_user,
+            holdings_as_of=target_day,
+        )
         for period, base_date in _nav_period_push_jobs(target_day):
             logger.info("Scheduler triggered: nav period push %s as of %s", period, base_date)
-            push_nav_period_report(cfg, period, base_date=base_date, to_user=to_user)
+            push_portfolio_report(
+                cfg,
+                repository,
+                target_date=base_date,
+                period=period,
+                to_user=to_user,
+                holdings_as_of=target_day,
+            )
     except Exception as e:
         logger.error(f"Scheduler nav monitor push failed: {e}", exc_info=True)
         if _wechat_is_configured(cfg):
@@ -361,10 +392,29 @@ def _run_nav_monitor_push(cfg, day: date = None):
 def _run_nav_estimate_push(cfg, day: date = None):
     try:
         from src.nav_holdings import push_estimate_report, refresh_quarterly_profiles_if_due
+        from src.portfolio_models import ProductType
+        from src.portfolio_reports import list_portfolio_position_products
 
         target_day = day or today()
-        refresh_quarterly_profiles_if_due(cfg, today=target_day, notify=False)
-        push_estimate_report(cfg, to_user=getattr(cfg.wechat, "to_user", None))
+        products = [
+            product
+            for product in list_portfolio_position_products(
+                _require_portfolio_repository(),
+                as_of=target_day,
+            )
+            if product.product_type is ProductType.WEALTH_NAV
+        ]
+        refresh_quarterly_profiles_if_due(
+            cfg,
+            today=target_day,
+            notify=False,
+            products=products,
+        )
+        push_estimate_report(
+            cfg,
+            to_user=getattr(cfg.wechat, "to_user", None),
+            products=products,
+        )
     except Exception as e:
         logger.error(f"Scheduler nav estimate push failed: {e}", exc_info=True)
         if _wechat_is_configured(cfg):
@@ -382,13 +432,15 @@ def _run_nav_estimate_push(cfg, day: date = None):
 
 def _run_nav_evening_push(cfg, day: date = None):
     try:
-        from src.nav_monitor import push_nav_evening_report
+        from src.portfolio_reports import push_portfolio_report
 
         target_day = day or today()
-        push_nav_evening_report(
+        push_portfolio_report(
             cfg,
-            as_of_date=target_day,
+            _require_portfolio_repository(),
+            target_date=target_day,
             to_user=getattr(cfg.wechat, "to_user", None),
+            holdings_as_of=target_day,
         )
     except Exception as e:
         logger.error(f"Scheduler nav evening push failed: {e}", exc_info=True)
@@ -403,6 +455,15 @@ def _run_nav_evening_push(cfg, day: date = None):
                 )
             except Exception:
                 logger.error("NAV evening failure notification failed", exc_info=True)
+
+
+def _require_portfolio_repository():
+    with _scheduler_lock:
+        runtime = _portfolio_runtime
+    repository = getattr(runtime, "repository", None)
+    if repository is None:
+        raise RuntimeError("理财组合账本不可用，已停止企微收益推送以避免持仓不一致")
+    return repository
 
 
 def _wechat_is_configured(cfg) -> bool:
@@ -600,9 +661,11 @@ def _run_portfolio_cycle(runtime, now):
     from src.portfolio_jobs import run_portfolio_cycle
 
     try:
-        run_portfolio_cycle(runtime, now)
+        run_portfolio_cycle(runtime, now, raise_on_error=True)
+        return True
     except Exception:
         logger.error("Scheduler portfolio cycle failed", exc_info=True)
+        return False
 
 
 def _run_calendar_update(cfg):

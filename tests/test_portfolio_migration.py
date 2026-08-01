@@ -8,7 +8,7 @@ import pytest
 
 import src.portfolio_migration as portfolio_migration
 from src.config import Config
-from src.portfolio_db import PortfolioDatabase
+from src.portfolio_db import SCHEMA_VERSION, PortfolioDatabase
 from src.portfolio_migration import migrate_legacy_portfolio
 
 
@@ -152,7 +152,7 @@ def test_install_upgrades_v1_target_in_place_and_preserves_portfolio_data(
             for row in conn.execute(
                 "SELECT version FROM schema_migrations"
             )
-        } == {3}
+        } == {SCHEMA_VERSION}
         assert {
             row["id"] for row in conn.execute("SELECT id FROM transactions")
         } == transaction_ids
@@ -345,7 +345,7 @@ def test_v1_install_validates_latest_target_inside_upgrade_lock(
         ).fetchone()[0] == 1
 
 
-@pytest.mark.parametrize("versions", [{4}, {1, 2}])
+@pytest.mark.parametrize("versions", [{SCHEMA_VERSION + 1}, {1, 2}])
 def test_install_rejects_unsupported_portfolio_versions_without_changes(
     tmp_path,
     versions,

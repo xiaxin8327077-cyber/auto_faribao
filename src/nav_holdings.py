@@ -277,9 +277,18 @@ def refresh_profile_for_product(
         return None
 
 
-def refresh_all_profiles(cfg, cache_path=DEFAULT_HOLDINGS_CACHE_PATH) -> list[HoldingProfile]:
+def refresh_all_profiles(
+    cfg,
+    cache_path=DEFAULT_HOLDINGS_CACHE_PATH,
+    products=None,
+) -> list[HoldingProfile]:
     profiles = []
-    for item in getattr(getattr(cfg, "nav_monitor", None), "products", []):
+    items = (
+        getattr(getattr(cfg, "nav_monitor", None), "products", [])
+        if products is None
+        else products
+    )
+    for item in items:
         profile = refresh_profile_for_product(cfg, item, cache_path=cache_path)
         if profile:
             profiles.append(profile)
@@ -291,12 +300,18 @@ def refresh_quarterly_profiles_if_due(
     today: Optional[date] = None,
     cache_path=DEFAULT_HOLDINGS_CACHE_PATH,
     notify: bool = False,
+    products=None,
 ) -> list[HoldingProfile]:
     today = today or date.today()
     target = target_quarter_for_check(today)
     cache = load_profile_cache(cache_path)
     refreshed = []
-    for item in getattr(getattr(cfg, "nav_monitor", None), "products", []):
+    items = (
+        getattr(getattr(cfg, "nav_monitor", None), "products", [])
+        if products is None
+        else products
+    )
+    for item in items:
         product = _to_nav_product(item)
         cached = cache.get(cache_key(product.provider, product.code))
         if cached and cached.report_period == target and cached.status == "ok":
@@ -585,6 +600,7 @@ def build_estimate_report(
     cache_path=DEFAULT_HOLDINGS_CACHE_PATH,
     generated_at: Optional[datetime] = None,
     market_date: Optional[date] = None,
+    products=None,
 ) -> str:
     generated_at = generated_at or datetime.now()
     market_error = ""
@@ -596,7 +612,12 @@ def build_estimate_report(
             snapshot = MarketSnapshot(trade_date=market_date or date.today(), symbols=())
     cache = load_profile_cache(cache_path)
     estimates = []
-    for item in getattr(getattr(cfg, "nav_monitor", None), "products", []):
+    items = (
+        getattr(getattr(cfg, "nav_monitor", None), "products", [])
+        if products is None
+        else products
+    )
+    for item in items:
         product = _to_nav_product(item)
         profile = cache.get(cache_key(product.provider, product.code))
         top_asset_moves = ()
@@ -668,21 +689,40 @@ def push_estimate_report(
     to_user: str = None,
     cache_path=DEFAULT_HOLDINGS_CACHE_PATH,
     market_date: Optional[date] = None,
+    products=None,
 ) -> str:
     from src.wechat_notifier import send_markdown
 
-    report = build_estimate_report(cfg, cache_path=cache_path, market_date=market_date)
+    report = build_estimate_report(
+        cfg,
+        cache_path=cache_path,
+        market_date=market_date,
+        products=products,
+    )
     send_markdown(cfg.wechat, report, to_user)
     return report
 
 
-def format_holdings_profiles(code: str = "", cache_path=DEFAULT_HOLDINGS_CACHE_PATH) -> str:
+def format_holdings_profiles(
+    code: str = "",
+    cache_path=DEFAULT_HOLDINGS_CACHE_PATH,
+    allowed_identities=None,
+) -> str:
     profiles = list(load_profile_cache(cache_path).values())
+    if allowed_identities is not None:
+        allowed = {
+            (str(provider).lower(), str(product_code).upper())
+            for provider, product_code in allowed_identities
+        }
+        profiles = [
+            profile for profile in profiles
+            if (profile.provider.lower(), profile.code.upper()) in allowed
+        ]
     if code:
         code_upper = code.upper()
         profiles = [profile for profile in profiles if profile.code.upper() == code_upper]
     if not profiles:
-        return "## 🧭 持仓画像\n\n暂无持仓画像缓存，可发送：更新持仓画像"
+        return "## 🧭 持仓画像\n\n当前看板暂无可查询的持仓画像。"
 
     lines = ["## 🧭 持仓画像", ""]
     for profile in sorted(profiles, key=lambda item: item.code):
@@ -709,10 +749,22 @@ def format_holdings_profiles(code: str = "", cache_path=DEFAULT_HOLDINGS_CACHE_P
     return "\n".join(lines).strip()
 
 
-def format_holdings_status(cache_path=DEFAULT_HOLDINGS_CACHE_PATH) -> str:
+def format_holdings_status(
+    cache_path=DEFAULT_HOLDINGS_CACHE_PATH,
+    allowed_identities=None,
+) -> str:
     profiles = sorted(load_profile_cache(cache_path).values(), key=lambda item: item.code)
+    if allowed_identities is not None:
+        allowed = {
+            (str(provider).lower(), str(product_code).upper())
+            for provider, product_code in allowed_identities
+        }
+        profiles = [
+            profile for profile in profiles
+            if (profile.provider.lower(), profile.code.upper()) in allowed
+        ]
     if not profiles:
-        return "## 🧭 持仓画像状态\n\n暂无缓存。"
+        return "## 🧭 持仓画像状态\n\n当前看板暂无可查询的持仓画像。"
     lines = ["## 🧭 持仓画像状态", ""]
     for profile in profiles:
         status = "正常" if profile.status == "ok" else "异常"

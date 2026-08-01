@@ -115,6 +115,75 @@ def test_portfolio_due_true_on_slot_change_false_within_slot():
     assert scheduler._portfolio_due("2026-07-30T18:30", datetime(2026, 7, 30, 18, 45)) is False
 
 
+def test_prepare_portfolio_cycle_marks_slot_ready_after_success(monkeypatch):
+    import src.scheduler as scheduler
+
+    runtime = SimpleNamespace(write_enabled=True, repository=object())
+    calls = []
+    monkeypatch.setattr(
+        scheduler,
+        "_run_portfolio_cycle",
+        lambda value, now: calls.append((value, now)) or True,
+    )
+    now = datetime(2026, 7, 30, 18, 30)
+
+    slot, ready = scheduler._prepare_portfolio_cycle(
+        runtime,
+        "2026-07-30T18:00",
+        now,
+    )
+
+    assert calls == [(runtime, now)]
+    assert slot == "2026-07-30T18:30"
+    assert ready is True
+
+
+def test_prepare_portfolio_cycle_retries_failed_slot(monkeypatch):
+    import src.scheduler as scheduler
+
+    runtime = SimpleNamespace(write_enabled=True, repository=object())
+    monkeypatch.setattr(scheduler, "_run_portfolio_cycle", lambda *_args: False)
+
+    slot, ready = scheduler._prepare_portfolio_cycle(
+        runtime,
+        "2026-07-30T18:00",
+        datetime(2026, 7, 30, 18, 30),
+    )
+
+    assert slot == "2026-07-30T18:00"
+    assert ready is False
+
+
+def test_prepare_portfolio_cycle_is_not_ready_without_repository():
+    import src.scheduler as scheduler
+
+    slot, ready = scheduler._prepare_portfolio_cycle(
+        SimpleNamespace(write_enabled=False, repository=None),
+        "2026-07-30T18:00",
+        datetime(2026, 7, 30, 18, 30),
+    )
+
+    assert slot == "2026-07-30T18:00"
+    assert ready is False
+
+
+def test_scheduler_cycle_requests_strict_error_handling(monkeypatch):
+    import src.scheduler as scheduler
+
+    calls = []
+
+    def fail_cycle(runtime, now, raise_on_error=False):
+        calls.append((runtime, now, raise_on_error))
+        raise RuntimeError("quote sync failed")
+
+    monkeypatch.setattr("src.portfolio_jobs.run_portfolio_cycle", fail_cycle)
+    runtime = SimpleNamespace(write_enabled=True, repository=object())
+    now = datetime(2026, 7, 30, 18, 30)
+
+    assert scheduler._run_portfolio_cycle(runtime, now) is False
+    assert calls == [(runtime, now, True)]
+
+
 def test_run_portfolio_cycle_noop_when_runtime_read_only(monkeypatch):
     import src.portfolio_jobs as jobs
 

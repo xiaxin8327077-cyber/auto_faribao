@@ -1,6 +1,14 @@
 from datetime import datetime
+from types import SimpleNamespace
 
-from src.portfolio_jobs import PortfolioJobs, PortfolioCycleResult
+import pytest
+
+from src.portfolio_jobs import (
+    PortfolioJobs,
+    PortfolioCycleResult,
+    run_portfolio_cycle,
+)
+from src.portfolio_models import ProductType
 
 
 def test_cycle_runs_network_sync_before_database_settlement():
@@ -55,3 +63,29 @@ def test_cycle_records_returned_counts():
     )
     result = jobs.run_cycle(datetime(2026, 7, 30, 9, 0))
     assert result == PortfolioCycleResult(3, 1, 2, 4)
+
+
+def test_strict_cycle_propagates_single_product_quote_failure(monkeypatch):
+    product = SimpleNamespace(
+        provider="nanyin_wealth",
+        code="A32069",
+        name="测试产品",
+        product_type=ProductType.WEALTH_NAV,
+        registration_code="",
+        metadata_json="",
+    )
+    repository = SimpleNamespace(
+        list_products=lambda active_only=False: [product],
+    )
+    runtime = SimpleNamespace(write_enabled=True, repository=repository)
+    monkeypatch.setattr(
+        "src.portfolio_jobs.QuoteSyncService.sync_product",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("network")),
+    )
+
+    with pytest.raises(RuntimeError, match="network"):
+        run_portfolio_cycle(
+            runtime,
+            datetime(2026, 7, 30, 9, 0),
+            raise_on_error=True,
+        )

@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 
+from src.config import Config
 from src.portfolio_db import PortfolioDatabase
 from src.portfolio_models import (
     MarketQuote,
@@ -16,6 +17,7 @@ from src.portfolio_positions import PositionProjector
 from src.portfolio_reports import (
     build_portfolio_query_report,
     format_portfolio_config,
+    push_portfolio_report,
 )
 from src.portfolio_repository import PortfolioRepository
 
@@ -59,6 +61,11 @@ def report_repo(tmp_path):
         seven_day_annualized_rate=Decimal("0.016315"),
     ), fetched_at="2026-07-30T09:00:00")
     repo.upsert_quote("fund", MarketQuote(
+        product_code="003103", quote_date=date(2026, 7, 28),
+        source="changsheng_fund", raw_hash="h0",
+        unit_nav=Decimal("1.0300"), cumulative_nav=Decimal("1.1979"),
+    ), fetched_at="2026-07-28T09:00:00")
+    repo.upsert_quote("fund", MarketQuote(
         product_code="003103", quote_date=date(2026, 7, 29),
         source="changsheng_fund", raw_hash="h2",
         unit_nav=Decimal("1.0321"), cumulative_nav=Decimal("1.2000"),
@@ -99,6 +106,7 @@ def test_fund_report_uses_real_position_and_unit_nav(report_repo):
     assert "003103" in text
     assert "单位净值：1.0321" in text
     assert "长盛盛裕纯债C" in text
+    assert "最新收益（2026-07-29）：0.21 元" in text
 
 
 def test_fund_report_shows_pending_when_no_quote(report_repo):
@@ -112,9 +120,19 @@ def test_cash_report_shows_pending_per_10k(report_repo):
 
 
 def test_format_portfolio_config_lists_products(report_repo):
-    text = format_portfolio_config(report_repo)
+    report_repo.add_product(Product(
+        "config-zero",
+        "nanyin_wealth",
+        "CONFIGZERO",
+        "配置中但无份额产品",
+        ProductType.WEALTH_NAV,
+    ))
+
+    text = format_portfolio_config(report_repo, as_of=date(2026, 7, 30))
+
     assert "NYRR000007" in text
     assert "003103" in text
+    assert "CONFIGZERO" not in text
     assert "现金管理" in text
     assert "公募基金" in text
     assert "理财看板网页" in text
@@ -124,3 +142,180 @@ def test_empty_portfolio_report(report_repo, monkeypatch):
     monkeypatch.setattr(report_repo, "list_products", lambda active_only=False: [])
     text = build_portfolio_query_report(report_repo, target_date=date(2026, 7, 30))
     assert "未配置" in text
+
+
+def test_portfolio_report_uses_same_visible_positions_as_dashboard(report_repo):
+    redeemed = Product(
+        "redeemed",
+        "nanyin_wealth",
+        "A32069",
+        "已全部赎回产品",
+        ProductType.WEALTH_NAV,
+    )
+    report_repo.add_product(redeemed)
+
+    text = build_portfolio_query_report(
+        report_repo,
+        target_date=date(2026, 7, 30),
+    )
+
+    assert "NYRR000007" in text
+    assert "003103" in text
+    assert "A32069" not in text
+
+
+def test_historical_report_still_uses_current_dashboard_holdings(report_repo):
+    redeemed = Product(
+        "redeemed-history",
+        "nanyin_wealth",
+        "A32070",
+        "历史查询前已清仓产品",
+        ProductType.WEALTH_NAV,
+    )
+    report_repo.add_product(redeemed)
+    report_repo.create_transaction(Transaction(
+        id="open:redeemed-history",
+        product_id=redeemed.id,
+        transaction_type=TransactionType.OPENING_POSITION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 7, 1),
+        idempotency_key="open:redeemed-history",
+        amount=Decimal("50"),
+        shares=Decimal("50"),
+    ))
+    report_repo.create_transaction(Transaction(
+        id="redeem:redeemed-history",
+        product_id=redeemed.id,
+        transaction_type=TransactionType.MANUAL_REDEMPTION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 7, 29),
+        confirmation_date=date(2026, 7, 30),
+        settlement_date=date(2026, 7, 30),
+        idempotency_key="redeem:redeemed-history",
+        shares=Decimal("50"),
+    ))
+    PositionProjector(report_repo).rebuild()
+
+    text = build_portfolio_query_report(
+        report_repo,
+        target_date=date(2026, 7, 29),
+        holdings_as_of=date(2026, 8, 1),
+    )
+
+    assert "A32070" not in text
+
+
+def test_wechat_push_sends_only_dashboard_position_products(
+    report_repo,
+    monkeypatch,
+):
+    report_repo.add_product(Product(
+        "zero-position",
+        "nanyin_wealth",
+        "ZERO001",
+        "零持仓产品",
+        ProductType.WEALTH_NAV,
+    ))
+    sent = []
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_markdown",
+        lambda _wechat, text, to_user=None: sent.append((text, to_user)),
+    )
+
+    report = push_portfolio_report(
+        Config({"wechat": {}}),
+        report_repo,
+        target_date=date(2026, 7, 30),
+        holdings_as_of=date(2026, 7, 30),
+        to_user="user1",
+    )
+
+    assert sent == [(report, "user1")]
+    assert "NYRR000007" in report
+    assert "003103" in report
+    assert "ZERO001" not in report
+
+
+def test_wechat_report_excludes_pending_purchase_without_held_shares(report_repo):
+    pending = Product(
+        "pending-purchase",
+        "changsheng_fund",
+        "PENDING001",
+        "仅有在途申购产品",
+        ProductType.PUBLIC_FUND,
+    )
+    report_repo.add_product(pending)
+    report_repo.create_transaction(Transaction(
+        id="pending:purchase",
+        product_id=pending.id,
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.PENDING_QUOTE,
+        trade_date=date(2026, 7, 30),
+        idempotency_key="pending:purchase",
+        amount=Decimal("1000"),
+    ))
+
+    report = build_portfolio_query_report(
+        report_repo,
+        target_date=date(2026, 7, 30),
+        holdings_as_of=date(2026, 7, 30),
+    )
+
+    assert "PENDING001" not in report
+
+
+def test_wechat_report_excludes_zero_shares_on_redemption_settlement_day(report_repo):
+    redeemed = Product(
+        "settling-redemption",
+        "nanyin_wealth",
+        "SETTLED001",
+        "当日全部赎回产品",
+        ProductType.WEALTH_NAV,
+    )
+    report_repo.add_product(redeemed)
+    report_repo.create_transaction(Transaction(
+        id="open:settling-redemption",
+        product_id=redeemed.id,
+        transaction_type=TransactionType.OPENING_POSITION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 7, 1),
+        idempotency_key="open:settling-redemption",
+        amount=Decimal("50"),
+        shares=Decimal("50"),
+    ))
+    report_repo.create_transaction(Transaction(
+        id="redeem:settling-redemption",
+        product_id=redeemed.id,
+        transaction_type=TransactionType.MANUAL_REDEMPTION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 7, 29),
+        confirmation_date=date(2026, 7, 30),
+        settlement_date=date(2026, 7, 30),
+        idempotency_key="redeem:settling-redemption",
+        shares=Decimal("50"),
+    ))
+    PositionProjector(report_repo).rebuild()
+
+    report = build_portfolio_query_report(
+        report_repo,
+        target_date=date(2026, 7, 30),
+        holdings_as_of=date(2026, 7, 30),
+    )
+
+    assert "SETTLED001" not in report
+
+
+def test_period_report_uses_readable_chinese_period_label(report_repo):
+    report = build_portfolio_query_report(
+        report_repo,
+        target_date=date(2026, 7, 30),
+        period="week",
+        holdings_as_of=date(2026, 7, 30),
+    )
+
+    assert "理财组合周度查询" in report
+    assert "截至 2026-07-30" in report
+    assert "统计起点：2026-07-27" in report
+    assert "期间收益：1.00 元" in report
+    assert "期间收益：0.21 元" in report
+    assert "（week）" not in report

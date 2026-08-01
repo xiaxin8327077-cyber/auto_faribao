@@ -1,47 +1,136 @@
-from datetime import date
-from decimal import Decimal
+from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 
 from src.portfolio_models import (
     ProductType,
-    TransactionStatus,
-    TransactionType,
     decimal_text,
 )
+from src.portfolio_profit import calculate_holding_profit
+from src.portfolio_view import build_portfolio_payload
 
 
-_ZERO = Decimal("0")
-_ONE = Decimal("1")
-_INCOME_TYPES = {TransactionType.INCOME_ACCRUAL, TransactionType.CASH_DIVIDEND}
+_PERIOD_LABELS = {
+    "week": "周度",
+    "month": "月度",
+    "quarter": "季度",
+    "half_year": "半年度",
+    "year": "年度",
+    "rolling_7d": "近7天",
+    "rolling_1m": "近一月",
+    "rolling_3m": "近三月",
+    "rolling_6m": "近半年",
+    "rolling_1y": "近一年",
+    "rolling_2y": "近两年",
+    "rolling_3y": "近三年",
+}
 
 
 def build_portfolio_query_report(
     repository,
     target_date: date | None = None,
     period: str = "",
+    holdings_as_of: date | None = None,
 ) -> str:
     target_date = target_date or date.today()
-    products = repository.list_products(active_only=True)
-    if not products:
-        return "当前未配置任何产品，请在理财看板网页中添加产品。"
+    holdings_as_of = holdings_as_of or date.today()
+    held_rows = _portfolio_position_rows(repository, as_of=holdings_as_of)
+    if not held_rows:
+        return "当前未配置持仓产品，请在理财看板网页中查看交易和持仓。"
+
+    query_payload = build_portfolio_payload(repository, as_of=target_date)
+    query_rows = {
+        row["product_id"]: row
+        for row in query_payload.get("products", [])
+    }
+    rows = []
+    for held_row in held_rows:
+        row = dict(query_rows.get(held_row["product_id"], held_row))
+        # Product visibility and shares always follow the current dashboard
+        # holdings projection, while quote/profit fields follow target_date.
+        for field in (
+            "shares",
+            "available_shares",
+            "locked_shares",
+            "in_transit_amount",
+        ):
+            row[field] = held_row.get(field)
+        rows.append(row)
 
     lines = []
+    period_start = None
     if period:
-        lines.append(f"📊 理财组合期间查询（{period}）")
+        label = _PERIOD_LABELS.get(period, period)
+        period_start = _period_start(period, target_date)
+        lines.append(
+            f"📊 理财组合{label}查询（截至 {target_date:%Y-%m-%d}）"
+        )
+        lines.append(f"统计起点：{period_start:%Y-%m-%d}")
     else:
         lines.append(f"📊 理财组合查询（{target_date:%Y-%m-%d}）")
     lines.append("")
 
-    for product in products:
-        lines.append(_product_report(repository, product, target_date))
+    for row in rows:
+        lines.append(
+            _position_report(
+                repository,
+                row,
+                target_date,
+                period_start=period_start,
+            )
+        )
         lines.append("")
 
     return "\n".join(lines).rstrip()
 
 
-def format_portfolio_config(repository) -> str:
-    products = repository.list_products()
+def list_portfolio_position_products(repository, as_of: date | None = None):
+    """Return products shown by the dashboard holdings projection."""
+    rows = _portfolio_position_rows(repository, as_of=as_of or date.today())
+    products_by_id = {
+        product.id: product for product in repository.list_products()
+    }
+    return [
+        products_by_id[row["product_id"]]
+        for row in rows
+        if row.get("product_id") in products_by_id
+    ]
+
+
+def _portfolio_position_rows(repository, as_of: date):
+    rows = build_portfolio_payload(repository, as_of=as_of).get("positions", [])
+    # The dashboard intentionally keeps zero-share cards visible while a trade
+    # is pending or a redemption is settling. WeChat profit reports have a
+    # stricter contract: only products with actual held shares are included.
+    return [row for row in rows if Decimal(str(row.get("shares") or "0")) > 0]
+
+
+def push_portfolio_report(
+    cfg,
+    repository,
+    target_date: date | None = None,
+    period: str = "",
+    to_user: str | None = None,
+    holdings_as_of: date | None = None,
+) -> str:
+    from src.wechat_notifier import send_markdown
+
+    report = build_portfolio_query_report(
+        repository,
+        target_date=target_date,
+        period=period,
+        holdings_as_of=holdings_as_of,
+    )
+    send_markdown(cfg.wechat, report, to_user)
+    return report
+
+
+def format_portfolio_config(repository, as_of: date | None = None) -> str:
+    products = list_portfolio_position_products(
+        repository,
+        as_of=as_of or date.today(),
+    )
     if not products:
-        return "当前未配置任何产品，请在理财看板网页中添加产品。"
+        return "当前看板暂无实际持有份额的产品。"
 
     lines = ["📋 理财产品配置", ""]
     type_labels = {
@@ -63,110 +152,94 @@ def format_portfolio_config(repository) -> str:
     return "\n".join(lines)
 
 
-def _product_report(repository, product, target_date):
-    position = repository.get_position(product.id)
-    if product.product_type is ProductType.CASH_MANAGEMENT:
-        return _cash_report(repository, product, position, target_date)
-    return _nav_report(repository, product, position, target_date)
-
-
-def _cash_report(repository, product, position, target_date):
-    quote = repository.latest_quote(product.id, on_or_before=target_date)
-    latest_income = _daily_cash_income(repository, product.id, target_date)
-    cumulative = _cumulative_cash_income(repository, product.id)
-
-    lines = [
-        f"💰 {product.name}（{product.code}）",
-        f"  持仓金额：{_fmt_amount(position.total_shares)} 元",
-    ]
-    if quote is not None and quote.income_per_10k is not None:
-        lines.append(
-            f"  每万份收益：{quote.income_per_10k} 元"
-        )
-    if quote is not None and quote.seven_day_annualized_rate is not None:
-        lines.append(
-            f"  七日年化：{_fmt_percent(quote.seven_day_annualized_rate)}"
-        )
-    if latest_income is not None:
-        lines.append(f"  当日收益：{_fmt_amount(latest_income)} 元")
-    lines.append(f"  累计收益：{_fmt_amount(cumulative)} 元")
-    if quote is None or quote.income_per_10k is None:
-        lines.append("  最新每万份收益：待披露")
-    return "\n".join(lines)
-
-
-def _nav_report(repository, product, position, target_date):
-    quote = repository.latest_quote(product.id, on_or_before=target_date)
-    cost = position.cost_basis
-    lines = [f"📈 {product.name}（{product.code}）"]
-    lines.append(f"  持仓份额：{_fmt_amount(position.total_shares)}")
-
-    if quote is not None and quote.unit_nav is not None:
-        market_value = position.total_shares * quote.unit_nav
-        lines.append(f"  单位净值：{_fmt_nav(quote.unit_nav)}")
-        if quote.cumulative_nav is not None:
-            lines.append(f"  累计净值：{_fmt_nav(quote.cumulative_nav)}")
-        lines.append(f"  市值：{_fmt_amount(market_value)} 元")
-        lines.append(
-            f"  未实现收益：{_fmt_amount(market_value - cost)} 元"
-        )
-    else:
-        lines.append("  最新净值：待披露")
-        lines.append(f"  成本：{_fmt_amount(cost)} 元")
-
-    if target_date is not None:
-        daily = _daily_nav_change_income(repository, product.id, target_date)
-        if daily is not None:
-            lines.append(f"  当日行情变动：{_fmt_amount(daily)} 元")
-    return "\n".join(lines)
-
-
-def _daily_cash_income(repository, product_id, target_date):
-    entries = [
-        transaction.amount
-        for transaction in repository.list_transactions(product_id=product_id)
-        if (
-            transaction.transaction_type is TransactionType.INCOME_ACCRUAL
-            and transaction.status is TransactionStatus.CONFIRMED
-            and transaction.trade_date == target_date
-            and transaction.amount is not None
-        )
-    ]
-    return sum(entries, _ZERO) if entries else None
-
-
-def _cumulative_cash_income(repository, product_id):
-    return sum(
-        (
-            transaction.amount or _ZERO
-            for transaction in repository.list_transactions(product_id=product_id)
-            if (
-                transaction.status is TransactionStatus.CONFIRMED
-                and transaction.transaction_type in _INCOME_TYPES
-            )
-        ),
-        _ZERO,
+def _position_report(repository, row, target_date, period_start=None):
+    product = repository.require_product(row["product_id"])
+    is_cash = product.product_type is ProductType.CASH_MANAGEMENT
+    icon = "💰" if is_cash else "📈"
+    lines = [f"{icon} {row['name']}（{row['code']}）"]
+    holding_label = "持仓金额" if is_cash else "持仓份额"
+    suffix = " 元" if is_cash else ""
+    lines.append(
+        f"  {holding_label}：{_fmt_amount(row.get('shares') or 0)}{suffix}"
     )
 
+    quote = row.get("quote") or {}
+    if is_cash:
+        income_per_10k = quote.get("income_per_10k")
+        seven_day_yield = quote.get("seven_day_annualized_rate")
+        if income_per_10k is not None:
+            lines.append(f"  每万份收益：{_fmt_nav(income_per_10k)} 元")
+        else:
+            lines.append("  最新每万份收益：待披露")
+        if seven_day_yield is not None:
+            lines.append(f"  七日年化：{_fmt_percent(seven_day_yield)}")
+    else:
+        unit_nav = quote.get("unit_nav")
+        if unit_nav is None:
+            lines.append("  最新净值：待披露")
+            lines.append(f"  成本：{_fmt_amount(row.get('cost_basis') or 0)} 元")
+        else:
+            lines.append(f"  单位净值：{_fmt_nav(unit_nav)}")
+            if quote.get("cumulative_nav") is not None:
+                lines.append(
+                    f"  累计净值：{_fmt_nav(quote['cumulative_nav'])}"
+                )
+            if row.get("market_value") is not None:
+                lines.append(
+                    f"  市值：{_fmt_amount(row['market_value'])} 元"
+                )
 
-def _daily_nav_change_income(repository, product_id, target_date):
-    """当日行情变动 = 当日确认的 cash_dividend（ NAV 产品当日一般无行情变动台账）。"""
-    entries = [
-        transaction.amount
-        for transaction in repository.list_transactions(product_id=product_id)
-        if (
-            transaction.transaction_type is TransactionType.CASH_DIVIDEND
-            and transaction.status is TransactionStatus.CONFIRMED
-            and transaction.trade_date == target_date
-            and transaction.amount is not None
+    latest_profit = row.get("latest_profit")
+    latest_profit_date = row.get("latest_profit_date")
+    if latest_profit is not None and latest_profit_date:
+        lines.append(
+            f"  最新收益（{latest_profit_date}）："
+            f"{_fmt_amount(latest_profit)} 元"
         )
-    ]
-    return sum(entries, _ZERO) if entries else None
+    if row.get("holding_profit") is not None:
+        lines.append(
+            f"  累计持有收益：{_fmt_amount(row['holding_profit'])} 元"
+        )
+
+    if period_start is not None:
+        previous_day = period_start - timedelta(days=1)
+        period_profit = (
+            calculate_holding_profit(repository, product, target_date)
+            - calculate_holding_profit(repository, product, previous_day)
+        )
+        lines.append(f"  期间收益：{_fmt_amount(period_profit)} 元")
+    return "\n".join(lines)
+
+
+def _period_start(period: str, base_date: date) -> date:
+    rolling_days = {
+        "rolling_7d": 7,
+        "rolling_1m": 30,
+        "rolling_3m": 90,
+        "rolling_6m": 180,
+        "rolling_1y": 365,
+        "rolling_2y": 730,
+        "rolling_3y": 1095,
+    }
+    if period in rolling_days:
+        return base_date - timedelta(days=rolling_days[period])
+    if period == "week":
+        return base_date - timedelta(days=base_date.weekday())
+    if period == "month":
+        return date(base_date.year, base_date.month, 1)
+    if period == "quarter":
+        month = ((base_date.month - 1) // 3) * 3 + 1
+        return date(base_date.year, month, 1)
+    if period == "half_year":
+        return date(base_date.year, 1 if base_date.month <= 6 else 7, 1)
+    if period == "year":
+        return date(base_date.year, 1, 1)
+    raise ValueError(f"unsupported portfolio report period: {period}")
 
 
 def _fmt_amount(value):
     number = Decimal(str(value))
-    return format(number.normalize(), "f")
+    return format(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "f")
 
 
 def _fmt_nav(value):

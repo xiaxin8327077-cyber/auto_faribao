@@ -15,6 +15,7 @@ from src.portfolio_models import (
 
 from src.portfolio_db import (
     BASE_SCHEMA_SQL,
+    SCHEMA_VERSION,
     V2_SCHEMA_SQL,
     PortfolioDatabase,
 )
@@ -179,7 +180,7 @@ def test_clean_populated_v1_upgrades_to_v2_atomically_and_repeat_safely(
             for row in conn.execute(
                 "SELECT version FROM schema_migrations"
             )
-        } == {3}
+        } == {SCHEMA_VERSION}
         assert tuple(
             conn.execute(
                 """SELECT amount, shares FROM transactions
@@ -208,7 +209,7 @@ def test_v1_with_already_installed_v2_objects_only_advances_version(tmp_path):
             for row in conn.execute(
                 "SELECT version FROM schema_migrations"
             )
-        } == {3}
+        } == {SCHEMA_VERSION}
 
 
 def test_v2_upgrades_with_dedicated_trade_time_without_reusing_created_at(
@@ -250,7 +251,7 @@ def test_v2_upgrades_with_dedicated_trade_time_without_reusing_created_at(
         }
     assert "trade_time" in columns
     assert tuple(row) == ("", "2026-07-31 08:00:00")
-    assert versions == {3}
+    assert versions == {SCHEMA_VERSION}
 
 
 @pytest.mark.parametrize("initial_version", [None, 1])
@@ -285,7 +286,7 @@ def test_concurrent_initializers_share_one_locked_schema_transition(
             for row in conn.execute(
                 "SELECT version FROM schema_migrations"
             )
-            ] == [3]
+            ] == [SCHEMA_VERSION]
         assert conn.execute(
             """SELECT COUNT(*) FROM sqlite_master
                WHERE name IN (
