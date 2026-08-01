@@ -656,7 +656,12 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         product_id = _required_text(body.get("product_id"), "product_id")
         product = repo.require_product(product_id)
         trade_time_value = str(body.get("trade_time") or "").strip()
-        settlement_date = _parse_date(body.get("settlement_date"), "settlement_date", None)
+        settlement_date_value = body.get("settlement_date")
+        settlement_date = (
+            _parse_date(settlement_date_value, "settlement_date")
+            if settlement_date_value not in (None, "")
+            else None
+        )
         transaction_type = (
             TransactionType.MANUAL_PURCHASE
             if kind == "purchase"
@@ -710,6 +715,8 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 or ""
             ).strip()
             if source_id:
+                if source_id == product_id:
+                    raise ValueError("source must differ from product")
                 source = repo.require_product(source_id)
                 if source.product_type is not ProductType.CASH_MANAGEMENT:
                     raise ValueError("source must be cash_management")
@@ -783,6 +790,8 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             or ""
         ).strip()
         if destination_id:
+            if destination_id == product_id:
+                raise ValueError("destination must differ from product")
             destination = repo.require_product(destination_id)
             if destination.product_type is not ProductType.CASH_MANAGEMENT:
                 raise ValueError("destination must be cash_management")
@@ -795,6 +804,10 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             "trade_date": trade_date.isoformat(),
             "note": str(body.get("note") or ""),
         }
+        if product.product_type is ProductType.CASH_MANAGEMENT:
+            normalized["settlement_date"] = trade_date.isoformat()
+        elif settlement_date is not None:
+            normalized["settlement_date"] = settlement_date.isoformat()
         if schedule is not None:
             normalized.update(
                 {

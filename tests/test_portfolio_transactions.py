@@ -259,7 +259,11 @@ def test_cancel_sip_updates_execution_and_settlement_skips_it(services):
         date(2026, 7, 31),
     )
 
-    transactions.cancel_pending(
+    cancelled = transactions.cancel_pending(
+        cancelled_execution.transaction_id,
+        "test:cancel-sip-execution",
+    )
+    retried = transactions.cancel_pending(
         cancelled_execution.transaction_id,
         "test:cancel-sip-execution",
     )
@@ -267,9 +271,23 @@ def test_cancel_sip_updates_execution_and_settlement_skips_it(services):
 
     updated = sip.get_execution(cancelled_execution.id)
     assert updated.status == "cancelled"
+    assert retried == cancelled
     assert updated.reason == "user_cancelled"
     assert sip.get_execution(other_execution.id).status == "pending_quote"
     assert settled == []
+    assert projector.calculate("cash").total_shares == Decimal("900")
+    plan_rows = [
+        row for row in repository.list_transactions()
+        if row.plan_id == plan.id
+    ]
+    assert len([
+        row for row in plan_rows
+        if row.transaction_type is TransactionType.CASH_TRANSFER_OUT
+    ]) == 2
+    assert len([
+        row for row in plan_rows
+        if row.transaction_type is TransactionType.CASH_TRANSFER_IN
+    ]) == 1
 
 
 def test_reverse_sip_updates_execution_across_retry_and_correction(services):
@@ -2224,6 +2242,52 @@ def test_redemption_retry_is_idempotent_and_does_not_lock_twice(services):
     assert retry == original
     assert len(repository.list_transactions()) == 4
     assert projector.calculate("fund").locked_shares == Decimal("25")
+
+
+def test_cash_redemption_settles_on_trade_day_even_on_weekend(services):
+    repository, transactions, _projector = services
+    seed_cash(repository, "cash", "100")
+
+    redemption = transactions.record_redemption(
+        "cash",
+        Decimal("25"),
+        date(2026, 8, 1),
+        "web:weekend-cash-redemption",
+        trade_time="2026-08-01T10:30",
+        settlement_date=date(2026, 8, 5),
+    )
+
+    assert redemption.trade_date == date(2026, 8, 1)
+    assert redemption.confirmation_date == date(2026, 8, 1)
+    assert redemption.settlement_date == date(2026, 8, 1)
+
+
+def test_purchase_rejects_same_cash_product_as_source(services):
+    repository, transactions, _projector = services
+    seed_cash(repository, "cash", "100")
+
+    with pytest.raises(ValueError, match="source must differ from product"):
+        transactions.record_purchase(
+            "cash",
+            Decimal("25"),
+            TRADE_DATE,
+            "web:self-funded-cash-purchase",
+            source_cash_product_id="cash",
+        )
+
+
+def test_redemption_rejects_same_cash_product_as_destination(services):
+    repository, transactions, _projector = services
+    seed_cash(repository, "cash", "100")
+
+    with pytest.raises(ValueError, match="destination must differ from product"):
+        transactions.record_redemption(
+            "cash",
+            Decimal("25"),
+            TRADE_DATE,
+            "web:self-destination-cash-redemption",
+            destination_cash_product_id="cash",
+        )
 
 
 @pytest.mark.parametrize(

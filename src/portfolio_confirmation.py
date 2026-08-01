@@ -56,9 +56,12 @@ def confirmation_schedule(
         rule.get("confirmation_trading_days")
     )
     effective = submitted_at.date()
-    if not is_trading_day(effective) or submitted_at.time() > cutoff:
-        effective = _next_trading_day(effective)
-    confirmed = _add_trading_days(effective, confirmation_days)
+    if product.product_type is ProductType.CASH_MANAGEMENT:
+        confirmed = effective
+    else:
+        if not is_trading_day(effective) or submitted_at.time() > cutoff:
+            effective = _next_trading_day(effective)
+        confirmed = _add_trading_days(effective, confirmation_days)
     return ConfirmationSchedule(
         trade_date=effective,
         confirmation_date=confirmed,

@@ -381,7 +381,7 @@ def test_trade_form_switches_between_purchase_amount_and_redemption_shares():
     assert "input.name = redemption ? 'shares' : 'amount';" in page
     assert "input.step = '0.01';" in page
     assert "input.min = '0.01';" in page
-    assert "label.firstChild.textContent = redemption ? '赎回份额' : '申购金额（元）';" in page
+    assert "$('tradeValueTitle').textContent = redemption ? '赎回份额' : '申购金额（元）';" in page
     assert "$('tradeTimeLabel').firstChild.textContent = redemption ? '赎回时间' : '申购时间';" in page
 
 
@@ -428,6 +428,21 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert "function transactionDetailsHtml(" in page
 
 
+def test_trade_form_applies_wallet_plus_rules_and_redemption_context():
+    page = _read_page()
+
+    assert 'id="tradeFixedProductField"' in page
+    assert 'id="tradeAvailableShares"' in page
+    assert "function isWalletPlusProduct(product)" in page
+    assert "return activeCash.find(isWalletPlusProduct) || null;" in page
+    assert "function updateTradeRedemptionContext()" in page
+    assert "`可用份额 ${money(availableShares)}`" in page
+    assert "settlementInput.value = tradeDateFromInput();" in page
+    assert "const fixedCashPurchase = !redemption && productType === 'cash_management';" in page
+    assert "$('tradeProduct').value = rowValue(walletPlus, 'id', 'product_id') || '';" in page
+    assert "fillTradeCashOptions(fixedCashPurchase ? walletPlusId : '', walletRedemption ? selectedProductId : '');" in page
+
+
 def test_sip_cash_outflow_is_labeled_as_sip_deduction():
     page = _read_page()
 
@@ -438,10 +453,19 @@ def test_sip_cash_outflow_is_labeled_as_sip_deduction():
     assert "if (type === 'cash_transfer_out' && rowValue(row, 'plan_id')) return true;" in page
 
 
+def test_sip_card_shows_deduction_count_and_amount_in_fourth_stat():
+    page = _read_page()
+
+    assert "`已扣款 ${deductionCount} 次`" in page
+    assert "`${money(deductionAmount)} 元`" in page
+    assert "rowValue(row, 'deduction_count')" in page
+    assert "rowValue(row, 'deduction_amount')" in page
+
+
 def test_transaction_cards_visually_distinguish_purchase_and_redemption():
     page = _read_page()
 
-    assert "function transactionKindMeta(value)" in page
+    assert "function transactionKindMeta(value, row = {})" in page
     assert "label: '申购', className: 'purchase'" in page
     assert "label: '赎回', className: 'redemption'" in page
     assert ".transaction-card.purchase" in page
@@ -449,12 +473,15 @@ def test_transaction_cards_visually_distinguish_purchase_and_redemption():
     assert 'class="transaction-kind ${kind.className}"' in page
     assert "const amountLabel = kind.className === 'purchase' ? '申购金额'" in page
     assert "kind.className === 'redemption' ? '赎回份额' : '交易份额'" in page
+    assert "type === 'cash_transfer_out' && rowValue(row, 'plan_id')" in page
+    assert "transactionKindMeta(normalizedTransactionType, row)" in page
 
 
-def test_positions_panel_uses_positive_position_rows_not_all_products():
+def test_positions_panel_uses_positions_plus_products_with_pending_business():
     page = PAGE_PATH.read_text(encoding="utf-8")
 
-    assert "const rows = positions;" in page
+    assert "const allRows = [...positions, ...pendingProducts];" in page
+    assert "const rows = allRows.filter" in page
     assert "const rows = products.map" not in page
 
 
@@ -510,8 +537,8 @@ def test_calibration_transactions_have_an_exclusive_filter():
 
 def test_top_metrics_unchanged():
     page = _read_page()
+    assert "总资产(元)" in page
     assert "估算市值(元)" in page
-    assert "已设份额" in page
     assert "今日披露" in page
 
 

@@ -493,6 +493,51 @@ def _sip_plan_row(repository, plan, products_by_id):
         ),
         None,
     )
+    transactions = repository.list_transactions()
+    transactions_by_id = {transaction.id: transaction for transaction in transactions}
+    execution_cash_ids = set()
+    active_execution_cash_ids = set()
+    for execution in executions:
+        purchase = transactions_by_id.get(execution.transaction_id)
+        cash_id = purchase.linked_transaction_id if purchase is not None else ""
+        if not cash_id:
+            continue
+        execution_cash_ids.add(cash_id)
+        cash = transactions_by_id.get(cash_id)
+        if (
+            execution.status in {"pending_quote", "confirmed"}
+            and cash is not None
+            and cash.status is TransactionStatus.CONFIRMED
+        ):
+            active_execution_cash_ids.add(cash_id)
+    refunded_cash_ids = {
+        transaction.linked_transaction_id
+        for transaction in transactions
+        if (
+            transaction.plan_id == plan.id
+            and transaction.transaction_type
+            is TransactionType.CASH_TRANSFER_IN
+            and transaction.status is TransactionStatus.CONFIRMED
+            and transaction.linked_transaction_id
+        )
+    }
+    deductions = [
+        transaction
+        for transaction in transactions
+        if (
+            transaction.plan_id == plan.id
+            and transaction.transaction_type
+            is TransactionType.CASH_TRANSFER_OUT
+            and (
+                transaction.id in active_execution_cash_ids
+                or (
+                    transaction.id not in execution_cash_ids
+                    and transaction.status is TransactionStatus.CONFIRMED
+                    and transaction.id not in refunded_cash_ids
+                )
+            )
+        )
+    ]
     return {
         "id": plan.id,
         "product_id": plan.product_id,
@@ -509,6 +554,10 @@ def _sip_plan_row(repository, plan, products_by_id):
         "last_execution": (
             last_execution.intended_trade_date.isoformat()
             if last_execution else ""
+        ),
+        "deduction_count": len(deductions),
+        "deduction_amount": decimal_text(
+            sum((row.amount or Decimal("0") for row in deductions), Decimal("0"))
         ),
         "skip_reason": "",
     }

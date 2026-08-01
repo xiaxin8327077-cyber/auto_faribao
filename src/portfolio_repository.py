@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 import sqlite3
 from uuid import NAMESPACE_URL, uuid5
@@ -144,8 +144,6 @@ class PortfolioRepository:
     def create_transaction(
         self, tx: Transaction, conn: sqlite3.Connection | None = None
     ) -> Transaction:
-        if not tx.trade_time:
-            tx = replace(tx, trade_time=datetime.now().strftime("%H:%M:%S"))
         if conn is None:
             with self.database.transaction() as owned:
                 return self.create_transaction(tx, owned)
@@ -184,7 +182,7 @@ class PortfolioRepository:
                 tx.settlement_date.isoformat() if tx.settlement_date else None,
             ),
         )
-        return tx
+        return self.get_transaction_by_id(tx.id, conn=conn)
 
     def get_transaction_by_id(
         self,
@@ -266,7 +264,7 @@ class PortfolioRepository:
                 tx.id,
             ),
         )
-        return tx
+        return self.get_transaction_by_id(tx.id, conn=conn)
 
     def list_transactions(
         self,
@@ -787,7 +785,7 @@ class PortfolioRepository:
             trade_time=row["trade_time"] or "",
             note=row["note"],
             created_by=row["created_by"],
-            confirmed_at=row["confirmed_at"] or "",
+            confirmed_at=row["confirmed_at"] or None,
             settlement_date=(
                 date.fromisoformat(row["settlement_date"])
                 if row["settlement_date"]

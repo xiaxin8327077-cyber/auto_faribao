@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -772,3 +773,148 @@ def test_sip_view_does_not_treat_non_trading_day_skip_as_last_execution(
 
     assert plan["last_execution"] == "2026-07-31"
     assert plan["skip_reason"] == ""
+
+
+def test_sip_view_exposes_effective_cash_deduction_count_and_amount(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    repository.save_plan(
+        SipPlan(
+            id="plan-with-deductions",
+            product_id="fund",
+            daily_amount=Decimal("20"),
+            purchase_fee_rate=Decimal("0"),
+            source_cash_product_id="cash",
+            status=SipPlanStatus.ACTIVE,
+            start_date=date(2026, 7, 30),
+        )
+    )
+    for suffix, amount in (("one", "20"), ("two", "30")):
+        repository.create_transaction(
+            Transaction(
+                id=f"cash-out-{suffix}",
+                product_id="cash",
+                transaction_type=TransactionType.CASH_TRANSFER_OUT,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=date(2026, 7, 30),
+                confirmation_date=date(2026, 7, 30),
+                confirmation_nav=Decimal("1"),
+                idempotency_key=f"cash-out-{suffix}",
+                amount=Decimal(amount),
+                shares=Decimal(amount),
+                plan_id="plan-with-deductions",
+            )
+        )
+    repository.create_transaction(
+        Transaction(
+            id="cash-out-refunded",
+            product_id="cash",
+            transaction_type=TransactionType.CASH_TRANSFER_OUT,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 31),
+            confirmation_date=date(2026, 7, 31),
+            confirmation_nav=Decimal("1"),
+            idempotency_key="cash-out-refunded",
+            amount=Decimal("40"),
+            shares=Decimal("40"),
+            plan_id="plan-with-deductions",
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="cash-refund",
+            product_id="cash",
+            transaction_type=TransactionType.CASH_TRANSFER_IN,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 31),
+            confirmation_date=date(2026, 7, 31),
+            confirmation_nav=Decimal("1"),
+            idempotency_key="cash-refund",
+            amount=Decimal("40"),
+            shares=Decimal("40"),
+            linked_transaction_id="cash-out-refunded",
+            plan_id="plan-with-deductions",
+        )
+    )
+
+    plan = next(
+        row for row in build_portfolio_payload(
+            repository,
+            as_of=date(2026, 8, 1),
+        )["sip_plans"]
+        if row["id"] == "plan-with-deductions"
+    )
+
+    assert plan["deduction_count"] == 2
+    assert plan["deduction_amount"] == "50"
+
+
+def test_sip_view_does_not_count_legacy_locked_cash_as_deducted(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    repository.save_plan(
+        SipPlan(
+            id="legacy-pending-plan",
+            product_id="fund",
+            daily_amount=Decimal("20"),
+            purchase_fee_rate=Decimal("0"),
+            source_cash_product_id="cash",
+            status=SipPlanStatus.ACTIVE,
+            start_date=date(2026, 7, 30),
+        )
+    )
+    purchase = Transaction(
+        id="legacy-pending-purchase",
+        product_id="fund",
+        transaction_type=TransactionType.SIP_PURCHASE,
+        status=TransactionStatus.PENDING_QUOTE,
+        trade_date=date(2026, 7, 30),
+        idempotency_key="legacy-pending-purchase",
+        amount=Decimal("20"),
+        plan_id="legacy-pending-plan",
+    )
+    cash = Transaction(
+        id="legacy-pending-cash",
+        product_id="cash",
+        transaction_type=TransactionType.CASH_TRANSFER_OUT,
+        status=TransactionStatus.PENDING_QUOTE,
+        trade_date=date(2026, 7, 30),
+        idempotency_key="legacy-pending-cash",
+        amount=Decimal("20"),
+        shares=Decimal("20"),
+        linked_transaction_id=purchase.id,
+        plan_id="legacy-pending-plan",
+    )
+    with repository.database.transaction() as conn:
+        repository.create_transaction(purchase, conn)
+        repository.create_transaction(cash, conn)
+        repository.update_pending_transaction(
+            replace(
+                purchase,
+                linked_transaction_id="legacy-pending-cash",
+            ),
+            conn,
+        )
+    repository.save_plan_execution(
+        PlanExecution(
+            id="legacy-pending-execution",
+            plan_id="legacy-pending-plan",
+            intended_trade_date=date(2026, 7, 30),
+            status="pending_quote",
+            transaction_id=purchase.id,
+        )
+    )
+
+    plan = next(
+        row
+        for row in build_portfolio_payload(
+            repository,
+            as_of=date(2026, 8, 1),
+        )["sip_plans"]
+        if row["id"] == "legacy-pending-plan"
+    )
+
+    assert plan["deduction_count"] == 0
+    assert plan["deduction_amount"] == "0"

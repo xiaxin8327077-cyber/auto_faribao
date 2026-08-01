@@ -121,7 +121,8 @@ def test_015736_exact_quote_confirms_fee_adjusted_shares(sip_services):
     execution = sip.ensure_intent(plan.id, TRADE_DATE)
 
     assert execution.status == "pending_quote"
-    assert projector.calculate("cash").locked_shares == Decimal("2000")
+    assert projector.calculate("cash").total_shares == Decimal("1000")
+    assert projector.calculate("cash").locked_shares == Decimal("0")
     seed_quote(repo, "fund", TRADE_DATE, "1.0331")
     assert sip.settle_pending(TRADE_DATE) == []
     settled = sip.settle_pending(date(2026, 7, 31))
@@ -135,6 +136,33 @@ def test_015736_exact_quote_confirms_fee_adjusted_shares(sip_services):
     assert projector.calculate("fund").total_shares == expected
     assert projector.calculate("cash").total_shares == Decimal("1000")
     assert execution.id == sip.ensure_intent(plan.id, TRADE_DATE).id
+
+
+def test_sip_cash_deduction_confirms_immediately_while_purchase_waits(
+    sip_services,
+):
+    repo, sip, projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(sip, "fund", "cash", "100", "0")
+
+    sip.ensure_intent(plan.id, TRADE_DATE)
+
+    rows = plan_transactions(repo, plan.id)
+    purchase = next(
+        row for row in rows
+        if row.transaction_type is TransactionType.SIP_PURCHASE
+    )
+    cash = next(
+        row for row in rows
+        if row.transaction_type is TransactionType.CASH_TRANSFER_OUT
+    )
+    assert purchase.status is TransactionStatus.PENDING_QUOTE
+    assert cash.status is TransactionStatus.CONFIRMED
+    assert cash.confirmation_date == TRADE_DATE
+    assert cash.confirmation_nav == Decimal("1")
+    assert projector.calculate("cash").total_shares == Decimal("900")
+    assert projector.calculate("cash").locked_shares == Decimal("0")
 
 
 def test_003103_zero_fee_uses_the_same_general_sip_mechanism(sip_services):
@@ -367,7 +395,8 @@ def test_pending_stays_pending_until_exact_or_later_quote(sip_services):
 
     assert sip.settle_pending(TRADE_DATE) == []
     assert sip.get_execution(pending.id).status == "pending_quote"
-    assert projector.calculate("cash").locked_shares == Decimal("100")
+    assert projector.calculate("cash").total_shares == Decimal("900")
+    assert projector.calculate("cash").locked_shares == Decimal("0")
 
 
 def test_later_official_quote_marks_non_trading_day_and_releases_cash(
@@ -385,9 +414,20 @@ def test_later_official_quote_marks_non_trading_day_and_releases_cash(
     assert settled[0].status == "skipped"
     assert settled[0].reason == "non_trading_day"
     assert projector.calculate("cash").locked_shares == Decimal("0")
-    assert {
-        transaction.status for transaction in plan_transactions(repo, plan.id)
-    } == {TransactionStatus.CANCELLED}
+    assert projector.calculate("cash").total_shares == Decimal("1000")
+    rows = plan_transactions(repo, plan.id)
+    assert next(
+        row for row in rows
+        if row.transaction_type is TransactionType.SIP_PURCHASE
+    ).status is TransactionStatus.CANCELLED
+    assert next(
+        row for row in rows
+        if row.transaction_type is TransactionType.CASH_TRANSFER_OUT
+    ).status is TransactionStatus.CONFIRMED
+    assert next(
+        row for row in rows
+        if row.transaction_type is TransactionType.CASH_TRANSFER_IN
+    ).status is TransactionStatus.CONFIRMED
     assert sip.get_execution(pending.id) == settled[0]
 
 
@@ -408,7 +448,8 @@ def test_intent_creation_is_atomic_and_unique_under_concurrency(sip_services):
     assert executions[0] == executions[1]
     assert len(sip.list_executions(plan.id)) == 1
     assert len(plan_transactions(repo, plan.id)) == 2
-    assert projector.calculate("cash").locked_shares == Decimal("100")
+    assert projector.calculate("cash").total_shares == Decimal("0")
+    assert projector.calculate("cash").locked_shares == Decimal("0")
 
 
 def test_settlement_uses_persisted_transaction_snapshot_after_plan_edit(
@@ -612,8 +653,6 @@ def test_repeated_lifecycle_calls_are_idempotent_and_transitions_are_strict(
 @pytest.mark.parametrize(
     ("column", "value"),
     [
-        ("amount", "101"),
-        ("shares", "101"),
         ("fee_rate", "1"),
         ("created_by", "operator"),
     ],
@@ -628,7 +667,7 @@ def test_settlement_rejects_semantically_inconsistent_pending_pair(
     pending = sip.ensure_intent(plan.id, TRADE_DATE)
     purchase = repo.get_transaction_by_id(pending.transaction_id)
     cash = repo.get_transaction_by_id(purchase.linked_transaction_id)
-    target_id = purchase.id if column in {"fee_rate", "created_by"} else cash.id
+    target_id = purchase.id
     with repo.database.transaction() as conn:
         conn.execute(
             f"UPDATE transactions SET {column} = ? WHERE id = ?",
@@ -643,7 +682,7 @@ def test_settlement_rejects_semantically_inconsistent_pending_pair(
         TransactionStatus.PENDING_QUOTE
     )
     assert repo.get_transaction_by_id(cash.id).status is (
-        TransactionStatus.PENDING_QUOTE
+        TransactionStatus.CONFIRMED
     )
     assert projector.calculate("cash").locked_shares == Decimal(value) if (
         column == "shares"

@@ -335,15 +335,6 @@ class SipService:
                     ),
                     conn,
                 )
-                self.repository.update_pending_transaction(
-                    replace(
-                        cash,
-                        status=TransactionStatus.CONFIRMED,
-                        confirmation_nav=ONE,
-                        confirmation_date=confirmed_on,
-                    ),
-                    conn,
-                )
                 result = replace(execution, status="confirmed")
             else:
                 later_quote = self.repository.latest_quote(
@@ -361,10 +352,7 @@ class SipService:
                     replace(purchase, status=TransactionStatus.CANCELLED),
                     conn,
                 )
-                self.repository.update_pending_transaction(
-                    replace(cash, status=TransactionStatus.CANCELLED),
-                    conn,
-                )
+                self._refund_cash_deduction(cash, conn)
                 result = replace(
                     execution,
                     status="skipped",
@@ -405,11 +393,13 @@ class SipService:
             id=cash_id,
             product_id=plan.source_cash_product_id,
             transaction_type=TransactionType.CASH_TRANSFER_OUT,
-            status=TransactionStatus.PENDING_QUOTE,
+            status=TransactionStatus.CONFIRMED,
             trade_date=intended_date,
             idempotency_key=f"sip:{execution_key}:cash",
             amount=plan.daily_amount,
             shares=plan.daily_amount,
+            confirmation_nav=ONE,
+            confirmation_date=intended_date,
             linked_transaction_id=purchase_id,
             plan_id=plan.id,
             created_by="sip",
@@ -431,6 +421,21 @@ class SipService:
             if purchase is not None
             else None
         )
+        if (
+            cash is not None
+            and cash.transaction_type is TransactionType.CASH_TRANSFER_OUT
+            and cash.status is TransactionStatus.PENDING_QUOTE
+            and cash.confirmation_nav is None
+            and cash.confirmation_date is None
+        ):
+            cash = replace(
+                cash,
+                status=TransactionStatus.CONFIRMED,
+                confirmation_nav=ONE,
+                confirmation_date=cash.trade_date,
+            )
+            self.repository.update_pending_transaction(cash, conn)
+            self._rebuild_positions({cash.product_id}, conn)
         execution_key = (
             f"{execution.plan_id}:"
             f"{execution.intended_trade_date.isoformat()}"
@@ -470,7 +475,7 @@ class SipService:
             or purchase.transaction_type is not TransactionType.SIP_PURCHASE
             or cash.transaction_type is not TransactionType.CASH_TRANSFER_OUT
             or purchase.status is not TransactionStatus.PENDING_QUOTE
-            or cash.status is not TransactionStatus.PENDING_QUOTE
+            or cash.status is not TransactionStatus.CONFIRMED
             or purchase.linked_transaction_id != cash.id
             or cash.linked_transaction_id != purchase.id
             or purchase.plan_id != execution.plan_id
@@ -490,8 +495,8 @@ class SipService:
             or cash.shares != purchase.amount
             or cash.fee_amount is not None
             or cash.fee_rate is not None
-            or cash.confirmation_nav is not None
-            or cash.confirmation_date is not None
+            or cash.confirmation_nav != ONE
+            or cash.confirmation_date != execution.intended_trade_date
             or purchase.created_by != "sip"
             or cash.created_by != purchase.created_by
             or target is None
@@ -501,6 +506,12 @@ class SipService:
         ):
             raise ValueError("inconsistent SIP transaction pair")
         return purchase, cash
+
+    def _refund_cash_deduction(self, cash, conn):
+        return self.transaction_service._refund_confirmed_sip_cash(
+            cash,
+            conn,
+        )
 
     def _skip_reason(self, plan, intended_date):
         if intended_date < plan.start_date:

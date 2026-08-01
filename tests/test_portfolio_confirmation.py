@@ -21,6 +21,16 @@ def fund(metadata=None):
     )
 
 
+def wallet_plus():
+    return Product(
+        id="wallet-plus",
+        provider="fixed",
+        code="WALLETPLUS",
+        name="钱包Plus",
+        product_type=ProductType.CASH_MANAGEMENT,
+    )
+
+
 def test_public_fund_before_15_cutoff_confirms_next_trading_day():
     schedule = confirmation_schedule(
         fund(),
@@ -52,6 +62,17 @@ def test_public_fund_after_15_cutoff_confirms_second_next_trading_day():
 
     assert schedule.trade_date == date(2026, 8, 3)
     assert schedule.confirmation_date == date(2026, 8, 4)
+
+
+def test_wallet_plus_redemption_confirms_on_weekend_submission_date():
+    schedule = confirmation_schedule(
+        wallet_plus(),
+        TransactionType.MANUAL_REDEMPTION,
+        datetime(2026, 8, 1, 10, 0),
+    )
+
+    assert schedule.trade_date == date(2026, 8, 1)
+    assert schedule.confirmation_date == date(2026, 8, 1)
 
 
 def test_aware_submission_time_is_converted_to_beijing_before_cutoff_check():

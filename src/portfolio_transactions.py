@@ -81,6 +81,8 @@ class PortfolioTransactionService:
 
             source = None
             if source_cash_product_id:
+                if source_cash_product_id == product.id:
+                    raise ValueError("source must differ from product")
                 source = self.repository.require_product(
                     source_cash_product_id, conn=conn
                 )
@@ -151,7 +153,7 @@ class PortfolioTransactionService:
                 )
                 affected_product_ids.add(source.id)
             else:
-                self.repository.create_transaction(purchase, conn)
+                purchase = self.repository.create_transaction(purchase, conn)
 
             self._rebuild_positions(affected_product_ids, conn)
             if audit_id:
@@ -232,6 +234,8 @@ class PortfolioTransactionService:
 
             destination = None
             if destination_cash_product_id:
+                if destination_cash_product_id == product.id:
+                    raise ValueError("destination must differ from product")
                 destination = self.repository.require_product(
                     destination_cash_product_id, conn=conn
                 )
@@ -248,6 +252,8 @@ class PortfolioTransactionService:
             amount = shares * nav if nav is not None else None
             if amount is not None:
                 self._require_finite_positive(amount, "amount")
+            if product.product_type is ProductType.CASH_MANAGEMENT:
+                settlement_date = trade_date
             redemption = Transaction(
                 id=str(uuid4()),
                 product_id=product.id,
@@ -295,7 +301,7 @@ class PortfolioTransactionService:
                 )
                 affected_product_ids.add(destination.id)
             else:
-                self.repository.create_transaction(redemption, conn)
+                redemption = self.repository.create_transaction(redemption, conn)
 
             self._rebuild_positions(affected_product_ids, conn)
             if audit_id:
@@ -410,7 +416,7 @@ class PortfolioTransactionService:
                 created_by=actor,
             )
             if destination is None:
-                self.repository.create_transaction(dividend, conn)
+                dividend = self.repository.create_transaction(dividend, conn)
             else:
                 dividend = self._create_linked_pair(
                     dividend,
@@ -519,7 +525,9 @@ class PortfolioTransactionService:
                 )
                 linked_amount = amount
 
-            self.repository.update_pending_transaction(confirmed, conn)
+            confirmed = self.repository.update_pending_transaction(
+                confirmed, conn
+            )
             affected_product_ids = {confirmed.product_id}
             if linked is not None:
                 confirmed_linked = replace(
@@ -640,10 +648,13 @@ class PortfolioTransactionService:
             self.repository.update_pending_transaction(cancelled, conn)
             affected_product_ids = {cancelled.product_id}
             if linked is not None:
-                self.repository.update_pending_transaction(
-                    replace(linked, status=TransactionStatus.CANCELLED),
-                    conn,
-                )
+                if self._is_immediate_sip_cash_link(transaction, linked):
+                    self._refund_confirmed_sip_cash(linked, conn)
+                else:
+                    self.repository.update_pending_transaction(
+                        replace(linked, status=TransactionStatus.CANCELLED),
+                        conn,
+                    )
                 affected_product_ids.add(linked.product_id)
             sip_execution, _depth = self._sip_execution_context(
                 [transaction, linked] if linked is not None else [transaction],
@@ -665,7 +676,10 @@ class PortfolioTransactionService:
             after = {
                 **request,
                 "linked_status": (
-                    TransactionStatus.CANCELLED.value if linked else ""
+                    linked.status.value
+                    if linked is not None
+                    and self._is_immediate_sip_cash_link(transaction, linked)
+                    else TransactionStatus.CANCELLED.value if linked else ""
                 ),
                 "status": TransactionStatus.CANCELLED.value,
                 "target_status": TransactionStatus.CANCELLED.value,
@@ -798,7 +812,7 @@ class PortfolioTransactionService:
                     note=reason,
                     created_by=actor,
                 )
-                self.repository.create_transaction(reversal, conn)
+                reversal = self.repository.create_transaction(reversal, conn)
                 reversals.append(reversal)
             for member in group:
                 self._mark_reversed(member.id, conn)
@@ -1674,6 +1688,22 @@ class PortfolioTransactionService:
                 and linked_id == ""
                 and audit_payload.get("linked_status", "") == ""
             )
+        if self._is_immediate_sip_cash_link(transaction, linked):
+            refund = self.repository.get_transaction_by_idempotency(
+                f"sip-refund:{linked.id}",
+                conn=conn,
+            )
+            return (
+                linked.id == linked_id
+                and audit_payload.get("linked_status")
+                == TransactionStatus.CONFIRMED.value
+                and refund is not None
+                and refund.transaction_type
+                is TransactionType.CASH_TRANSFER_IN
+                and refund.status is TransactionStatus.CONFIRMED
+                and refund.amount == linked.amount
+                and refund.shares == linked.shares
+            )
         return (
             linked.id == linked_id
             and linked.status is TransactionStatus.CANCELLED
@@ -1967,7 +1997,7 @@ class PortfolioTransactionService:
         return parsed.isoformat(timespec="seconds")
 
     @staticmethod
-    def _parse_trade_time(self, trade_time: str, trade_date: date) -> datetime:
+    def _parse_trade_time(trade_time: str, trade_date: date) -> datetime:
         """兼容两种 trade_time 格式: HH:MM:SS 和 YYYY-MM-DDTHH:MM:SS"""
         if trade_time and 'T' in trade_time:
             return datetime.fromisoformat(trade_time)
@@ -1975,6 +2005,7 @@ class PortfolioTransactionService:
         return datetime.combine(trade_date, _time.fromisoformat(trade_time))
 
     def _confirmation_date(
+        self,
         product,
         transaction_type,
         trade_time,
@@ -1998,8 +2029,60 @@ class PortfolioTransactionService:
         self.repository.create_transaction(initial, conn)
         self.repository.create_transaction(linked, conn)
         primary = replace(primary, linked_transaction_id=linked.id)
-        self.repository.update_pending_transaction(primary, conn)
-        return primary
+        return self.repository.update_pending_transaction(primary, conn)
+
+    @staticmethod
+    def _is_immediate_sip_cash_link(transaction, linked):
+        return (
+            transaction.transaction_type is TransactionType.SIP_PURCHASE
+            and transaction.status
+            in {
+                TransactionStatus.PENDING_QUOTE,
+                TransactionStatus.PENDING_CONFIRMATION,
+                TransactionStatus.CANCELLED,
+            }
+            and linked.transaction_type is TransactionType.CASH_TRANSFER_OUT
+            and linked.status is TransactionStatus.CONFIRMED
+        )
+
+    def _refund_confirmed_sip_cash(self, cash, conn):
+        idempotency_key = f"sip-refund:{cash.id}"
+        existing = self.repository.get_transaction_by_idempotency(
+            idempotency_key,
+            conn=conn,
+        )
+        if existing is not None:
+            if (
+                existing.product_id != cash.product_id
+                or existing.transaction_type
+                is not TransactionType.CASH_TRANSFER_IN
+                or existing.status is not TransactionStatus.CONFIRMED
+                or existing.amount != cash.amount
+                or existing.shares != cash.shares
+                or existing.trade_date != cash.trade_date
+                or existing.confirmation_nav != ONE
+                or existing.confirmation_date != cash.trade_date
+                or existing.linked_transaction_id != cash.id
+                or existing.plan_id != cash.plan_id
+            ):
+                raise ValueError("inconsistent SIP cash refund")
+            return existing
+        refund = Transaction(
+            id=str(uuid4()),
+            product_id=cash.product_id,
+            transaction_type=TransactionType.CASH_TRANSFER_IN,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=cash.trade_date,
+            idempotency_key=idempotency_key,
+            amount=cash.amount,
+            shares=cash.shares,
+            confirmation_nav=ONE,
+            confirmation_date=cash.trade_date,
+            linked_transaction_id=cash.id,
+            plan_id=cash.plan_id,
+            created_by="sip",
+        )
+        return self.repository.create_transaction(refund, conn)
 
     def _require_consistent_link(self, transaction, conn):
         if transaction.transaction_type not in {
@@ -2043,7 +2126,13 @@ class PortfolioTransactionService:
             or reverse_cash_links[0].id != linked.id
             or linked.linked_transaction_id != transaction.id
             or linked.transaction_type is not expected_type
-            or linked.status is not transaction.status
+            or (
+                linked.status is not transaction.status
+                and not self._is_immediate_sip_cash_link(
+                    transaction,
+                    linked,
+                )
+            )
             or linked.trade_date != transaction.trade_date
             or linked.created_by != transaction.created_by
             or linked.plan_id != transaction.plan_id
@@ -2117,6 +2206,16 @@ class PortfolioTransactionService:
             *_PENDING_STATUSES,
             TransactionStatus.CANCELLED,
         }:
+            if cls._is_immediate_sip_cash_link(transaction, linked):
+                return (
+                    product.product_type is ProductType.PUBLIC_FUND
+                    and transaction.shares is None
+                    and transaction.fee_amount is None
+                    and transaction.confirmation_nav is None
+                    and transaction.confirmation_date is None
+                    and linked.confirmation_nav == ONE
+                    and linked.confirmation_date == transaction.trade_date
+                )
             if transaction.confirmation_nav is not None:
                 expected_fee = (
                     transaction.amount * transaction.fee_rate
@@ -2146,6 +2245,11 @@ class PortfolioTransactionService:
             TransactionStatus.REVERSED,
         }:
             return False
+        linked_confirmation_dates = (
+            {transaction.trade_date, transaction.confirmation_date}
+            if transaction.transaction_type is TransactionType.SIP_PURCHASE
+            else {transaction.confirmation_date}
+        )
         if (
             not cls._is_finite_positive(transaction.confirmation_nav)
             or transaction.confirmation_date is None
@@ -2153,7 +2257,7 @@ class PortfolioTransactionService:
             or transaction.fee_amount
             != transaction.amount * transaction.fee_rate
             or linked.confirmation_nav != ONE
-            or linked.confirmation_date != transaction.confirmation_date
+            or linked.confirmation_date not in linked_confirmation_dates
             or (
                 product.product_type is ProductType.CASH_MANAGEMENT
                 and transaction.confirmation_nav != ONE
