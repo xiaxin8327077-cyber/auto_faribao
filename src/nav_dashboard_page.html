@@ -283,9 +283,10 @@
     .manage-stat b { display: block; margin-top: 4px; overflow: hidden; font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
     .manage-subvalue { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; }
     .product-history { margin-top: 4px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
-    .product-history-head, .product-history-row { display: grid; grid-template-columns: 78px minmax(68px, 1fr) minmax(72px, 1fr) minmax(72px, 1fr); align-items: center; gap: 6px; padding: 9px 8px; font-variant-numeric: tabular-nums; text-align: right; }
-    .product-history-head { color: var(--muted); background: var(--blue-soft); font-size: 10px; font-weight: 800; }
-    .product-history-row { min-height: 42px; border-top: 1px solid var(--line-soft); font-size: 11px; font-weight: 700; }
+    .product-history-head, .product-history-row { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, .95fr) minmax(0, .95fr) minmax(0, 1fr); align-items: center; gap: 2px; padding: 9px 4px; font-variant-numeric: tabular-nums; text-align: right; }
+    .product-history-head span, .product-history-row span { min-width: 0; white-space: nowrap; }
+    .product-history-head { color: var(--muted); background: var(--blue-soft); font-size: 9px; font-weight: 800; }
+    .product-history-row { min-height: 42px; border-top: 1px solid var(--line-soft); font-size: 10px; font-weight: 700; }
     .product-history-head span:first-child, .product-history-row span:first-child { text-align: left; }
     .product-history-row .positive { color: var(--positive); }
     .product-history-row .negative { color: var(--negative); }

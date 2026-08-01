@@ -210,6 +210,11 @@ def test_position_detail_opens_a_real_dialog():
     assert "涨跌幅" in html
     assert "当日收益" in html
     assert "dialogOpen('productDetailDialog');" in html
+    assert "grid-template-columns: minmax(0, 1.35fr) minmax(0, .95fr) minmax(0, .95fr) minmax(0, 1fr);" in html
+    assert ".product-history-head span, .product-history-row span { min-width: 0; white-space: nowrap; }" in html
+    assert "align-items: center; gap: 2px; padding: 9px 4px;" in html
+    assert ".product-history-head { color: var(--muted); background: var(--blue-soft); font-size: 9px;" in html
+    assert ".product-history-row { min-height: 42px; border-top: 1px solid var(--line-soft); font-size: 10px;" in html
 
 
 def test_stale_product_detail_request_cannot_overwrite_newer_dialog():
