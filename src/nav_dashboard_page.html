@@ -268,13 +268,13 @@
     .manage-list { display: grid; gap: 10px; margin-top: 12px; }
     .manage-card { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); box-shadow: 0 5px 16px rgba(38, 72, 112, .06); }
     .manage-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-    .manage-name-row { display: flex; align-items: flex-start; gap: 5px; min-width: 0; }
-    .manage-name { min-width: 0; font-size: 15px; font-weight: 850; line-height: 1.4; }
-    .manage-name-actions { display: inline-flex; flex: 0 0 auto; gap: 2px; padding-top: 1px; }
-    .manage-icon-action { display: inline-grid; width: 22px; height: 22px; padding: 3px; border: 0; border-radius: 50%; background: transparent; color: #9aa7b8; cursor: pointer; place-items: center; }
+    .manage-name-row { display: block; min-width: 0; }
+    .manage-name { display: inline; min-width: 0; font-size: 15px; font-weight: 850; line-height: 1.4; }
+    .manage-name-actions { display: inline-flex; flex: 0 0 auto; gap: 1px; margin-left: 3px; vertical-align: middle; }
+    .manage-icon-action { display: inline-grid; width: 26px; height: 26px; padding: 4px; border: 0; border-radius: 50%; background: transparent; color: #9aa7b8; cursor: pointer; place-items: center; }
     .manage-icon-action:hover { background: var(--bg); color: #68778b; }
     .manage-icon-action:disabled { cursor: not-allowed; opacity: .42; }
-    .manage-icon-action svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+    .manage-icon-action svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
     .manage-code, .manage-meta { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
     .manage-value { flex: 0 0 auto; color: var(--blue); font-size: 15px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
     .manage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }

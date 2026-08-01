@@ -503,6 +503,12 @@ def test_holding_controls_support_delete_and_profit_calibration_without_reversal
     assert 'class="row-action" type="button" data-write-operation="disable-product"' not in page
     assert 'class="row-action" type="button" data-write-operation="delete-holding"' not in page
     assert ".manage-icon-action" in page
+    assert ".manage-name-row { display: block;" in page
+    assert ".manage-name { display: inline;" in page
+    assert ".manage-name-actions { display: inline-flex;" in page
+    assert "vertical-align: middle;" in page
+    assert "width: 26px; height: 26px;" in page
+    assert ".manage-icon-action svg { width: 16px; height: 16px;" in page
     assert 'data-write-operation="reverse"' not in page
 
 
