@@ -228,7 +228,18 @@ def test_help_group_commands_return_single_detail_message():
     assert "<font" not in nav_messages[1]
     assert nav_messages[2].startswith("## 💹 理财看板说明")
     assert "**删除净值产品 AF233276B**" not in nav_messages[2]
-    assert "添加、删除产品" in nav_messages[2]
+    retired_operation_terms = (
+        "添加、删除产品",
+        "申购、赎回",
+        "份额校准",
+        "收益校准",
+        "定投",
+        "推送设置",
+        "画像更新",
+    )
+    all_nav_help = "\n".join(nav_messages)
+    assert all(term not in all_nav_help for term in retired_operation_terms)
+    assert "企业微信仅提供理财查询" in all_nav_help
     assert "理财看板网页" in nav_messages[2]
     assert "**设置净值推送时间 08:00**" not in nav_messages[2]
     assert "**开启净值监控**" not in nav_messages[2]
