@@ -33,7 +33,7 @@ _DEFAULT_RULES = {
     },
     ProductType.CASH_MANAGEMENT: {
         "cutoff_time": "23:59",
-        "confirmation_trading_days": 0,
+        "confirmation_trading_days": 1,
     },
 }
 
@@ -56,12 +56,9 @@ def confirmation_schedule(
         rule.get("confirmation_trading_days")
     )
     effective = submitted_at.date()
-    if product.product_type is ProductType.CASH_MANAGEMENT:
-        confirmed = effective
-    else:
-        if not is_trading_day(effective) or submitted_at.time() > cutoff:
-            effective = _next_trading_day(effective)
-        confirmed = _add_trading_days(effective, confirmation_days)
+    if not is_trading_day(effective) or submitted_at.time() > cutoff:
+        effective = _next_trading_day(effective)
+    confirmed = _add_trading_days(effective, confirmation_days)
     return ConfirmationSchedule(
         trade_date=effective,
         confirmation_date=confirmed,

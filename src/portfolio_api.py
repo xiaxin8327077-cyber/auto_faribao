@@ -690,11 +690,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         )
         status = (
             "confirmed"
-            if nav is not None
-            and (
-                schedule is None
-                or product.product_type is ProductType.CASH_MANAGEMENT
-            )
+            if nav is not None and schedule is None
             else "pending_confirmation"
             if nav is not None
             else "pending_quote"

@@ -10,6 +10,7 @@ from src.portfolio_confirmation import (
     normalize_market_datetime,
 )
 from src.portfolio_models import (
+    MarketQuote,
     ProductType,
     Transaction,
     TransactionStatus,
@@ -562,13 +563,22 @@ class PortfolioTransactionService:
                 or transaction.trade_date > as_of_date
             ):
                 continue
-            quote = self.repository.get_quote(
-                transaction.product_id,
-                transaction.trade_date,
-            )
-            if quote is None or quote.unit_nav is None:
-                continue
             product = self.repository.require_product(transaction.product_id)
+            if product.product_type is ProductType.CASH_MANAGEMENT:
+                quote = MarketQuote(
+                    product_code=product.code,
+                    quote_date=transaction.trade_date,
+                    source="cash_unit_price",
+                    raw_hash="cash_unit_price",
+                    unit_nav=ONE,
+                )
+            else:
+                quote = self.repository.get_quote(
+                    transaction.product_id,
+                    transaction.trade_date,
+                )
+                if quote is None or quote.unit_nav is None:
+                    continue
             confirmed_on = self._confirmation_date(
                 product,
                 transaction.transaction_type,
@@ -1981,6 +1991,8 @@ class PortfolioTransactionService:
 
     def _status_and_nav(self, product, trade_date, conn, trade_time=""):
         if product.product_type is ProductType.CASH_MANAGEMENT:
+            if trade_time:
+                return TransactionStatus.PENDING_CONFIRMATION, ONE
             return TransactionStatus.CONFIRMED, ONE
         quote = self.repository.get_quote(product.id, trade_date, conn=conn)
         if quote is None or quote.unit_nav is None:
@@ -2011,7 +2023,7 @@ class PortfolioTransactionService:
         trade_time,
         trade_date,
     ):
-        if not trade_time or product.product_type is ProductType.CASH_MANAGEMENT:
+        if not trade_time:
             return trade_date
         return confirmation_schedule(
             product,

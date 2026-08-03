@@ -2427,25 +2427,40 @@ def _handle_nav_command(
         if not _try_start_cmd("净值查询"):
             _send_wechat_text(cfg.wechat, _busy_reply(), from_user_id)
             return
+        repository = getattr(portfolio_runtime, "repository", None)
+        if repository is None:
+            _send_wechat_text(
+                cfg.wechat,
+                "理财组合账本暂不可用，请稍后在理财看板中查看。",
+                from_user_id,
+            )
+            return
         target_date = nav_command.target_date
         _send_wechat_text(cfg.wechat, "⏳ 正在查询净值，请稍等...", from_user_id)
 
         def process_nav_query():
             try:
-                repository = getattr(portfolio_runtime, "repository", None)
-                if repository is None:
-                    raise RuntimeError(
-                        "理财组合账本暂不可用，已停止旧配置查询以避免持仓不一致"
-                    )
+                from src.beijing_time import today as beijing_today
                 from src.portfolio_reports import push_portfolio_report
 
-                push_portfolio_report(
-                    cfg,
-                    repository,
-                    target_date=target_date,
-                    period=(nav_command.period if action == "query_period" else ""),
-                    to_user=from_user_id,
-                )
+                holdings_as_of = beijing_today()
+                if action == "query_period":
+                    push_portfolio_report(
+                        cfg,
+                        repository,
+                        target_date=target_date,
+                        period=nav_command.period,
+                        holdings_as_of=holdings_as_of,
+                        to_user=from_user_id,
+                    )
+                else:
+                    push_portfolio_report(
+                        cfg,
+                        repository,
+                        target_date=target_date,
+                        holdings_as_of=holdings_as_of,
+                        to_user=from_user_id,
+                    )
             except Exception as e:
                 logger.error(f"NAV query command failed: {e}", exc_info=True)
                 _send_wechat_text(cfg.wechat, f"❌ 净值查询失败\n{e}", from_user_id)

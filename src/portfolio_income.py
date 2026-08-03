@@ -1,4 +1,3 @@
-from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -58,10 +57,11 @@ class CashIncomeService:
             if quote is None or quote.income_per_10k is None:
                 return None
 
+            # 已确认份额（含当日确认）才计息；未确认申购不计，确认日当天起息。
             opening_position = self.projector._calculate(
                 product_id,
                 conn,
-                as_of=quote_date - timedelta(days=1),
+                as_of=quote_date,
                 use_confirmation_date=True,
             )
             current_position = self.projector._calculate(

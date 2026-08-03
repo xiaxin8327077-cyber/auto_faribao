@@ -362,8 +362,8 @@ def _run_nav_monitor_push(cfg, day: date = None):
             cfg,
             repository,
             target_date=target_day,
-            to_user=to_user,
             holdings_as_of=target_day,
+            to_user=to_user,
         )
         for period, base_date in _nav_period_push_jobs(target_day):
             logger.info("Scheduler triggered: nav period push %s as of %s", period, base_date)
@@ -372,8 +372,8 @@ def _run_nav_monitor_push(cfg, day: date = None):
                 repository,
                 target_date=base_date,
                 period=period,
-                to_user=to_user,
                 holdings_as_of=target_day,
+                to_user=to_user,
             )
     except Exception as e:
         logger.error(f"Scheduler nav monitor push failed: {e}", exc_info=True)
@@ -439,8 +439,9 @@ def _run_nav_evening_push(cfg, day: date = None):
             cfg,
             _require_portfolio_repository(),
             target_date=target_day,
-            to_user=getattr(cfg.wechat, "to_user", None),
             holdings_as_of=target_day,
+            disclosed_on=target_day,
+            to_user=getattr(cfg.wechat, "to_user", None),
         )
     except Exception as e:
         logger.error(f"Scheduler nav evening push failed: {e}", exc_info=True)

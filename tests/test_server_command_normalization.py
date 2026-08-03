@@ -15,13 +15,12 @@ from src.server import (
 )
 
 
-def test_nav_query_uses_portfolio_runtime_repository(monkeypatch):
+def test_nav_query_uses_image_push_report(monkeypatch):
     import src.portfolio_reports
     import src.server
 
-    repository = object()
-    runtime = SimpleNamespace(repository=repository)
     calls = []
+    repository = object()
 
     class ImmediateThread:
         def __init__(self, target, daemon=False):
@@ -41,8 +40,8 @@ def test_nav_query_uses_portfolio_runtime_repository(monkeypatch):
     monkeypatch.setattr(
         src.portfolio_reports,
         "push_portfolio_report",
-        lambda cfg, repo, target_date=None, period="", to_user=None: calls.append(
-            ("report", repo, target_date, period, to_user)
+        lambda cfg, repo, target_date=None, period="", to_user=None, holdings_as_of=None, disclosed_on=None, image_output_dir=None: calls.append(
+            ("report", target_date, to_user, repo)
         ),
     )
 
@@ -54,10 +53,10 @@ def test_nav_query_uses_portfolio_runtime_repository(monkeypatch):
             period="",
         ),
         "user1",
-        portfolio_runtime=runtime,
+        portfolio_runtime=SimpleNamespace(repository=repository),
     )
 
-    assert calls[-1] == ("report", repository, None, "", "user1")
+    assert calls[-1] == ("report", None, "user1", repository)
 
 
 def test_plain_system_config_does_not_expose_legacy_product_count():

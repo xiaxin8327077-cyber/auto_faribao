@@ -2244,8 +2244,8 @@ def test_redemption_retry_is_idempotent_and_does_not_lock_twice(services):
     assert projector.calculate("fund").locked_shares == Decimal("25")
 
 
-def test_cash_redemption_settles_on_trade_day_even_on_weekend(services):
-    repository, transactions, _projector = services
+def test_cash_redemption_with_trade_time_waits_for_t1_confirmation(services):
+    repository, transactions, projector = services
     seed_cash(repository, "cash", "100")
 
     redemption = transactions.record_redemption(
@@ -2257,9 +2257,46 @@ def test_cash_redemption_settles_on_trade_day_even_on_weekend(services):
         settlement_date=date(2026, 8, 5),
     )
 
-    assert redemption.trade_date == date(2026, 8, 1)
-    assert redemption.confirmation_date == date(2026, 8, 1)
-    assert redemption.settlement_date == date(2026, 8, 1)
+    assert redemption.trade_date == date(2026, 8, 3)
+    assert redemption.status is TransactionStatus.PENDING_CONFIRMATION
+    assert redemption.confirmation_date is None
+    assert redemption.settlement_date == date(2026, 8, 3)
+    assert projector.calculate("cash").locked_shares == Decimal("25")
+    assert projector.calculate("cash").total_shares == Decimal("100")
+
+    assert transactions.settle_pending(date(2026, 8, 3)) == []
+    settled = transactions.settle_pending(date(2026, 8, 4))
+
+    assert len(settled) == 1
+    assert settled[0].status is TransactionStatus.CONFIRMED
+    assert settled[0].confirmation_date == date(2026, 8, 4)
+    assert projector.calculate("cash").total_shares == Decimal("75")
+    assert projector.calculate("cash").locked_shares == Decimal("0")
+
+
+def test_cash_purchase_with_trade_time_confirms_next_trading_day(services):
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+
+    purchase = transactions.record_purchase(
+        "cash",
+        Decimal("100"),
+        TRADE_DATE,
+        "web:timed-cash-purchase",
+        trade_time="2026-07-30T10:00",
+    )
+
+    assert purchase.trade_date == TRADE_DATE
+    assert purchase.status is TransactionStatus.PENDING_CONFIRMATION
+    assert purchase.confirmation_date is None
+    assert projector.calculate("cash").total_shares == Decimal("1000")
+
+    assert transactions.settle_pending(TRADE_DATE) == []
+    settled = transactions.settle_pending(date(2026, 7, 31))
+
+    assert len(settled) == 1
+    assert settled[0].confirmation_date == date(2026, 7, 31)
+    assert projector.calculate("cash").total_shares == Decimal("1100")
 
 
 def test_purchase_rejects_same_cash_product_as_source(services):

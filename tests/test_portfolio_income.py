@@ -120,7 +120,7 @@ def test_cash_income_uses_effective_shares_and_compounds_next_day(
     assert second.shares == Decimal("0.40002")
 
 
-def test_same_day_cash_purchase_starts_earning_on_next_day(
+def test_purchase_confirmed_on_same_day_starts_earning_that_day(
     income_services,
 ):
     repository, projector, income = income_services
@@ -144,13 +144,73 @@ def test_same_day_cash_purchase_starts_earning_on_next_day(
 
     first = income.accrue("cash", INCOME_DATE)
 
-    assert first.amount == Decimal("0.5")
+    assert first.amount == Decimal("0.75")
 
     next_date = date(2026, 7, 30)
     seed_quote(repository, "cash", next_date, "0.5")
     second = income.accrue("cash", next_date)
 
-    assert second.amount == Decimal("0.750025")
+    assert second.amount == Decimal("0.7500375")
+
+
+def test_purchase_pending_confirmation_does_not_earn_until_confirmed(
+    income_services,
+):
+    repository, projector, income = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    repository.create_transaction(
+        Transaction(
+            id="pending-purchase:cash",
+            product_id="cash",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.PENDING_CONFIRMATION,
+            trade_date=INCOME_DATE,
+            idempotency_key="pending-purchase:cash",
+            amount=Decimal("5000"),
+            shares=Decimal("5000"),
+            confirmation_nav=Decimal("1"),
+            trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
+        )
+    )
+    projector.rebuild("cash")
+    seed_quote(repository, "cash", INCOME_DATE, "0.5")
+
+    before_confirm = income.accrue("cash", INCOME_DATE)
+
+    assert before_confirm.amount == Decimal("0.5")
+    assert projector.calculate("cash").total_shares == Decimal("10000.5")
+
+
+def test_purchase_earns_from_confirmation_date(
+    income_services,
+):
+    repository, projector, income = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    confirm_date = date(2026, 7, 30)
+    repository.create_transaction(
+        Transaction(
+            id="t1-purchase:cash",
+            product_id="cash",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=INCOME_DATE,
+            confirmation_date=confirm_date,
+            idempotency_key="t1-purchase:cash",
+            amount=Decimal("5000"),
+            shares=Decimal("5000"),
+            confirmation_nav=Decimal("1"),
+            trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
+        )
+    )
+    projector.rebuild("cash")
+    seed_quote(repository, "cash", INCOME_DATE, "0.5")
+    seed_quote(repository, "cash", confirm_date, "0.5")
+
+    trade_day = income.accrue("cash", INCOME_DATE)
+    confirm_day = income.accrue("cash", confirm_date)
+
+    assert trade_day.amount == Decimal("0.5")
+    assert confirm_day.amount == Decimal("0.750025")
 
 
 def test_cash_income_skips_non_trading_day_even_with_a_fixed_quote(

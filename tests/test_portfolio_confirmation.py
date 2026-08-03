@@ -64,15 +64,26 @@ def test_public_fund_after_15_cutoff_confirms_second_next_trading_day():
     assert schedule.confirmation_date == date(2026, 8, 4)
 
 
-def test_wallet_plus_redemption_confirms_on_weekend_submission_date():
+def test_wallet_plus_purchase_confirms_next_trading_day():
+    schedule = confirmation_schedule(
+        wallet_plus(),
+        TransactionType.MANUAL_PURCHASE,
+        datetime(2026, 7, 30, 10, 0),
+    )
+
+    assert schedule.trade_date == date(2026, 7, 30)
+    assert schedule.confirmation_date == date(2026, 7, 31)
+
+
+def test_wallet_plus_weekend_submission_uses_next_trading_day_then_t1():
     schedule = confirmation_schedule(
         wallet_plus(),
         TransactionType.MANUAL_REDEMPTION,
         datetime(2026, 8, 1, 10, 0),
     )
 
-    assert schedule.trade_date == date(2026, 8, 1)
-    assert schedule.confirmation_date == date(2026, 8, 1)
+    assert schedule.trade_date == date(2026, 8, 3)
+    assert schedule.confirmation_date == date(2026, 8, 4)
 
 
 def test_aware_submission_time_is_converted_to_beijing_before_cutoff_check():

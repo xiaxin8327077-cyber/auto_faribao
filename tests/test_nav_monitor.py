@@ -1357,7 +1357,6 @@ def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
 
     calls = []
     repository = object()
-    runtime = type("Runtime", (), {"repository": repository})()
 
     def fake_push(
         cfg,
@@ -1366,13 +1365,18 @@ def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
         period="",
         to_user=None,
         holdings_as_of=None,
+        disclosed_on=None,
+        image_output_dir=None,
     ):
-        assert repo is repository
-        calls.append((period or "daily", target_date, to_user, holdings_as_of))
-        return period
+        calls.append((period or "daily", target_date, to_user, repo))
+        return period or "daily"
 
+    monkeypatch.setattr(
+        src.scheduler,
+        "_require_portfolio_repository",
+        lambda: repository,
+    )
     monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fake_push)
-    monkeypatch.setattr(src.scheduler, "_portfolio_runtime", runtime)
     monkeypatch.setattr(
         src.scheduler,
         "_nav_period_push_jobs",
@@ -1382,20 +1386,18 @@ def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
     _run_nav_monitor_push(Config({}), day=date(2026, 7, 6))
 
     assert calls == [
-        ("daily", date(2026, 7, 6), "@all", date(2026, 7, 6)),
-        ("week", date(2026, 7, 5), "@all", date(2026, 7, 6)),
-        ("month", date(2026, 6, 30), "@all", date(2026, 7, 6)),
+        ("daily", date(2026, 7, 6), "@all", repository),
+        ("week", date(2026, 7, 5), "@all", repository),
+        ("month", date(2026, 6, 30), "@all", repository),
     ]
 
 
 def test_scheduler_nav_evening_push_calls_evening_report(monkeypatch):
     import src.portfolio_reports
-    import src.scheduler
     from src.scheduler import _run_nav_evening_push
 
     calls = []
     repository = object()
-    runtime = type("Runtime", (), {"repository": repository})()
 
     def fake_push(
         cfg,
@@ -1404,25 +1406,24 @@ def test_scheduler_nav_evening_push_calls_evening_report(monkeypatch):
         period="",
         to_user=None,
         holdings_as_of=None,
+        disclosed_on=None,
+        image_output_dir=None,
     ):
-        assert repo is repository
-        calls.append((target_date, period, to_user, holdings_as_of))
+        calls.append((target_date, disclosed_on, to_user, repo))
         return "ok"
 
+    monkeypatch.setattr(
+        "src.scheduler._require_portfolio_repository",
+        lambda: repository,
+    )
     monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fake_push)
-    monkeypatch.setattr(src.scheduler, "_portfolio_runtime", runtime)
 
     _run_nav_evening_push(
         Config({"wechat": {"to_user": "user1"}}),
         day=date(2026, 7, 9),
     )
 
-    assert calls == [(
-        date(2026, 7, 9),
-        "",
-        "user1",
-        date(2026, 7, 9),
-    )]
+    assert calls == [(date(2026, 7, 9), date(2026, 7, 9), "user1", repository)]
 
 
 def test_scheduler_nav_estimate_runs_on_workday(monkeypatch):
@@ -1517,17 +1518,21 @@ def test_confirm_add_triggers_background_profile_refresh(monkeypatch, tmp_path):
 
 
 def test_scheduler_nav_push_exception_does_not_notify_report_failure(monkeypatch):
-    import src.nav_monitor
+    import src.portfolio_reports
     import src.notifier
     from src.scheduler import _run_nav_monitor_push
 
-    def fail_push(cfg):
+    def fail_push(*_args, **_kwargs):
         raise RuntimeError("nav provider down")
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("notify_report_failure should not be called")
 
-    monkeypatch.setattr(src.nav_monitor, "push_nav_report", fail_push)
+    monkeypatch.setattr(
+        "src.scheduler._require_portfolio_repository",
+        lambda: object(),
+    )
+    monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fail_push)
     monkeypatch.setattr(src.notifier, "notify_report_failure", fail_if_called)
 
     _run_nav_monitor_push(Config({}))

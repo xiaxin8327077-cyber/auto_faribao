@@ -183,6 +183,9 @@ def _build_row(index: int, result) -> NavReportImageRow:
     name = getattr(product, "name", "") or getattr(product, "code", "") or "-"
     code = getattr(product, "code", "") or "-"
     shares = _optional_decimal(getattr(result, "shares", None))
+    cash_row = _build_cash_row(index, result, name, code, shares)
+    if cash_row is not None:
+        return cash_row
 
     if getattr(result, "error", ""):
         return NavReportImageRow(
@@ -226,10 +229,11 @@ def _build_row(index: int, result) -> NavReportImageRow:
         else:
             change_pct_text = "无法计算"
 
-        if shares is not None:
-            income = _quantize_money(delta * shares)
-            income_positive = income > 0
-            income_text = f"{_format_money(income)} 元"
+    income_amount = _row_income_amount(result, record, previous, shares)
+    if income_amount is not None:
+        income = _quantize_money(income_amount)
+        income_positive = income > 0
+        income_text = f"{_format_money(income)} 元"
 
     return NavReportImageRow(
         index=index,
@@ -251,10 +255,16 @@ def _build_period_row(index: int, result) -> NavPeriodReportImageRow:
     name = getattr(product, "name", "") or getattr(product, "code", "") or "-"
     code = getattr(product, "code", "") or "-"
     shares = _optional_decimal(getattr(result, "shares", None))
+    cash_row = _build_cash_period_row(index, result, name, code, shares)
+    if cash_row is not None:
+        return cash_row
 
     latest = getattr(result, "latest", None)
     baseline = getattr(result, "baseline", None)
     if getattr(result, "error", ""):
+        income_text, income_positive = _period_income_texts(
+            result, None, None, shares
+        )
         return NavPeriodReportImageRow(
             index=index,
             name=name,
@@ -266,10 +276,12 @@ def _build_period_row(index: int, result) -> NavPeriodReportImageRow:
             end_date_text="",
             change_text="--",
             change_pct_text="",
-            income_text="--",
+            income_text=income_text,
+            income_positive=income_positive,
         )
 
     if not latest:
+        income_text, income_positive = _period_income_texts(result, None, None, shares)
         return NavPeriodReportImageRow(
             index=index,
             name=name,
@@ -281,10 +293,14 @@ def _build_period_row(index: int, result) -> NavPeriodReportImageRow:
             end_date_text="",
             change_text="--",
             change_pct_text="",
-            income_text="--",
+            income_text=income_text,
+            income_positive=income_positive,
         )
 
     if not baseline:
+        income_text, income_positive = _period_income_texts(
+            result, latest, None, shares
+        )
         return NavPeriodReportImageRow(
             index=index,
             name=name,
@@ -296,7 +312,8 @@ def _build_period_row(index: int, result) -> NavPeriodReportImageRow:
             end_date_text=f"{latest.nav_date:%Y-%m-%d}",
             change_text="--",
             change_pct_text="",
-            income_text="--",
+            income_text=income_text,
+            income_positive=income_positive,
         )
 
     delta = _decimal(latest.unit_nav) - _decimal(baseline.unit_nav)
@@ -305,12 +322,9 @@ def _build_period_row(index: int, result) -> NavPeriodReportImageRow:
     if _decimal(baseline.unit_nav) != 0:
         pct_text = _format_signed_pct(delta / _decimal(baseline.unit_nav) * Decimal("100"))
 
-    income_text = "--"
-    income_positive = None
-    if shares is not None:
-        income = _quantize_money(delta * shares)
-        income_positive = income > 0
-        income_text = f"{_format_money(income)} 元"
+    income_text, income_positive = _period_income_texts(
+        result, latest, baseline, shares
+    )
 
     return NavPeriodReportImageRow(
         index=index,
@@ -336,23 +350,150 @@ def _select_records(result):
     return getattr(result, "latest", None), getattr(result, "previous", None)
 
 
-def _result_estimated_amount(result) -> Optional[Decimal]:
-    shares = _optional_decimal(getattr(result, "shares", None))
-    if shares is None:
+def _is_cash_result(result) -> bool:
+    return getattr(result, "cash_income_per_10k", None) is not None or (
+        getattr(result, "cash_profit", None) is not None
+        and getattr(result, "latest", None) is None
+        and getattr(result, "baseline", None) is None
+    )
+
+
+def _build_cash_row(index, result, name, code, shares) -> Optional[NavReportImageRow]:
+    if not _is_cash_result(result):
         return None
-    record, previous = _select_records(result)
-    if not record or not previous:
+    income_per_10k = _optional_decimal(getattr(result, "cash_income_per_10k", None))
+    seven_day = _optional_decimal(getattr(result, "cash_seven_day_rate", None))
+    profit = _optional_decimal(getattr(result, "cash_profit", None))
+    quote_date = getattr(result, "cash_quote_date", None)
+    nav_text = (
+        f"万份 {_format_nav(income_per_10k)}"
+        if income_per_10k is not None
+        else "现金"
+    )
+    change_text = "--"
+    change_pct_text = ""
+    change_positive = None
+    if seven_day is not None:
+        change_text = _format_signed_pct(seven_day * Decimal("100"))
+        change_pct_text = "七日年化"
+        change_positive = seven_day > 0
+    income_text = "--"
+    income_positive = None
+    if profit is not None:
+        income = _quantize_money(profit)
+        income_positive = income > 0
+        income_text = f"{_format_money(income)} 元"
+    return NavReportImageRow(
+        index=index,
+        name=name,
+        code=code,
+        shares_text=_format_shares(shares),
+        nav_text=nav_text,
+        nav_date_text=(
+            f"{quote_date:%Y-%m-%d}" if quote_date is not None else ""
+        ),
+        change_text=change_text,
+        change_pct_text=change_pct_text,
+        income_text=income_text,
+        change_positive=change_positive,
+        income_positive=income_positive,
+    )
+
+
+def _build_cash_period_row(
+    index,
+    result,
+    name,
+    code,
+    shares,
+) -> Optional[NavPeriodReportImageRow]:
+    if not _is_cash_result(result):
+        return None
+    income_per_10k = _optional_decimal(getattr(result, "cash_income_per_10k", None))
+    profit = _optional_decimal(getattr(result, "cash_profit", None))
+    quote_date = getattr(result, "cash_quote_date", None)
+    period_start = getattr(result, "cash_period_start", None)
+    income_text = "--"
+    income_positive = None
+    if profit is not None:
+        income = _quantize_money(profit)
+        income_positive = income > 0
+        income_text = f"{_format_money(income)} 元"
+    nav_text = (
+        f"万份 {_format_nav(income_per_10k)}"
+        if income_per_10k is not None
+        else "现金"
+    )
+    return NavPeriodReportImageRow(
+        index=index,
+        name=name,
+        code=code,
+        shares_text=_format_shares(shares),
+        start_nav_text="期间收益",
+        start_date_text=(
+            f"{period_start:%Y-%m-%d}" if period_start is not None else ""
+        ),
+        end_nav_text=nav_text,
+        end_date_text=(
+            f"{quote_date:%Y-%m-%d}" if quote_date is not None else ""
+        ),
+        change_text="--",
+        change_pct_text="",
+        income_text=income_text,
+        change_positive=None,
+        income_positive=income_positive,
+    )
+
+
+def _row_income_amount(result, record, previous, shares) -> Optional[Decimal]:
+    """Prefer dashboard latest_profit; fall back to delta * shares."""
+    latest_profit = _optional_decimal(getattr(result, "latest_profit", None))
+    if latest_profit is not None:
+        return latest_profit
+    if shares is None or not record or not previous:
         return None
     return (_decimal(record.unit_nav) - _decimal(previous.unit_nav)) * shares
 
 
-def _period_result_estimated_amount(result) -> Optional[Decimal]:
+def _result_estimated_amount(result) -> Optional[Decimal]:
+    if _is_cash_result(result):
+        return _optional_decimal(getattr(result, "cash_profit", None))
+    latest_profit = _optional_decimal(getattr(result, "latest_profit", None))
+    if latest_profit is not None:
+        return latest_profit
     shares = _optional_decimal(getattr(result, "shares", None))
-    latest = getattr(result, "latest", None)
-    baseline = getattr(result, "baseline", None)
+    record, previous = _select_records(result)
+    return _row_income_amount(result, record, previous, shares)
+
+
+def _period_row_income_amount(result, latest, baseline, shares) -> Optional[Decimal]:
+    """Prefer dashboard period holding-profit delta; fall back to nav * shares."""
+    period_profit = _optional_decimal(getattr(result, "period_profit", None))
+    if period_profit is not None:
+        return period_profit
+    cash_profit = _optional_decimal(getattr(result, "cash_profit", None))
+    if cash_profit is not None and _is_cash_result(result):
+        return cash_profit
     if shares is None or not latest or not baseline:
         return None
     return (_decimal(latest.unit_nav) - _decimal(baseline.unit_nav)) * shares
+
+
+def _period_income_texts(result, latest, baseline, shares):
+    income_amount = _period_row_income_amount(result, latest, baseline, shares)
+    if income_amount is None:
+        return "--", None
+    income = _quantize_money(income_amount)
+    return f"{_format_money(income)} 元", income > 0
+
+
+def _period_result_estimated_amount(result) -> Optional[Decimal]:
+    return _period_row_income_amount(
+        result,
+        getattr(result, "latest", None),
+        getattr(result, "baseline", None),
+        _optional_decimal(getattr(result, "shares", None)),
+    )
 
 
 def _draw_report(model: NavReportImageModel) -> Image.Image:
@@ -733,7 +874,9 @@ def _quantize_money(value: Decimal) -> Decimal:
 def _format_shares(value: Optional[Decimal]) -> str:
     if value is None:
         return "--"
-    normalized = value.normalize()
+    # Match dashboard money() display: at most 2 decimal places.
+    quantized = _decimal(value).quantize(Decimal("0.01"))
+    normalized = quantized.normalize()
     if normalized == normalized.to_integral():
-        return str(normalized.quantize(Decimal("1")))
+        return format(normalized.quantize(Decimal("1")), "f")
     return format(normalized, "f")

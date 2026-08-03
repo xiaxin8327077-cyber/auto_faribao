@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -208,6 +208,7 @@ def test_historical_report_still_uses_current_dashboard_holdings(report_repo):
 def test_wechat_push_sends_only_dashboard_position_products(
     report_repo,
     monkeypatch,
+    tmp_path,
 ):
     report_repo.add_product(Product(
         "zero-position",
@@ -216,6 +217,120 @@ def test_wechat_push_sends_only_dashboard_position_products(
         "零持仓产品",
         ProductType.WEALTH_NAV,
     ))
+    sent_images = []
+    sent_markdown = []
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_image",
+        lambda _wechat, path, to_user=None: (
+            sent_images.append((path, to_user)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_markdown",
+        lambda _wechat, text, to_user=None: sent_markdown.append((text, to_user)),
+    )
+
+    report = push_portfolio_report(
+        Config({"wechat": {}}),
+        report_repo,
+        target_date=date(2026, 7, 30),
+        holdings_as_of=date(2026, 7, 30),
+        to_user="user1",
+        image_output_dir=tmp_path,
+    )
+
+    assert len(sent_images) == 1
+    assert sent_images[0][1] == "user1"
+    assert sent_markdown == []
+    assert "NYRR000007" in report
+    assert "003103" in report
+    assert "ZERO001" not in report
+
+
+def test_daily_image_results_match_dashboard_holdings(report_repo):
+    from src.portfolio_reports import build_portfolio_daily_image_results
+    from src.portfolio_profit import calculate_latest_profit
+
+    report_repo.add_product(Product(
+        "zero-position-image",
+        "nanyin_wealth",
+        "ZEROIMG",
+        "零持仓不进图",
+        ProductType.WEALTH_NAV,
+    ))
+
+    results = build_portfolio_daily_image_results(
+        report_repo,
+        target_date=date(2026, 7, 30),
+        holdings_as_of=date(2026, 7, 30),
+    )
+    codes = [item.product.code for item in results]
+
+    assert codes == ["NYRR000007", "003103"]
+    cash = results[0]
+    assert cash.cash_income_per_10k == Decimal("0.4475")
+    assert cash.cash_seven_day_rate == Decimal("0.016315")
+    fund = results[1]
+    assert fund.latest.unit_nav == Decimal("1.0321")
+    assert fund.previous.unit_nav == Decimal("1.0300")
+    assert fund.shares == Decimal("100")
+    expected_date, expected_profit = calculate_latest_profit(
+        report_repo,
+        report_repo.require_product("fund"),
+        date(2026, 7, 30),
+    )
+    assert fund.latest_profit == expected_profit
+    assert fund.latest_profit_date == expected_date
+
+
+def test_daily_image_uses_dashboard_profit_and_compact_shares(
+    report_repo,
+    tmp_path,
+):
+    from src.nav_report_image import build_nav_report_image_model, _format_shares
+    from src.portfolio_reports import build_portfolio_daily_image_results
+
+    # Create a high-precision fund share count like production confirmations.
+    report_repo.create_transaction(Transaction(
+        id="buy:fund-extra",
+        product_id="fund",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 7, 29),
+        confirmation_date=date(2026, 7, 29),
+        idempotency_key="buy:fund-extra",
+        amount=Decimal("10"),
+        shares=Decimal("9.123456789012345678901234567"),
+        confirmation_nav=Decimal("1.0321"),
+    ))
+    PositionProjector(report_repo).rebuild()
+
+    results = build_portfolio_daily_image_results(
+        report_repo,
+        target_date=date(2026, 7, 30),
+        holdings_as_of=date(2026, 7, 30),
+    )
+    fund = next(item for item in results if item.product.code == "003103")
+    assert "." not in _format_shares(fund.shares) or len(
+        _format_shares(fund.shares).split(".", 1)[1]
+    ) <= 2
+    assert len(_format_shares(fund.shares)) < 20
+
+    model = build_nav_report_image_model(results, title="理财净值日报")
+    fund_row = next(row for row in model.rows if row.code == "003103")
+    assert fund_row.income_text == "0.21 元"
+    assert fund_row.shares_text == _format_shares(fund.shares)
+
+
+def test_wechat_push_falls_back_to_markdown_when_image_send_fails(
+    report_repo,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        "src.wechat_notifier.send_image",
+        lambda *_args, **_kwargs: False,
+    )
     sent = []
     monkeypatch.setattr(
         "src.wechat_notifier.send_markdown",
@@ -228,12 +343,12 @@ def test_wechat_push_sends_only_dashboard_position_products(
         target_date=date(2026, 7, 30),
         holdings_as_of=date(2026, 7, 30),
         to_user="user1",
+        image_output_dir=tmp_path,
     )
 
     assert sent == [(report, "user1")]
     assert "NYRR000007" in report
     assert "003103" in report
-    assert "ZERO001" not in report
 
 
 def test_wechat_report_excludes_pending_purchase_without_held_shares(report_repo):
@@ -303,6 +418,82 @@ def test_wechat_report_excludes_zero_shares_on_redemption_settlement_day(report_
     )
 
     assert "SETTLED001" not in report
+
+
+def test_period_image_uses_first_in_period_quote_as_baseline(report_repo):
+    from src.portfolio_reports import build_portfolio_period_image_results
+
+    # Week starts Monday 2026-07-27; fund quotes only exist from 2026-07-28.
+    results = build_portfolio_period_image_results(
+        report_repo,
+        period="week",
+        base_date=date(2026, 7, 30),
+        holdings_as_of=date(2026, 7, 30),
+    )
+    fund = next(item for item in results if item.product.code == "003103")
+
+    assert fund.baseline is not None
+    assert fund.baseline.nav_date == date(2026, 7, 28)
+    assert fund.baseline.unit_nav == Decimal("1.0300")
+    assert fund.latest.nav_date == date(2026, 7, 29)
+    assert fund.latest.unit_nav == Decimal("1.0321")
+
+
+def test_period_image_results_use_dashboard_holding_profit(report_repo):
+    from src.nav_report_image import build_nav_period_report_image_model
+    from src.portfolio_profit import calculate_holding_profit
+    from src.portfolio_reports import build_portfolio_period_image_results
+
+    results = build_portfolio_period_image_results(
+        report_repo,
+        period="week",
+        base_date=date(2026, 7, 30),
+        holdings_as_of=date(2026, 7, 30),
+    )
+    codes = [item.product.code for item in results]
+    assert codes == ["NYRR000007", "003103"]
+
+    cash = results[0]
+    fund = results[1]
+    period_start = date(2026, 7, 27)
+    previous_day = period_start - timedelta(days=1)
+    expected_cash = (
+        calculate_holding_profit(
+            report_repo,
+            report_repo.require_product("cash"),
+            date(2026, 7, 30),
+        )
+        - calculate_holding_profit(
+            report_repo,
+            report_repo.require_product("cash"),
+            previous_day,
+        )
+    )
+    expected_fund = (
+        calculate_holding_profit(
+            report_repo,
+            report_repo.require_product("fund"),
+            date(2026, 7, 30),
+        )
+        - calculate_holding_profit(
+            report_repo,
+            report_repo.require_product("fund"),
+            previous_day,
+        )
+    )
+    assert cash.period_profit == expected_cash
+    assert fund.period_profit == expected_fund
+
+    model = build_nav_period_report_image_model(
+        results,
+        title="理财净值周报",
+        period_label="周度",
+        start_date=period_start,
+    )
+    cash_row = next(row for row in model.rows if row.code == "NYRR000007")
+    fund_row = next(row for row in model.rows if row.code == "003103")
+    assert cash_row.income_text == "1.00 元"
+    assert fund_row.income_text == "0.21 元"
 
 
 def test_period_report_uses_readable_chinese_period_label(report_repo):
