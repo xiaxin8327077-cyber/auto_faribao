@@ -1327,7 +1327,11 @@
       list.innerHTML = groups.map(group => {
         const groupRows = rows.filter(row => rowValue(row, 'wealth_type', 'type', 'category', 'product_type') === group);
         if (!groupRows.length) return '';
-        return `<section class="manage-card"><div class="section-head"><h2>${esc(positionTypeLabel(group))}</h2><span class="section-meta">${groupRows.length} 项</span></div>${groupRows.map(row => {
+        const groupLatestProfit = groupRows.reduce((sum, row) => sum + number(rowValue(row, 'latest_profit')), 0);
+        const groupNavDate = rowValue(groupRows[0], 'nav_date') || rowValue(groupRows[0], 'quote')?.date || '';
+        const profitSign = groupLatestProfit > 0 ? '+' : '';
+        const profitColor = groupLatestProfit > 0 ? 'style="color:#e5484d"' : groupLatestProfit < 0 ? 'style="color:#30a46c"' : '';
+        return `<section class="manage-card"><div class="section-head"><h2>${esc(positionTypeLabel(group))}</h2><span class="section-meta">${groupRows.length}个产品 最新预估：<span ${profitColor}>${profitSign}${money(groupLatestProfit)}</span>${groupNavDate ? ` 日期 ${shortDate(groupNavDate)}` : ''}</span></div>${groupRows.map(row => {
           const id = row._id || rowValue(row, 'product_id', 'id', 'code');
           const name = rowValue(row, 'name', 'product_name', 'code') || '未命名产品';
           const nav = rowValue(row, 'unit_nav', 'latest_nav', 'nav');
