@@ -756,14 +756,6 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
     ledger_market_value = portfolio.get("summary", {}).get("market_value")
     if ledger_market_value not in (None, ""):
         payload["market_value"] = ledger_market_value
-    # 合并 portfolio 产品的累计持有收益到总览累计收益
-    from decimal import Decimal
-    pf_profit = sum(
-        (Decimal(str(p.get("holding_profit") or "0")) for p in portfolio.get("products", [])),
-        Decimal("0"),
-    )
-    legacy_cumulative = Decimal(str(payload.get("cumulative_profit") or "0"))
-    payload["cumulative_profit"] = str(legacy_cumulative + pf_profit)
     # 最新收益只汇总全局最新一次净值披露日期对应的产品，避免跨日期相加。
     dated_products = []
     for product in payload["products"]:
@@ -791,6 +783,12 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
     # 每日/每月收益以组合账本为准：ledger 包含全量产品（财富+债券基金），
     # profit_entries 只包含从官网抓取的财富类产品，因此 ledger 优先覆盖。
     _apply_portfolio_profit_views(payload, repository, portfolio)
+
+    # 累计收益 = daily_profits 总和（从 8 月开始，与理财看板一致）
+    payload["cumulative_profit"] = str(sum(
+        (Decimal(row["amount"]) for row in payload.get("daily_profits", [])),
+        Decimal("0"),
+    ))
 
     payload["write_enabled"] = write_enabled
     if not write_enabled:
@@ -857,21 +855,26 @@ def _apply_portfolio_profit_views(payload, repository, portfolio) -> None:
     for day, amount in ledger_daily.items():
         merged_daily[day] = amount
 
+    # 只展示 8 月及之后的收益明细（历史已清零，从 8 月开始计算）
+    CUTOFF_DATE = "2026-08-01"
+    merged_daily = {
+        day: amount for day, amount in merged_daily.items()
+        if day >= CUTOFF_DATE
+    }
+
     payload["daily_profits"] = [
         {"date": day, "amount": format(amount, "f")}
         for day, amount in sorted(merged_daily.items(), reverse=True)
     ]
 
-    # Rebuild monthly/yearly from the merged daily totals.
+    # 只保留 8 月及之后的月度/年度汇总
+    CUTOFF_MONTH = "2026-08"
     monthly_map = {}
     for day, amount in merged_daily.items():
         month = day[:7]
+        if month < CUTOFF_MONTH:
+            continue
         monthly_map[month] = monthly_map.get(month, Decimal("0")) + amount
-    # Preserve legacy months not represented in daily breakdown (pre-ledger history).
-    for item in payload.get("monthly_profits") or []:
-        period = str(item.get("period") or "")
-        if period and period not in monthly_map:
-            monthly_map[period] = Decimal(str(item.get("amount") or "0"))
 
     payload["monthly_profits"] = [
         {"period": period, "amount": format(amount, "f")}
@@ -891,6 +894,82 @@ def _apply_portfolio_profit_views(payload, repository, portfolio) -> None:
     payload["current_month_profit"] = format(
         monthly_map.get(current_month, Decimal("0")), "f"
     )
+
+    # 重写排名数据：使用组合账本计算每月贡献（与 daily_profits 同源）
+    _apply_portfolio_rankings(payload, repository, portfolio, as_of)
+
+
+def _apply_portfolio_rankings(payload, repository, portfolio, as_of) -> None:
+    """用组合账本数据重写月度/每日排名，与 daily_profits 保持一致。"""
+    from src.portfolio_profit import calculate_latest_profit
+
+    current_month = as_of.strftime("%Y-%m")
+    products = portfolio.get("products", [])
+
+    # 按月汇总每个产品的收益（只算 8 月及之后）
+    product_monthly = {}
+    for product_row in products:
+        pid = product_row.get("id") or product_row.get("product_id")
+        if not pid:
+            continue
+        repo_product = repository.get_product(pid) if repository else None
+        if not repo_product:
+            continue
+        total = Decimal("0")
+        seen_dates = set()
+        for quote in repository.list_quotes(pid, on_or_before=as_of):
+            if quote.quote_date < date(2026, 8, 1):
+                continue
+            if quote.quote_date in seen_dates:
+                continue
+            seen_dates.add(quote.quote_date)
+            pd, profit = calculate_latest_profit(repository, repo_product, quote.quote_date)
+            if pd == quote.quote_date and profit is not None:
+                total += profit
+        if total != 0:
+            product_monthly[pid] = {
+                "name": product_row.get("name", ""),
+                "code": product_row.get("code", ""),
+                "provider": product_row.get("provider", ""),
+                "product_type": product_row.get("product_type", ""),
+                "amount": total,
+            }
+
+    # 排序
+    ranked = sorted(product_monthly.values(), key=lambda x: x["amount"], reverse=True)
+    payload["monthly_positive_rankings"] = [p for p in ranked if p["amount"] > 0][:3]
+    payload["monthly_negative_rankings"] = [p for p in reversed(ranked) if p["amount"] < 0][:3]
+
+    # 每日排名：使用最新一天的各产品收益
+    latest_date_str = str(payload.get("latest_profit_date") or "")
+    if latest_date_str:
+        try:
+            latest_date = date.fromisoformat(latest_date_str)
+        except ValueError:
+            latest_date = None
+    else:
+        latest_date = None
+
+    if latest_date and latest_date >= date(2026, 8, 1):
+        daily_profits_map = {}
+        for product_row in products:
+            pid = product_row.get("id") or product_row.get("product_id")
+            if not pid:
+                continue
+            repo_product = repository.get_product(pid) if repository else None
+            if not repo_product:
+                continue
+            pd, profit = calculate_latest_profit(repository, repo_product, latest_date)
+            if pd == latest_date and profit is not None and profit > 0:
+                daily_profits_map[pid] = {
+                    "name": product_row.get("name", ""),
+                    "code": product_row.get("code", ""),
+                    "provider": product_row.get("provider", ""),
+                    "amount": profit,
+                }
+        daily_ranked = sorted(daily_profits_map.values(), key=lambda x: x["amount"], reverse=True)
+        payload["positive_rankings"] = daily_ranked[:3]
+        payload["negative_rankings"] = []
 
 
 def sync_dashboard_portfolio(cfg, changed_at=None, state_path=DEFAULT_STATE_PATH) -> dict:

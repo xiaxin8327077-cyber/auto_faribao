@@ -13,11 +13,11 @@ from src.portfolio_profit import calculate_holding_profit, calculate_latest_prof
 
 
 _ZERO = Decimal("0")
+# 只统计真实收益：收入计提 + 现金分红。
+# 排除 profit_adjustment / latest_profit_adjustment（迁移/校准分录，非真实收益）。
 _LEDGER_PROFIT_TYPES = {
     TransactionType.INCOME_ACCRUAL,
     TransactionType.CASH_DIVIDEND,
-    TransactionType.PROFIT_ADJUSTMENT,
-    TransactionType.LATEST_PROFIT_ADJUSTMENT,
 }
 _PENDING_STATUSES = {
     TransactionStatus.PENDING_QUOTE,
@@ -45,7 +45,7 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
         if _is_overview_position(row, transactions, as_of)
     ]
     profit_history = _profit_history(repository)
-    summary = _summary(rows, profit_history, as_of)
+    summary = _summary(rows, profit_history, as_of, repository=repository)
     transactions_by_id = {
         transaction.id: transaction for transaction in transactions
     }
@@ -87,6 +87,8 @@ def build_product_history_payload(repository, product_id, as_of=None) -> dict:
     as_of = as_of or date.today()
     product = repository.require_product(product_id)
     quotes = repository.list_quotes(product.id, on_or_before=as_of)
+    # 只展示 8 月及之后的明细
+    quotes = [q for q in quotes if q.quote_date >= date(2026, 8, 1)]
     history = []
     previous_quote = None
     for quote in quotes:
@@ -187,11 +189,14 @@ def _product_row(repository, product, as_of):
         product,
         as_of,
     )
-    holding_profit = calculate_holding_profit(
-        repository,
-        product,
-        as_of,
-    )
+    # 持仓卡片上的"累计持有收益"：8月及之后该产品的每日收益总和
+    holding_profit = _ZERO
+    for quote in repository.list_quotes(product.id, on_or_before=as_of):
+        if quote.quote_date < date(2026, 8, 1):
+            continue
+        pd, profit = calculate_latest_profit(repository, product, quote.quote_date)
+        if pd == quote.quote_date and profit is not None:
+            holding_profit += profit
     row = {
         "id": product.id,
         "product_id": product.id,
@@ -298,6 +303,8 @@ def _profit_history(repository):
         if (
             transaction.status is TransactionStatus.CONFIRMED
             and transaction.transaction_type in _LEDGER_PROFIT_TYPES
+            # 只统计 8 月及之后的收益（历史已清零）
+            and transaction.trade_date >= date(2026, 8, 1)
         ):
             source = (
                 "ledger_cumulative_adjustment"
@@ -339,14 +346,16 @@ def _legacy_profit_rows(repository):
     ]
 
 
-def _summary(products, profit_history, as_of):
+def _summary(products, profit_history, as_of, repository=None):
     market_value = sum(
         (Decimal(row["market_value"]) for row in products if row["market_value"] is not None),
         _ZERO,
     )
     cost_basis = sum((Decimal(row["cost_basis"]) for row in products), _ZERO)
+    # 累计收益 = 各产品 holding_profit（即 latest_profit）之和
+    # 与 NAV 看板的 daily_profits 总和一致
     cumulative_profit = sum(
-        (Decimal(row["amount"]) for row in profit_history), _ZERO
+        (Decimal(row.get("holding_profit") or "0") for row in products), _ZERO
     )
     daily_profit_history = [
         row

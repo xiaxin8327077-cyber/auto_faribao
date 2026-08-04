@@ -101,8 +101,14 @@ def calculate_holding_profit(
     product,
     as_of: date,
     conn=None,
+    since: date | None = None,
 ) -> Decimal:
-    """Return cumulative holding profit through the requested date."""
+    """Return cumulative holding profit through the requested date.
+
+    If *since* is given, only count changes on or after that date (inclusive).
+    The first quote at/after *since* becomes the baseline: its NAV is treated
+    as the cost basis for the period, so earlier gains are excluded.
+    """
     transactions = repository.list_transactions(
         product_id=product.id,
         conn=conn,
@@ -112,6 +118,13 @@ def calculate_holding_profit(
         if product.product_type is ProductType.CASH_MANAGEMENT
         else _FUND_CASH_PROFIT_TYPES
     )
+    def tx_in_range(transaction):
+        tx_date = transaction.confirmation_date or transaction.trade_date
+        if tx_date > as_of:
+            return False
+        if since is not None and tx_date < since:
+            return False
+        return True
     profit = sum(
         (
             transaction.amount or ZERO
@@ -119,11 +132,7 @@ def calculate_holding_profit(
             if (
                 transaction.status is TransactionStatus.CONFIRMED
                 and transaction.transaction_type in cash_types
-                and (
-                    transaction.confirmation_date
-                    or transaction.trade_date
-                )
-                <= as_of
+                and tx_in_range(transaction)
             )
         ),
         ZERO,
@@ -140,6 +149,8 @@ def calculate_holding_profit(
         )
         if quote.unit_nav is not None
     ]
+    if since is not None:
+        quotes = [q for q in quotes if q.quote_date >= since]
     for previous, current in zip(quotes, quotes[1:]):
         shares = _nav_earning_shares(
             repository,
