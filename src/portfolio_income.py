@@ -50,11 +50,27 @@ class CashIncomeService:
                 conn=conn,
             )
             if existing is not None:
-                return self._require_matching_accrual(
-                    existing,
-                    product_id,
-                    quote_date,
-                )
+                if existing.status is TransactionStatus.REVERSED:
+                    # 计提曾被反转（如过早计提被纠正）。按原始需求
+                    # （交易日更新前一交易日收益）重新计提：
+                    # 原 reversed 交易不可变，改用新的幂等键创建新的计提。
+                    idempotency_key = f"{idempotency_key}:reactivated"
+                    existing = self.repository.get_transaction_by_idempotency(
+                        idempotency_key,
+                        conn=conn,
+                    )
+                    if existing is not None:
+                        return self._require_matching_accrual(
+                            existing,
+                            product_id,
+                            quote_date,
+                        )
+                else:
+                    return self._require_matching_accrual(
+                        existing,
+                        product_id,
+                        quote_date,
+                    )
 
             quote = self.repository.get_quote(
                 product_id,
