@@ -39,14 +39,24 @@ def test_management_tabs_support_horizontal_swipe_navigation():
     assert "setActiveTab(MANAGEMENT_TABS[nextIndex]);" in html
 
 
-def test_management_tabs_use_liquid_glass_indicator():
+def test_management_tabs_are_sticky_bottom_with_icons():
     html = _read_page()
 
-    assert 'id="managementTabIndicator"' in html
-    assert "backdrop-filter: blur(24px) saturate(190%)" in html
-    assert ".management-tab-indicator" in html
-    assert "--tab-indicator-x" in html
-    assert "--tab-indicator-width" in html
+    assert 'id="overviewTab"' in html
+    assert 'id="positionsTab"' in html
+    assert 'id="transactionsTab"' in html
+    assert 'id="sipTab"' in html
+    # 贴底全宽栏，不再使用毛玻璃悬浮样式。保留 indicator 节点
+    # 仅为了兼容旧代码引用（不再渲染可见滑块）。
+    assert ".management-tabs" in html
+    assert "position: fixed" in html
+    assert 'bottom: 0' in html
+    # 每个 tab 内嵌 SVG 图标
+    for tab in ("overviewTab", "positionsTab", "transactionsTab", "sipTab"):
+        marker = f'id="{tab}"'
+        idx = html.index(marker)
+        snippet = html[idx:idx + 220]
+        assert "<svg" in snippet, f"{tab} 应包含 SVG 图标"
 
 
 def test_write_fetch_uses_private_token_idempotency_and_custom_header():

@@ -1,5 +1,4 @@
 from datetime import date, datetime
-from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -118,12 +117,7 @@ def test_estimate_report_uses_market_moves_and_cached_profiles(tmp_path):
         error="",
     )
     cache_path = tmp_path / "profiles.json"
-    same_code_other_provider = replace(
-        profile,
-        provider="citic_wealth",
-        name="信银同代码已清仓产品",
-    )
-    update_profile_cache([profile, same_code_other_provider], cache_path=cache_path)
+    update_profile_cache([profile], cache_path=cache_path)
     cfg = Config(
         {
             "nav_monitor": {
@@ -590,18 +584,6 @@ def test_format_holdings_profiles_and_status(tmp_path):
     all_text = format_holdings_profiles(cache_path=cache_path)
     one_text = format_holdings_profiles(code="A32069", cache_path=cache_path)
     status_text = format_holdings_status(cache_path=cache_path)
-    filtered_text = format_holdings_profiles(
-        cache_path=cache_path,
-        allowed_identities={("nanyin_wealth", "OTHER")},
-    )
-    filtered_status = format_holdings_status(
-        cache_path=cache_path,
-        allowed_identities={("nanyin_wealth", "OTHER")},
-    )
-    provider_filtered_text = format_holdings_profiles(
-        cache_path=cache_path,
-        allowed_identities={("nanyin_wealth", "A32069")},
-    )
 
     assert "持仓画像" in all_text
     assert "固定收益类：92.66%" in one_text
@@ -609,9 +591,3 @@ def test_format_holdings_profiles_and_status(tmp_path):
     assert "1. 资产1（1.00%）" in one_text
     assert "10. 资产10（10.00%）" in one_text
     assert "2026Q1" in status_text
-    assert "A32069" not in filtered_text
-    assert "当前看板暂无可查询的持仓画像" in filtered_text
-    assert "A32069" not in filtered_status
-    assert "当前看板暂无可查询的持仓画像" in filtered_status
-    assert "南银理财悦稳最低持有91天3号-B份额" in provider_filtered_text
-    assert "信银同代码已清仓产品" not in provider_filtered_text

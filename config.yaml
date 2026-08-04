@@ -18,15 +18,15 @@ source:
   - 进行中
   low_login_enable: '1'
   utype: ww
-  TOK: 672f8c2ae107b782
-  traceid: 672f8c2ae1
-  hashkey: 672f8c2a
+  TOK: c30ff3dd54ff56e3
+  traceid: c30ff3dd54
+  hashkey: c30ff3dd
   tdoc_uid: '13102700534677199'
   wedoc_openid: wozbKqDgAACT29-f4esmoMcSuLRroAzw
-  wedoc_sid: 1s82NIy_U0cu9zJRADJQVgAA
-  wedoc_sids: 13102700534677199&1s82NIy_U0cu9zJRADJQVgAA
-  wedoc_skey: 13102700534677199&ab2bfd9533a85533c8f443a2440da0b1
-  wedoc_ticket: 13102700534677199&CAESIOIsZ1Iu6QzT2SHtIiDAmLZ9LprUx78q4imn4xv95uzE
+  wedoc_sid: 1s9wV4y_Q2Mu93FPADI5MAAA
+  wedoc_sids: 13102700534677199&1s9wV4y_Q2Mu93FPADI5MAAA
+  wedoc_skey: 13102700534677199&9a3c5490c3baddecfc198ffeb21014dc
+  wedoc_ticket: 13102700534677199&CAESIMqJEmvf4fijMkoLWu4NDVQUwfRBPrb1rEEhkdKig3mj
   language: zh-CN
   fingerprint: ''
 target:
@@ -67,23 +67,32 @@ wechat:
 scheduler:
   cookie_check_hour: 9
   cookie_check_minute: 45
-  report_submit_hour: 18
-  report_submit_minute: 18
+  report_submit_hour: 17
+  report_submit_minute: 56
   stats_push_hour: 18
-  stats_push_minute: 38
+  stats_push_minute: 10
   cache_cleanup_hour: 4
   cache_cleanup_minute: 0
 nav_monitor:
   enabled: true
   push_hour: 8
-  push_minute: 0
+  push_minute: 8
   evening_push_enabled: true
   evening_push_hour: 23
   evening_push_minute: 30
+  estimate_enabled: true
+  estimate_hour: 17
+  estimate_minute: 30
   products:
   - provider: citic_wealth
     code: AF233276B
     name: 慧盈象固收增强一年持有期5号B
+    shares: 478056.94
+  - provider: nanyin_wealth
+    code: A32069
+    name: 南银理财悦稳最低持有91天3号-B份额
+    shares: 100000.76
   - provider: citic_wealth
-    code: AF233262B
-    name: 慧盈象固收增强六个月持有期1号B
+    code: AF252171L
+    name: 安盈象固收稳利三个月持有期39号L
+    shares: 88122.4

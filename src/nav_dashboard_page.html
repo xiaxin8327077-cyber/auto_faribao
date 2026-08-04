@@ -37,7 +37,7 @@
       width: min(100%, 430px);
       min-height: 100vh;
       margin: 0 auto;
-      padding: 22px 14px 30px;
+      padding: 22px 14px calc(72px + env(safe-area-inset-bottom));
     }
     .topbar {
       display: flex;
@@ -73,6 +73,29 @@
     .icon-button img { width: 17px; height: 17px; filter: invert(38%) sepia(75%) saturate(1153%) hue-rotate(177deg) brightness(88%); }
     .icon-button.loading img { animation: spin .85s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeOut {
+      to { opacity: 0; }
+    }
+    .card, .product, .insight, .rank-line, .manage-card, .transaction-card {
+      animation: fadeUp .35s cubic-bezier(.2,.7,.2,1) both;
+    }
+    .management-panel[hidden] { display: none; }
+    .management-panel.is-entering { animation: fadeUp .25s cubic-bezier(.2,.7,.2,1) both; }
+    .hero-number { display: inline-block; transition: transform .15s ease; }
+    .product-list .product:nth-child(1) { animation-delay: .02s; }
+    .product-list .product:nth-child(2) { animation-delay: .06s; }
+    .product-list .product:nth-child(3) { animation-delay: .10s; }
+    .product-list .product:nth-child(4) { animation-delay: .14s; }
+    .product-list .product:nth-child(5) { animation-delay: .18s; }
+    .product-list .product:nth-child(n+6) { animation-delay: .22s; }
+    .ranking .rank-line:nth-child(1) { animation-delay: .04s; }
+    .ranking .rank-line:nth-child(2) { animation-delay: .08s; }
+    .ranking .rank-line:nth-child(3) { animation-delay: .12s; }
+    .ranking .rank-line:nth-child(n+4) { animation-delay: .16s; }
     .hero {
       position: relative;
       min-height: 150px;
@@ -245,12 +268,13 @@
     .daily-profit-amount { font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; }
     .daily-profit-amount.positive { color: var(--positive); }
     .daily-profit-amount.negative { color: var(--negative); }
-    .management-tabs { --tab-indicator-x: 6px; --tab-indicator-width: calc((100% - 24px) / 4); position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 100; isolation: isolate; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; overflow: hidden; padding: 6px; border: 1px solid rgba(255, 255, 255, .72); border-radius: 18px; background: linear-gradient(135deg, rgba(255, 255, 255, .72), rgba(224, 239, 255, .48)); backdrop-filter: blur(24px) saturate(190%); -webkit-backdrop-filter: blur(24px) saturate(190%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .88), inset 0 -1px 0 rgba(120, 153, 190, .16), 0 -8px 30px rgba(38, 72, 112, .16); }
-    .management-tabs::after { content: ''; position: absolute; z-index: -2; inset: 0; background: radial-gradient(circle at 18% 0, rgba(255,255,255,.9), transparent 42%), linear-gradient(110deg, transparent 20%, rgba(255,255,255,.42) 48%, transparent 72%); pointer-events: none; }
-    .management-tab-indicator { position: absolute; z-index: -1; top: 6px; left: 0; width: var(--tab-indicator-width); height: calc(100% - 12px); border: 1px solid rgba(255, 255, 255, .88); border-radius: 13px; background: linear-gradient(145deg, rgba(255,255,255,.92), rgba(198,224,255,.66)); box-shadow: inset 0 1px 1px rgba(255,255,255,.95), 0 5px 15px rgba(31,111,209,.20); transform: translate3d(var(--tab-indicator-x), 0, 0); transition: width .24s cubic-bezier(.22,.8,.22,1), transform .24s cubic-bezier(.22,.8,.22,1); pointer-events: none; }
-    .management-tab { position: relative; z-index: 1; min-height: 38px; border: 0; border-radius: 13px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 800; cursor: pointer; transition: color .2s ease, transform .2s ease; }
-    .management-tab[aria-selected="true"] { background: transparent; color: #155eac; text-shadow: 0 1px 0 rgba(255,255,255,.75); box-shadow: none; }
-    .management-tab:active { transform: scale(.96); }
+    .management-tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; display: grid; grid-template-columns: repeat(4, 1fr); background: var(--panel); border-top: 1px solid var(--line); }
+    .management-tab-indicator { display: none; }
+    .management-tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 54px; padding: 8px 0 calc(6px + env(safe-area-inset-bottom)); border: 0; background: transparent; color: var(--muted); font-size: 11px; font-weight: 700; cursor: pointer; transition: color .15s ease; }
+    .management-tab svg { width: 20px; height: 20px; stroke-width: 1.8; }
+    .management-tab[aria-selected="true"] { color: var(--blue); }
+    .management-tab[aria-selected="true"] svg { stroke-width: 2.2; }
+    .management-tab:active { color: var(--blue-soft); }
     .management-tab:focus-visible, .action-button:focus-visible { outline: 3px solid rgba(31, 111, 209, .24); outline-offset: 2px; }
     .management-panel[hidden] { display: none; }
     .management-panel { padding-bottom: 64px; }
@@ -425,10 +449,22 @@
 
       <nav class="management-tabs" role="tablist" aria-label="组合管理">
         <span class="management-tab-indicator" id="managementTabIndicator" aria-hidden="true"></span>
-        <button class="management-tab" id="overviewTab" type="button" role="tab" aria-selected="true" aria-controls="overviewPanel" data-tab="overview">总览</button>
-        <button class="management-tab" id="positionsTab" type="button" role="tab" aria-selected="false" aria-controls="positionsPanel" data-tab="positions">持仓</button>
-        <button class="management-tab" id="transactionsTab" type="button" role="tab" aria-selected="false" aria-controls="transactionsPanel" data-tab="transactions">交易</button>
-        <button class="management-tab" id="sipTab" type="button" role="tab" aria-selected="false" aria-controls="sipPanel" data-tab="sip">定投</button>
+        <button class="management-tab" id="overviewTab" type="button" role="tab" aria-selected="true" aria-controls="overviewPanel" data-tab="overview">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+          总览
+        </button>
+        <button class="management-tab" id="positionsTab" type="button" role="tab" aria-selected="false" aria-controls="positionsPanel" data-tab="positions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7L9 18l-5-5"/></svg>
+          持仓
+        </button>
+        <button class="management-tab" id="transactionsTab" type="button" role="tab" aria-selected="false" aria-controls="transactionsPanel" data-tab="transactions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h18M3 12h18M3 17h18"/></svg>
+          交易
+        </button>
+        <button class="management-tab" id="sipTab" type="button" role="tab" aria-selected="false" aria-controls="sipPanel" data-tab="sip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20M2 12h20"/></svg>
+          定投
+        </button>
       </nav>
 
       <section id="overviewPanel" class="management-panel" role="tabpanel" aria-labelledby="overviewTab">
@@ -593,6 +629,25 @@
     const tone = value => number(value) > 0 ? 'positive' : number(value) < 0 ? 'negative' : '';
     const shortDate = value => value ? value.slice(5) : '--';
     const shortName = value => String(value || '--').replace(/慧盈象固收增强/g, '慧盈象').replace(/持有期/g, '');
+    const countUp = (el, target, formatter, duration = 700) => {
+      const start = performance.now();
+      const initial = number(el.dataset.value || '0');
+      const delta = target - initial;
+      if (Math.abs(delta) < 0.005) {
+        el.innerHTML = formatter(target);
+        el.dataset.value = String(target);
+        return;
+      }
+      const ease = t => 1 - Math.pow(1 - t, 3);
+      const tick = now => {
+        const t = Math.min(1, (now - start) / duration);
+        const v = initial + delta * ease(t);
+        el.innerHTML = formatter(v);
+        el.dataset.value = String(v);
+        if (t < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    };
     const formatHolding = (shareText, navText) => {
       const shares = Number(shareText);
       if (!shareText || isNaN(shares) || !isFinite(shares)) return '';
@@ -722,14 +777,14 @@
       document.querySelectorAll('[data-tab]').forEach(button => {
         const selected = button.dataset.tab === tab;
         button.setAttribute('aria-selected', String(selected));
-        $(`${button.dataset.tab}Panel`).hidden = !selected;
+        const panel = $(`${button.dataset.tab}Panel`);
+        panel.hidden = !selected;
+        if (selected) {
+          panel.classList.remove('is-entering');
+          void panel.offsetWidth;
+          panel.classList.add('is-entering');
+        }
       });
-      const tabBar = document.querySelector('.management-tabs');
-      const activeButton = tabBar?.querySelector(`[data-tab="${tab}"]`);
-      if (tabBar && activeButton) {
-        tabBar.style.setProperty('--tab-indicator-x', `${activeButton.offsetLeft}px`);
-        tabBar.style.setProperty('--tab-indicator-width', `${activeButton.offsetWidth}px`);
-      }
     }
     function positionTypeLabel(value) {
       return ({wealth_nav: '净值型理财', cash_management: '现金管理', public_fund: '公募基金'})[value] || '其他产品';
@@ -1601,14 +1656,14 @@
       $('hero').className = `hero ${allPositive ? 'sunny' : 'neutral'}`;
       $('weatherIcon').src = allPositive ? '/nav-assets/sun.svg' : '/nav-assets/cloud-sun.svg';
       $('weatherIcon').className = `weather-icon ${allPositive ? 'sunny' : 'neutral'}`;
-      $('cumulativeProfit').innerHTML = `${signedMoney(cumulative)}<span class="unit">元</span>`;
       $('cumulativeProfit').className = `total ${totalTone}`;
+      countUp($('cumulativeProfit'), cumulative, v => `${signedMoney(v)}<span class="unit">元</span>`, 700);
       const latestDate = data.latest_profit_date ? shortDate(data.latest_profit_date) : '';
       $('latestProfitLabel').textContent = '最新收益';
-      $('latestProfit').textContent = `${signedMoney(latestProfit)} 元`;
+      countUp($('latestProfit'), latestProfit, v => `${signedMoney(v)} 元`, 700);
       $('latestProfit').className = `today-value ${tone(latestProfit)}`;
       $('latestProfitDate').textContent = latestDate || '--';
-      $('currentMonthProfit').textContent = `${signedMoney(currentMonthProfit)} 元`;
+      countUp($('currentMonthProfit'), currentMonthProfit, v => `${signedMoney(v)} 元`, 700);
       $('currentMonthProfit').className = `month-value ${tone(currentMonthProfit)}`;
       $('basis').textContent = `自 ${data.base_date || '2026-07-01'} 起按收益流水累计`;
       const pfList = data.portfolio?.products || [];
@@ -1619,8 +1674,8 @@
         .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
       const pendingSell = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('redemption'))
         .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
-      $('totalAssets').textContent = money(roundCent(holdingsValue + pendingBuy - pendingSell));
-      $('marketValue').textContent = money(holdingsValue);
+      countUp($('totalAssets'), holdingsValue + pendingBuy - pendingSell, v => money(roundCent(v)), 600);
+      countUp($('marketValue'), holdingsValue, v => money(roundCent(v)), 600);
       // 在途资金:区分申购和赎回
       const todayStr = new Date().toISOString().slice(0, 10);
       const inTransitBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase'))

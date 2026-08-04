@@ -33,6 +33,31 @@ _MIGRATION_AUDIT_ID = str(
 )
 
 
+def previous_wallet_income_date(as_of: date) -> date:
+    """Wallet books the previous trading day's income when as_of runs."""
+    previous = as_of - timedelta(days=1)
+    for _ in range(14):
+        try:
+            if is_trading_day(previous):
+                return previous
+        except MissingTradingCalendarError:
+            return previous
+        previous -= timedelta(days=1)
+    return as_of - timedelta(days=1)
+
+
+def wallet_quote_sync_end_date(day: date, now=None, cfg=None) -> date:
+    """Never synthesize today's wallet quote; keep quotes through prior income day."""
+    from src.beijing_time import now as beijing_now
+
+    current = now or beijing_now()
+    if getattr(current, "tzinfo", None) is not None:
+        current = current.replace(tzinfo=None)
+    if day >= current.date():
+        return previous_wallet_income_date(current.date())
+    return day
+
+
 class WalletPlusProvider:
     provider = WALLET_PROVIDER
 
@@ -127,7 +152,15 @@ def consolidate_cash_products(
             (_MIGRATION_AUDIT_ID,),
         ).fetchone()
         if existing_audit is not None:
-            _upsert_wallet_quote(repository, effective_date, conn)
+            # 已合并后的重复启动只保证前一交易日行情存在，绝不写入当天行情。
+            quote_day = previous_wallet_income_date(effective_date)
+            _upsert_wallet_quote(repository, quote_day, conn)
+            conn.execute(
+                """DELETE FROM quotes
+                   WHERE product_id = ?
+                     AND quote_date > ?""",
+                (WALLET_PRODUCT_ID, quote_day.isoformat()),
+            )
             return CashConsolidationResult(Decimal("0"), 0)
 
         wallet = repository.get_product(WALLET_PRODUCT_ID, conn=conn)

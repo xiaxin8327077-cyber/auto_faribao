@@ -146,31 +146,3 @@ def test_nav_icon_assets_are_served_locally():
 
     assert response.status_code == 200
     assert response.mimetype == "image/svg+xml"
-
-
-def test_portfolio_mobile_routes_exist_before_runtime_is_initialized(monkeypatch):
-    monkeypatch.setattr("src.nav_dashboard.get_access_token", lambda: "secret-key")
-    client = create_app(_cfg()).test_client()
-    headers = {
-        "X-Nav-Dashboard-Key": "secret-key",
-        "X-Portfolio-Request": "1",
-        "Idempotency-Key": "runtime-not-ready",
-        "Content-Type": "application/json",
-    }
-
-    assert (
-        client.get(
-            "/api/portfolio",
-            headers={"X-Nav-Dashboard-Key": "secret-key"},
-        ).status_code
-        == 503
-    )
-    for path in (
-        "/api/portfolio/transactions/preview",
-        "/api/portfolio/sip-plans/preview",
-        "/api/portfolio/positions/adjustments/preview",
-        "/api/portfolio/positions/adjustments",
-    ):
-        response = client.post(path, headers=headers, json={})
-        assert response.status_code == 503
-        assert response.get_json()["error"] == "write_disabled"

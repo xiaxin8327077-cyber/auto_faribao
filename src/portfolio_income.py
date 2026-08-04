@@ -1,6 +1,8 @@
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
+from src.beijing_time import now as beijing_now
 from src.portfolio_models import (
     ProductType,
     Transaction,
@@ -11,6 +13,7 @@ from src.portfolio_confirmation import (
     MissingTradingCalendarError,
     is_trading_day,
 )
+from src.portfolio_wallet import WALLET_PROVIDER
 
 
 ONE = Decimal("1")
@@ -30,7 +33,11 @@ class CashIncomeService:
             product = self.repository.require_product(product_id, conn=conn)
             if product.product_type is not ProductType.CASH_MANAGEMENT:
                 raise ValueError("product must be cash_management")
-            if product.provider == "wallet_plus":
+            if product.provider == WALLET_PROVIDER:
+                # 钱包Plus：当天只记前一交易日收益，不记账当日。
+                today = beijing_now().date()
+                if quote_date >= today:
+                    return None
                 try:
                     trading_day = is_trading_day(quote_date)
                 except MissingTradingCalendarError:

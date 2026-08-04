@@ -15,6 +15,9 @@ from src.portfolio_income import CashIncomeService
 
 logger = logging.getLogger(__name__)
 
+# 定时定投扣款不早于北京时间 09:00；网页手动激活/补跑不受此限制。
+SIP_DEDUCTION_HOUR = 9
+
 
 @dataclass(frozen=True)
 class PortfolioCycleResult:
@@ -26,6 +29,10 @@ class PortfolioCycleResult:
 
 def _slot_key(now):
     return now.strftime("%Y-%m-%dT%H:") + ("00" if now.minute < 30 else "30")
+
+
+def sip_deduction_due(now) -> bool:
+    return now.hour >= SIP_DEDUCTION_HOUR
 
 
 class PortfolioJobs:
@@ -49,7 +56,9 @@ class PortfolioJobs:
         self._last_slot = slot
         day = now.date()
         quotes = int(self.sync_quotes(day) or 0)
-        intents = int(self.create_intents(day) or 0)
+        intents = 0
+        if sip_deduction_due(now):
+            intents = int(self.create_intents(day) or 0)
         settled = int(self.settle_pending(day) or 0)
         income = int(self.accrue_income(day) or 0)
         return PortfolioCycleResult(quotes, intents, settled, income)
@@ -76,6 +85,8 @@ def build_portfolio_jobs(runtime, strict=False):
     sync_service = QuoteSyncService(repository, get_market_provider)
 
     def sync_quotes(day):
+        from src.portfolio_wallet import WALLET_PROVIDER, wallet_quote_sync_end_date
+
         synced = 0
         for product in repository.list_products(active_only=True):
             market_product = MarketProduct(
@@ -86,9 +97,12 @@ def build_portfolio_jobs(runtime, strict=False):
                 registration_code=product.registration_code,
                 metadata=_product_metadata(product),
             )
+            end_date = day
+            if product.provider == WALLET_PROVIDER:
+                end_date = wallet_quote_sync_end_date(day)
             try:
                 quotes = sync_service.sync_product(
-                    market_product, day - timedelta(days=1), day
+                    market_product, day - timedelta(days=1), end_date
                 )
             except Exception:
                 logger.error(
@@ -139,12 +153,21 @@ def build_portfolio_jobs(runtime, strict=False):
         return len(manual) + len(sip)
 
     def accrue_income(day):
+        from src.portfolio_wallet import (
+            WALLET_PROVIDER,
+            previous_wallet_income_date,
+        )
+
         accrued = 0
         for product in repository.list_products(active_only=True):
             if product.product_type is not ProductType.CASH_MANAGEMENT:
                 continue
+            target_day = day
+            if product.provider == WALLET_PROVIDER:
+                # 当天只更新前一交易日收益。
+                target_day = previous_wallet_income_date(day)
             try:
-                result = income_service.accrue(product.id, day)
+                result = income_service.accrue(product.id, target_day)
             except Exception:
                 logger.error(
                     "Portfolio income accrual failed for %s",

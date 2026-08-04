@@ -26,6 +26,10 @@ _NAV_PURCHASE_TYPES = {
     TransactionType.MANUAL_PURCHASE,
     TransactionType.SIP_PURCHASE,
 }
+_NAV_REDEMPTION_TYPES = {
+    TransactionType.MANUAL_REDEMPTION,
+    TransactionType.CASH_TRANSFER_OUT,
+}
 
 
 def _nav_earning_shares(
@@ -35,6 +39,15 @@ def _nav_earning_shares(
     current_quote_date,
     conn=None,
 ):
+    """Shares that earn the NAV change between two disclosure dates.
+
+    Start from confirmed holdings as of the previous NAV date, then:
+    - add purchases traded by that date but confirmed in (prev, curr]
+    - subtract redemptions / transfer-outs confirmed in (prev, curr]
+
+    A redemption confirmed on the current NAV date therefore does not earn
+    that disclosure segment.
+    """
     projector = PositionProjector(repository)
     opening_position = projector._calculate(
         product_id,
@@ -42,13 +55,14 @@ def _nav_earning_shares(
         as_of=previous_quote_date,
         use_confirmation_date=True,
     )
+    transactions = repository.list_transactions(
+        product_id=product_id,
+        conn=conn,
+    )
     confirmed_from_previous_nav = sum(
         (
             transaction.shares or ZERO
-            for transaction in repository.list_transactions(
-                product_id=product_id,
-                conn=conn,
-            )
+            for transaction in transactions
             if (
                 transaction.status is TransactionStatus.CONFIRMED
                 and transaction.transaction_type in _NAV_PURCHASE_TYPES
@@ -60,9 +74,25 @@ def _nav_earning_shares(
         ),
         ZERO,
     )
+    redeemed_before_or_on_current_nav = sum(
+        (
+            transaction.shares or ZERO
+            for transaction in transactions
+            if (
+                transaction.status is TransactionStatus.CONFIRMED
+                and transaction.transaction_type in _NAV_REDEMPTION_TYPES
+                and previous_quote_date
+                < (transaction.confirmation_date or transaction.trade_date)
+                <= current_quote_date
+            )
+        ),
+        ZERO,
+    )
     return max(
         ZERO,
-        opening_position.total_shares + confirmed_from_previous_nav,
+        opening_position.total_shares
+        + confirmed_from_previous_nav
+        - redeemed_before_or_on_current_nav,
     )
 
 

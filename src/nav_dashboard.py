@@ -788,10 +788,109 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
         )
         payload["latest_profit_date"] = latest_profit_date
         payload["latest_profit"] = str(latest_profit)
+    # 每日/每月收益以组合账本为准：ledger 包含全量产品（财富+债券基金），
+    # profit_entries 只包含从官网抓取的财富类产品，因此 ledger 优先覆盖。
+    _apply_portfolio_profit_views(payload, repository, portfolio)
+
     payload["write_enabled"] = write_enabled
     if not write_enabled:
         payload["write_disabled_reason"] = "portfolio_migration_failed"
     return payload
+
+
+def _portfolio_daily_profit_totals(repository, as_of: date) -> dict:
+    """Rebuild per-day profits from ledger quotes / income (all products)."""
+    from collections import defaultdict
+
+    from src.portfolio_profit import calculate_latest_profit
+
+    totals = defaultdict(lambda: Decimal("0"))
+    for product in repository.list_products(active_only=True):
+        quote_dates = sorted(
+            {
+                quote.quote_date
+                for quote in repository.list_quotes(
+                    product.id,
+                    on_or_before=as_of,
+                )
+            }
+        )
+        for quote_date in quote_dates:
+            profit_date, profit = calculate_latest_profit(
+                repository,
+                product,
+                quote_date,
+            )
+            if profit_date == quote_date and profit is not None:
+                totals[quote_date.isoformat()] += profit
+    return dict(totals)
+
+
+def _apply_portfolio_profit_views(payload, repository, portfolio) -> None:
+    """Use ledger-based daily profits (all products), overriding partial profit_entries."""
+    if not hasattr(repository, "list_products") or not hasattr(repository, "list_quotes"):
+        return
+
+    as_of_text = str(portfolio.get("summary", {}).get("as_of") or "")
+    try:
+        as_of = date.fromisoformat(as_of_text) if as_of_text else date.today()
+    except ValueError:
+        as_of = date.today()
+
+    try:
+        ledger_daily = _portfolio_daily_profit_totals(repository, as_of)
+    except Exception:
+        logger.exception("Failed to rebuild dashboard daily profits from ledger")
+        return
+
+    if not ledger_daily and not portfolio.get("profit_history"):
+        return
+
+    # profit_entries only covers wealth_nav products scraped from the website;
+    # ledger covers ALL products. For overlapping dates, ledger wins.
+    legacy_daily = {
+        str(item.get("date") or ""): Decimal(str(item.get("amount") or "0"))
+        for item in payload.get("daily_profits") or []
+        if item.get("date")
+    }
+    merged_daily = dict(legacy_daily)
+    for day, amount in ledger_daily.items():
+        merged_daily[day] = amount
+
+    payload["daily_profits"] = [
+        {"date": day, "amount": format(amount, "f")}
+        for day, amount in sorted(merged_daily.items(), reverse=True)
+    ]
+
+    # Rebuild monthly/yearly from the merged daily totals.
+    monthly_map = {}
+    for day, amount in merged_daily.items():
+        month = day[:7]
+        monthly_map[month] = monthly_map.get(month, Decimal("0")) + amount
+    # Preserve legacy months not represented in daily breakdown (pre-ledger history).
+    for item in payload.get("monthly_profits") or []:
+        period = str(item.get("period") or "")
+        if period and period not in monthly_map:
+            monthly_map[period] = Decimal(str(item.get("amount") or "0"))
+
+    payload["monthly_profits"] = [
+        {"period": period, "amount": format(amount, "f")}
+        for period, amount in sorted(monthly_map.items(), reverse=True)
+    ]
+
+    yearly_map = {}
+    for period, amount in monthly_map.items():
+        year = period[:4]
+        yearly_map[year] = yearly_map.get(year, Decimal("0")) + amount
+    payload["yearly_profits"] = [
+        {"period": year, "amount": format(amount, "f")}
+        for year, amount in sorted(yearly_map.items(), reverse=True)
+    ]
+
+    current_month = as_of.strftime("%Y-%m")
+    payload["current_month_profit"] = format(
+        monthly_map.get(current_month, Decimal("0")), "f"
+    )
 
 
 def sync_dashboard_portfolio(cfg, changed_at=None, state_path=DEFAULT_STATE_PATH) -> dict:

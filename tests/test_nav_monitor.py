@@ -2,8 +2,6 @@ import os
 from datetime import date, datetime
 from decimal import Decimal
 
-import pytest
-
 from src.config import Config, load_config, save_config
 from src.nav_monitor import (
     CiticWealthProvider,
@@ -26,92 +24,6 @@ from src.nav_monitor import (
     set_nav_product_shares_batch,
     set_nav_product_shares,
 )
-
-
-def test_public_fund_market_quote_converts_to_legacy_nav_record():
-    from src.portfolio_models import MarketProduct, MarketQuote, ProductType
-    from src.nav_monitor import market_quote_to_nav_record
-
-    product = MarketProduct(
-        "changsheng_fund", "003103", "长盛盛裕纯债C", ProductType.PUBLIC_FUND
-    )
-    quote = MarketQuote(
-        "003103", date(2026, 7, 29), "changsheng_fund", "hash",
-        unit_nav=Decimal("1.0321"),
-        cumulative_nav=Decimal("1.1288"),
-    )
-
-    record = market_quote_to_nav_record(product, quote)
-
-    assert record.provider == "changsheng_fund"
-    assert record.code == "003103"
-    assert record.name == "长盛盛裕纯债C"
-    assert record.nav_date == date(2026, 7, 29)
-    assert record.unit_nav == Decimal("1.0321")
-    assert record.cumulative_nav == Decimal("1.1288")
-    assert record.source == "changsheng_fund"
-
-
-def test_wealth_nav_market_quote_converts_to_legacy_nav_record():
-    from src.portfolio_models import MarketProduct, MarketQuote, ProductType
-    from src.nav_monitor import market_quote_to_nav_record
-
-    product = MarketProduct(
-        "citic_wealth", "AF233276B", "慧盈象固收增强一年持有期5号B", ProductType.WEALTH_NAV
-    )
-    quote = MarketQuote(
-        "AF233276B", date(2026, 7, 29), "citic_wealth", "hash",
-        unit_nav=Decimal("1.077800"),
-    )
-
-    record = market_quote_to_nav_record(product, quote)
-
-    assert record.nav_date == date(2026, 7, 29)
-    assert record.unit_nav == Decimal("1.077800")
-    assert record.cumulative_nav is None
-
-
-def test_cash_market_quote_cannot_be_forced_into_nav_record():
-    from src.portfolio_models import MarketProduct, MarketQuote, ProductType
-    from src.nav_monitor import market_quote_to_nav_record
-
-    with pytest.raises(ValueError, match="^cash management quote has no unit NAV$"):
-        market_quote_to_nav_record(
-            MarketProduct("nanyin_wealth", "NYRR000007", "日日聚宝", ProductType.CASH_MANAGEMENT),
-            MarketQuote(
-                "NYRR000007", date(2026, 7, 30), "nanyin_wealth", "hash",
-                income_per_10k=Decimal("0.4475"),
-            ),
-        )
-
-
-def test_market_quote_code_must_match_product_before_conversion():
-    from src.portfolio_models import MarketProduct, MarketQuote, ProductType
-    from src.nav_monitor import market_quote_to_nav_record
-
-    product = MarketProduct(
-        "changsheng_fund", "003103", "长盛盛裕纯债C", ProductType.PUBLIC_FUND
-    )
-    quote = MarketQuote(
-        "015736", date(2026, 7, 29), "changsheng_fund", "hash",
-        unit_nav=Decimal("1.0321"),
-    )
-
-    with pytest.raises(ValueError, match="market quote does not match product code"):
-        market_quote_to_nav_record(product, quote)
-
-
-def test_nav_market_quote_requires_unit_nav_for_conversion():
-    from src.portfolio_models import MarketProduct, MarketQuote, ProductType
-    from src.nav_monitor import market_quote_to_nav_record
-
-    product = MarketProduct(
-        "changsheng_fund", "003103", "长盛盛裕纯债C", ProductType.PUBLIC_FUND
-    )
-    quote = MarketQuote("003103", date(2026, 7, 29), "changsheng_fund", "hash")
-
-    with pytest.raises(ValueError, match="market quote is missing unit NAV"):
-        market_quote_to_nav_record(product, quote)
 
 
 def _sample_nav_results_for_image():
@@ -867,42 +779,6 @@ def test_period_report_includes_return_and_amount(monkeypatch):
     assert "`" not in text
 
 
-def test_natural_month_query_includes_first_day_profit(monkeypatch):
-    product_name = "慧盈象固收增强一年持有期5号B"
-
-    class FakeProvider:
-        def fetch_latest(self, product, **kwargs):
-            return [
-                NavRecord("citic_wealth", "AF233276B", product_name, date(2026, 7, 10), Decimal("1.0780")),
-                NavRecord("citic_wealth", "AF233276B", product_name, date(2026, 7, 1), Decimal("1.0785")),
-                NavRecord("citic_wealth", "AF233276B", product_name, date(2026, 6, 30), Decimal("1.0784")),
-            ]
-
-    monkeypatch.setattr("src.nav_monitor.get_provider", lambda provider: FakeProvider())
-    cfg = Config({
-        "nav_monitor": {
-            "products": [
-                {
-                    "provider": "citic_wealth",
-                    "code": "AF233276B",
-                    "name": product_name,
-                    "shares": 401133.95,
-                }
-            ]
-        }
-    })
-
-    start_date, results = query_nav_period_products(
-        cfg,
-        "month",
-        base_date=date(2026, 7, 13),
-    )
-
-    assert start_date == date(2026, 7, 1)
-    assert results[0].baseline is not None
-    assert results[0].baseline.nav_date == date(2026, 6, 30)
-
-
 def test_period_report_uses_natural_period_titles():
     cfg = Config({"nav_monitor": {"products": []}})
 
@@ -1351,32 +1227,22 @@ def test_scheduler_nav_weekly_period_push_rolls_to_first_workday(monkeypatch):
 
 
 def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
-    import src.portfolio_reports
+    import src.nav_monitor
     import src.scheduler
     from src.scheduler import _run_nav_monitor_push
 
     calls = []
-    repository = object()
 
-    def fake_push(
-        cfg,
-        repo,
-        target_date=None,
-        period="",
-        to_user=None,
-        holdings_as_of=None,
-        disclosed_on=None,
-        image_output_dir=None,
-    ):
-        calls.append((period or "daily", target_date, to_user, repo))
-        return period or "daily"
+    def fake_daily(cfg):
+        calls.append(("daily", None))
+        return "daily"
 
-    monkeypatch.setattr(
-        src.scheduler,
-        "_require_portfolio_repository",
-        lambda: repository,
-    )
-    monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fake_push)
+    def fake_period(cfg, period, base_date, to_user=None):
+        calls.append((period, base_date))
+        return period
+
+    monkeypatch.setattr(src.nav_monitor, "push_nav_report", fake_daily)
+    monkeypatch.setattr(src.nav_monitor, "push_nav_period_report", fake_period)
     monkeypatch.setattr(
         src.scheduler,
         "_nav_period_push_jobs",
@@ -1386,44 +1252,30 @@ def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
     _run_nav_monitor_push(Config({}), day=date(2026, 7, 6))
 
     assert calls == [
-        ("daily", date(2026, 7, 6), "@all", repository),
-        ("week", date(2026, 7, 5), "@all", repository),
-        ("month", date(2026, 6, 30), "@all", repository),
+        ("daily", None),
+        ("week", date(2026, 7, 5)),
+        ("month", date(2026, 6, 30)),
     ]
 
 
 def test_scheduler_nav_evening_push_calls_evening_report(monkeypatch):
-    import src.portfolio_reports
+    import src.nav_monitor
     from src.scheduler import _run_nav_evening_push
 
     calls = []
-    repository = object()
 
-    def fake_push(
-        cfg,
-        repo,
-        target_date=None,
-        period="",
-        to_user=None,
-        holdings_as_of=None,
-        disclosed_on=None,
-        image_output_dir=None,
-    ):
-        calls.append((target_date, disclosed_on, to_user, repo))
+    def fake_evening(cfg, as_of_date=None, to_user=None):
+        calls.append((as_of_date, to_user))
         return "ok"
 
-    monkeypatch.setattr(
-        "src.scheduler._require_portfolio_repository",
-        lambda: repository,
-    )
-    monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fake_push)
+    monkeypatch.setattr(src.nav_monitor, "push_nav_evening_report", fake_evening)
 
     _run_nav_evening_push(
         Config({"wechat": {"to_user": "user1"}}),
         day=date(2026, 7, 9),
     )
 
-    assert calls == [(date(2026, 7, 9), date(2026, 7, 9), "user1", repository)]
+    assert calls == [(date(2026, 7, 9), "user1")]
 
 
 def test_scheduler_nav_estimate_runs_on_workday(monkeypatch):
@@ -1441,47 +1293,26 @@ def test_scheduler_nav_estimate_runs_on_workday(monkeypatch):
 
 def test_scheduler_nav_estimate_push_updates_profiles_before_estimate(monkeypatch):
     import src.nav_holdings
-    import src.portfolio_reports
-    import src.scheduler
-    from src.portfolio_models import ProductType
     from src.scheduler import _run_nav_estimate_push
 
     calls = []
-    repository = object()
-    wealth = type(
-        "Product",
-        (),
-        {"code": "AF233276B", "product_type": ProductType.WEALTH_NAV},
-    )()
-    fund = type(
-        "Product",
-        (),
-        {"code": "003103", "product_type": ProductType.PUBLIC_FUND},
-    )()
-    runtime = type("Runtime", (), {"repository": repository})()
 
-    def fake_update(cfg, today=None, notify=False, products=None):
-        calls.append(("update", today, notify, products))
+    def fake_update(cfg, today=None, notify=False):
+        calls.append(("update", today, notify))
         return []
 
-    def fake_push(cfg, to_user=None, products=None):
-        calls.append(("estimate", to_user, products))
+    def fake_push(cfg, to_user=None):
+        calls.append(("estimate", to_user))
         return "ok"
 
-    monkeypatch.setattr(src.scheduler, "_portfolio_runtime", runtime)
-    monkeypatch.setattr(
-        src.portfolio_reports,
-        "list_portfolio_position_products",
-        lambda repo, as_of=None: [wealth, fund],
-    )
     monkeypatch.setattr(src.nav_holdings, "refresh_quarterly_profiles_if_due", fake_update)
     monkeypatch.setattr(src.nav_holdings, "push_estimate_report", fake_push)
 
     _run_nav_estimate_push(Config({"wechat": {"to_user": "XiaXin"}}), day=date(2026, 7, 9))
 
     assert calls == [
-        ("update", date(2026, 7, 9), False, [wealth]),
-        ("estimate", "XiaXin", [wealth]),
+        ("update", date(2026, 7, 9), False),
+        ("estimate", "XiaXin"),
     ]
 
 
@@ -1518,21 +1349,17 @@ def test_confirm_add_triggers_background_profile_refresh(monkeypatch, tmp_path):
 
 
 def test_scheduler_nav_push_exception_does_not_notify_report_failure(monkeypatch):
-    import src.portfolio_reports
+    import src.nav_monitor
     import src.notifier
     from src.scheduler import _run_nav_monitor_push
 
-    def fail_push(*_args, **_kwargs):
+    def fail_push(cfg):
         raise RuntimeError("nav provider down")
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("notify_report_failure should not be called")
 
-    monkeypatch.setattr(
-        "src.scheduler._require_portfolio_repository",
-        lambda: object(),
-    )
-    monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fail_push)
+    monkeypatch.setattr(src.nav_monitor, "push_nav_report", fail_push)
     monkeypatch.setattr(src.notifier, "notify_report_failure", fail_if_called)
 
     _run_nav_monitor_push(Config({}))

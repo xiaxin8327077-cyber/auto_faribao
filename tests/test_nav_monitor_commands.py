@@ -21,24 +21,39 @@ def test_parse_nav_config_commands():
     assert parse_nav_command("查看净值配置").action == "view_config"
     assert parse_nav_command("看下净值的配置").action == "view_config"
     assert parse_nav_command("看看理财净值配置").action == "view_config"
-    # 写指令已迁移至网页，企业微信只返回 None
-    assert parse_nav_command("开启净值监控") is None
-    assert parse_nav_command("关闭净值监控") is None
-    assert parse_nav_command("设置净值推送时间 08:30") is None
-    assert parse_nav_command("设置收益预估时间 17:30") is None
-    assert parse_nav_command("把理财预估时间改到 18:05") is None
+    assert parse_nav_command("开启净值监控").action == "enable"
+    assert parse_nav_command("关闭净值监控").action == "disable"
+
+    set_time = parse_nav_command("设置净值推送时间 08:30")
+    assert set_time.action == "set_time"
+    assert set_time.hour == 8
+    assert set_time.minute == 30
+
+    set_estimate_time = parse_nav_command("设置收益预估时间 17:30")
+    assert set_estimate_time.action == "set_estimate_time"
+    assert set_estimate_time.hour == 17
+    assert set_estimate_time.minute == 30
+
+    natural_estimate_time = parse_nav_command("把理财预估时间改到 18:05")
+    assert natural_estimate_time.action == "set_estimate_time"
+    assert natural_estimate_time.hour == 18
+    assert natural_estimate_time.minute == 5
 
 
 def test_parse_nav_holdings_and_estimate_commands():
     base = date(2026, 7, 9)
-    # 预估/更新画像已迁移至网页
-    assert parse_nav_command("收盘后预估一下理财涨跌", base) is None
-    assert parse_nav_command("用昨天行情预估理财涨跌", base) is None
-    assert parse_nav_command("更新持仓画像") is None
+    estimate = parse_nav_command("收盘后预估一下理财涨跌", base)
+    yesterday_estimate = parse_nav_command("用昨天行情预估理财涨跌", base)
+    update = parse_nav_command("更新持仓画像")
     view_all = parse_nav_command("查看持仓画像")
     view_one = parse_nav_command("查看 AF233276B 持仓画像")
     status = parse_nav_command("查看画像状态")
 
+    assert estimate.action == "estimate_holdings"
+    assert estimate.target_date is None
+    assert yesterday_estimate.action == "estimate_holdings"
+    assert yesterday_estimate.target_date == date(2026, 7, 8)
+    assert update.action == "update_holdings"
     assert view_all.action == "view_holdings"
     assert view_all.code == ""
     assert view_one.action == "view_holdings"
@@ -46,30 +61,34 @@ def test_parse_nav_holdings_and_estimate_commands():
     assert status.action == "view_holdings_status"
 
 
-def test_prediction_language_takes_priority_over_latest_nav_query():
-    base = date(2026, 7, 13)
-
-    # 预估涨跌已迁移至网页，企业微信只返回 None
-    assert parse_nav_command("今天我的理财能涨吗", base) is None
-    assert parse_nav_command("我的理财会不会跌", base) is None
-    assert parse_nav_command("帮我预测一下理财涨跌", base) is None
-    explicit_nav_query = parse_nav_command("查询今天理财净值", base)
-    assert explicit_nav_query.action == "query_latest"
-
-
 def test_parse_nav_product_commands():
-    # 添加/删除/确认添加/取消添加均已迁移至网页
-    assert parse_nav_command("添加净值产品 信银 AF233276B") is None
-    assert parse_nav_command("删除净值产品 AF233276B") is None
-    assert parse_nav_command("确认添加净值产品 1") is None
-    assert parse_nav_command("取消添加净值产品") is None
+    add = parse_nav_command("添加净值产品 信银 AF233276B")
+    delete = parse_nav_command("删除净值产品 AF233276B")
+    confirm = parse_nav_command("确认添加净值产品 1")
+    cancel = parse_nav_command("取消添加净值产品")
+
+    assert add.action == "add_product"
+    assert add.provider == "citic_wealth"
+    assert add.query == "AF233276B"
+    assert delete.action == "delete_product"
+    assert delete.code == "AF233276B"
+    assert confirm.action == "confirm_add"
+    assert confirm.index == 1
+    assert cancel.action == "cancel_add"
 
 
 def test_parse_nav_product_add_alias_and_usage():
-    # 添加产品（含别名与缺失参数）均已迁移至网页
-    assert parse_nav_command("添加产品 信银 AF233276B") is None
-    assert parse_nav_command("添加净值产品 信银理财AF233276B") is None
-    assert parse_nav_command("添加产品") is None
+    alias = parse_nav_command("添加产品 信银 AF233276B")
+    stuck = parse_nav_command("添加净值产品 信银理财AF233276B")
+    usage = parse_nav_command("添加产品")
+
+    assert alias.action == "add_product"
+    assert alias.provider == "citic_wealth"
+    assert alias.query == "AF233276B"
+    assert stuck.action == "add_product"
+    assert stuck.provider == "citic_wealth"
+    assert stuck.query == "AF233276B"
+    assert usage.action == "add_product_usage"
 
 
 def test_parse_nav_period_and_shares_commands():
@@ -104,19 +123,25 @@ def test_parse_nav_period_and_shares_commands():
     assert rolling_2y_num.period == "rolling_2y"
     assert rolling_3y.period == "rolling_3y"
     assert rolling_3y_num.period == "rolling_3y"
-    # 设置份额已迁移至网页
-    assert shares is None
+    assert shares.action == "set_shares"
+    assert shares.code == "AF233276B"
+    assert str(shares.shares) == "10000.50"
 
 
 def test_parse_batch_nav_shares_command():
-    # 批量设置份额已迁移至网页
     command = parse_nav_command(
         "批量设置净值份额\n"
         "AF233276B 10000.50\n"
         "AF233262B 20000"
     )
 
-    assert command is None
+    assert command.action == "set_shares_batch"
+    assert command.share_updates == (
+        ("AF233276B", Decimal("10000.50")),
+        ("AF233262B", Decimal("20000")),
+    )
+    assert command.share_errors == ()
+
 
 def test_parse_nav_natural_language_query_commands():
     base = date(2026, 7, 8)
@@ -173,10 +198,18 @@ def test_parse_nav_natural_language_period_numbers_are_interchangeable():
 
 
 def test_parse_nav_natural_language_product_and_shares_commands():
-    # 自然语言添加/设置份额/删除产品均已迁移至网页
-    assert parse_nav_command("加一下信银 AF233276B") is None
-    assert parse_nav_command("把 AF233276B 份额改成 401133.95") is None
-    assert parse_nav_command("删除一下 AF233276B 产品") is None
+    add = parse_nav_command("加一下信银 AF233276B")
+    shares = parse_nav_command("把 AF233276B 份额改成 401133.95")
+    delete = parse_nav_command("删除一下 AF233276B 产品")
+
+    assert add.action == "add_product"
+    assert add.provider == "citic_wealth"
+    assert add.query == "AF233276B"
+    assert shares.action == "set_shares"
+    assert shares.code == "AF233276B"
+    assert str(shares.shares) == "401133.95"
+    assert delete.action == "delete_product"
+    assert delete.code == "AF233276B"
 
 
 def test_daily_report_commands_are_not_nav_commands():
@@ -184,50 +217,3 @@ def test_daily_report_commands_are_not_nav_commands():
     assert parse_nav_command("今日状态") is None
     assert parse_nav_command("设置日报提交时间 20:00") is None
     assert parse_nav_command("发送日报") is None
-
-
-def test_parse_set_daily_profit_valid():
-    base = date(2026, 7, 22)
-    # 设置收益已迁移至网页
-    assert parse_nav_command("设置收益 2026-07-21 150.5", base) is None
-    assert parse_nav_command("设置收益 昨天 -80", base) is None
-    assert parse_nav_command("设置收益 20260721 0", base) is None
-
-
-def test_parse_set_daily_profit_invalid_date():
-    base = date(2026, 7, 22)
-    # 设置收益已迁移至网页（含非法日期分支）
-    assert parse_nav_command("设置收益 2026-02-30 100", base) is None
-    assert parse_nav_command("设置收益 abc 100", base) is None
-
-
-def test_parse_set_daily_profit_invalid_amount_does_not_fallthrough():
-    base = date(2026, 7, 22)
-    # 设置收益已迁移至网页（含金额格式错误分支）
-    assert parse_nav_command("设置收益 2026-07-21 abc", base) is None
-    assert parse_nav_command("设置收益 2026-07-21 +100", base) is None
-    assert parse_nav_command("设置收益 2026-07-21", base) is None
-    assert parse_nav_command("设置收益", base) is None
-
-
-def test_parse_natural_set_daily_profit():
-    base = date(2026, 7, 22)
-    # 自然语言设置收益已迁移至网页
-    assert parse_nav_command("把最新收益改成200", base) is None
-    assert parse_nav_command("把昨天的收益改成150块", base) is None
-    assert parse_nav_command("把最新收益改成-50", base) is None
-    assert parse_nav_command("把最新收益改为88.5元", base) is None
-
-
-def test_natural_set_daily_profit_does_not_conflict_with_prediction():
-    base = date(2026, 7, 22)
-    # 预估类指令已迁移至网页
-    assert parse_nav_command("收益预估改成200", base) is None
-    assert parse_nav_command("预估理财涨跌", base) is None
-
-
-def test_natural_set_daily_profit_requires_verb():
-    base = date(2026, 7, 22)
-    # 没有"改成/改为"等动词，不应匹配设置收益（已迁移至网页）
-    assert parse_nav_command("最新收益200", base) is None
-    assert parse_nav_command("看看收益", base) is None
