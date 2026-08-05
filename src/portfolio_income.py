@@ -1,4 +1,3 @@
-from datetime import date, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -13,7 +12,7 @@ from src.portfolio_confirmation import (
     MissingTradingCalendarError,
     is_trading_day,
 )
-from src.portfolio_wallet import WALLET_PROVIDER
+from src.portfolio_wallet import WALLET_PROVIDER, previous_wallet_income_date
 
 
 ONE = Decimal("1")
@@ -33,7 +32,8 @@ class CashIncomeService:
             product = self.repository.require_product(product_id, conn=conn)
             if product.product_type is not ProductType.CASH_MANAGEMENT:
                 raise ValueError("product must be cash_management")
-            if product.provider == WALLET_PROVIDER:
+            is_wallet = product.provider == WALLET_PROVIDER
+            if is_wallet:
                 # 钱包Plus：当天只记前一交易日收益，不记账当日。
                 today = beijing_now().date()
                 if quote_date >= today:
@@ -49,28 +49,23 @@ class CashIncomeService:
                 idempotency_key,
                 conn=conn,
             )
+            while (
+                existing is not None
+                and existing.status is TransactionStatus.REVERSED
+            ):
+                # 计提曾被反转（如过早计提被纠正）。原 reversed 交易不可变，
+                # 改用新的幂等键重新计提；若 :reactivated 也被反转则继续追加。
+                idempotency_key = f"{idempotency_key}:reactivated"
+                existing = self.repository.get_transaction_by_idempotency(
+                    idempotency_key,
+                    conn=conn,
+                )
             if existing is not None:
-                if existing.status is TransactionStatus.REVERSED:
-                    # 计提曾被反转（如过早计提被纠正）。按原始需求
-                    # （交易日更新前一交易日收益）重新计提：
-                    # 原 reversed 交易不可变，改用新的幂等键创建新的计提。
-                    idempotency_key = f"{idempotency_key}:reactivated"
-                    existing = self.repository.get_transaction_by_idempotency(
-                        idempotency_key,
-                        conn=conn,
-                    )
-                    if existing is not None:
-                        return self._require_matching_accrual(
-                            existing,
-                            product_id,
-                            quote_date,
-                        )
-                else:
-                    return self._require_matching_accrual(
-                        existing,
-                        product_id,
-                        quote_date,
-                    )
+                return self._require_matching_accrual(
+                    existing,
+                    product_id,
+                    quote_date,
+                )
 
             quote = self.repository.get_quote(
                 product_id,
@@ -80,17 +75,24 @@ class CashIncomeService:
             if quote is None or quote.income_per_10k is None:
                 return None
 
-            # 已确认份额（含当日确认）才计息；未确认申购不计，确认日当天起息。
+            # 现金：已确认份额（含当日确认）计息，确认日当天起息。
+            # 钱包Plus：按收益日前一交易日已确认份额计息（T+1 确认后，
+            # 确认日当天的万份收益仍不含当日新确认份额）。
+            shares_as_of = (
+                previous_wallet_income_date(quote_date)
+                if is_wallet
+                else quote_date
+            )
             opening_position = self.projector._calculate(
                 product_id,
                 conn,
-                as_of=quote_date,
+                as_of=shares_as_of,
                 use_confirmation_date=True,
             )
             current_position = self.projector._calculate(
                 product_id,
                 conn,
-                as_of=quote_date,
+                as_of=shares_as_of,
                 use_confirmation_date=True,
             )
             effective_shares = max(

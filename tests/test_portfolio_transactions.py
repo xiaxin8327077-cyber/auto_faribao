@@ -2299,6 +2299,118 @@ def test_cash_purchase_with_trade_time_confirms_next_trading_day(services):
     assert projector.calculate("cash").total_shares == Decimal("1100")
 
 
+def test_cash_purchase_without_trade_time_still_waits_for_t1_confirmation(
+    services,
+):
+    """钱包Plus 申购即使未传 trade_time，也必须 T+1 确认，不能当日计息。"""
+    from src.portfolio_wallet import WALLET_PROVIDER
+
+    repository, transactions, projector = services
+    repository.add_product(
+        Product(
+            id="wallet",
+            provider=WALLET_PROVIDER,
+            code="WALLETPLUS",
+            name="钱包Plus",
+            product_type=ProductType.CASH_MANAGEMENT,
+        )
+    )
+    seed_opening_position(repository, "wallet", "1000")
+
+    purchase = transactions.record_purchase(
+        "wallet",
+        Decimal("100"),
+        TRADE_DATE,
+        "web:untimed-wallet-purchase",
+    )
+
+    assert purchase.status is TransactionStatus.PENDING_CONFIRMATION
+    assert purchase.confirmation_date is None
+    assert projector.calculate("wallet").total_shares == Decimal("1000")
+    assert transactions.settle_pending(TRADE_DATE) == []
+
+    settled = transactions.settle_pending(date(2026, 7, 31))
+    assert len(settled) == 1
+    assert settled[0].status is TransactionStatus.CONFIRMED
+    assert settled[0].confirmation_date == date(2026, 7, 31)
+    assert projector.calculate("wallet").total_shares == Decimal("1100")
+
+
+def test_cash_purchase_does_not_earn_until_day_after_confirmation(services):
+    """钱包 T+1 确认后，确认日当天的收益仍按确认前份额；次日收益日起息。"""
+    from src.portfolio_income import CashIncomeService
+    from src.portfolio_wallet import WALLET_PROVIDER
+
+    repository, transactions, projector = services
+    repository.add_product(
+        Product(
+            id="wallet",
+            provider=WALLET_PROVIDER,
+            code="WALLETPLUS",
+            name="钱包Plus",
+            product_type=ProductType.CASH_MANAGEMENT,
+        )
+    )
+    seed_opening_position(repository, "wallet", "10000")
+    repository.upsert_quote(
+        "wallet",
+        MarketQuote(
+            product_code="WALLETPLUS",
+            quote_date=TRADE_DATE,
+            source="fixed",
+            raw_hash="h1",
+            income_per_10k=Decimal("0.5"),
+        ),
+        f"{TRADE_DATE.isoformat()}T00:00:00+08:00",
+    )
+    repository.upsert_quote(
+        "wallet",
+        MarketQuote(
+            product_code="WALLETPLUS",
+            quote_date=date(2026, 7, 31),
+            source="fixed",
+            raw_hash="h2",
+            income_per_10k=Decimal("0.5"),
+        ),
+        "2026-07-31T00:00:00+08:00",
+    )
+    repository.upsert_quote(
+        "wallet",
+        MarketQuote(
+            product_code="WALLETPLUS",
+            quote_date=date(2026, 8, 3),
+            source="fixed",
+            raw_hash="h3",
+            income_per_10k=Decimal("0.5"),
+        ),
+        "2026-08-03T00:00:00+08:00",
+    )
+
+    transactions.record_purchase(
+        "wallet",
+        Decimal("5000"),
+        TRADE_DATE,
+        "web:wallet-t1-purchase",
+    )
+    income = CashIncomeService(repository, projector)
+
+    # 交易日：申购未确认
+    trade_day = income.accrue("wallet", TRADE_DATE)
+    assert trade_day is not None
+    assert trade_day.amount == Decimal("0.5")
+
+    # T+1 确认日：收益仍按确认前一交易日份额
+    transactions.settle_pending(date(2026, 7, 31))
+    confirm_day = income.accrue("wallet", date(2026, 7, 31))
+    assert confirm_day is not None
+    assert confirm_day.amount == Decimal("0.500025")
+
+    # 确认日后的下一交易日：新申购进入计息
+    next_day = income.accrue("wallet", date(2026, 8, 3))
+    assert next_day is not None
+    assert next_day.amount == Decimal("0.75005000125")
+
+
 def test_purchase_rejects_same_cash_product_as_source(services):
     repository, transactions, _projector = services
     seed_cash(repository, "cash", "100")
@@ -2386,6 +2498,29 @@ def test_redemption_destination_must_be_cash_management(services):
         )
 
     assert len(repository.list_transactions()) == 1
+
+
+def test_confirm_pending_cash_purchase_preserves_amount_as_shares(services):
+    """现金产品确认时，shares 必须等于 amount（金额=份额），不受 fee/nav 影响。"""
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "1000")
+    pending = transactions.record_purchase(
+        "cash",
+        Decimal("500"),
+        TRADE_DATE,
+        "web:cash-confirm",
+        fee_rate=Decimal("0.01"),
+    )
+    quote = MarketQuote(
+        "cash", TRADE_DATE, "cash_unit_price", "cash_unit_price", unit_nav=Decimal("1")
+    )
+
+    confirmed = transactions.confirm_pending(pending.id, quote)
+
+    assert confirmed.status is TransactionStatus.CONFIRMED
+    assert confirmed.shares == Decimal("500")
+    assert confirmed.amount == Decimal("500")
+    assert projector.calculate("cash").total_shares == Decimal("1500")
 
 
 @pytest.mark.parametrize("shares", ["0", "-1", "NaN", "Infinity"])

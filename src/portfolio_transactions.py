@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 import json
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -502,7 +502,11 @@ class PortfolioTransactionService:
                 amount = self._positive_decimal(transaction.amount, "amount")
                 fee_rate = self._fee_rate(transaction.fee_rate or ZERO)
                 fee_amount = amount * fee_rate
-                shares = (amount - fee_amount) / nav
+                if product.product_type is ProductType.CASH_MANAGEMENT:
+                    # 现金产品：金额 = 份额，nav 恒为 1。
+                    shares = amount
+                else:
+                    shares = (amount - fee_amount) / nav
                 self._require_finite_positive(shares, "shares")
                 confirmed = replace(
                     transaction,
@@ -1991,7 +1995,10 @@ class PortfolioTransactionService:
 
     def _status_and_nav(self, product, trade_date, conn, trade_time=""):
         if product.product_type is ProductType.CASH_MANAGEMENT:
-            if trade_time:
+            from src.portfolio_wallet import WALLET_PROVIDER
+
+            # 钱包Plus：始终 T+1 确认。其他现金产品保留原“有 trade_time 才挂起”行为。
+            if product.provider == WALLET_PROVIDER or trade_time:
                 return TransactionStatus.PENDING_CONFIRMATION, ONE
             return TransactionStatus.CONFIRMED, ONE
         quote = self.repository.get_quote(product.id, trade_date, conn=conn)
@@ -2023,7 +2030,16 @@ class PortfolioTransactionService:
         trade_time,
         trade_date,
     ):
+        from src.portfolio_wallet import WALLET_PROVIDER
+
         if not trade_time:
+            if product.provider == WALLET_PROVIDER:
+                submitted = datetime.combine(trade_date, time(12, 0))
+                return confirmation_schedule(
+                    product,
+                    transaction_type,
+                    submitted,
+                ).confirmation_date
             return trade_date
         return confirmation_schedule(
             product,

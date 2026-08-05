@@ -181,12 +181,14 @@ def test_purchase_pending_confirmation_does_not_earn_until_confirmed(
     assert projector.calculate("cash").total_shares == Decimal("10000.5")
 
 
-def test_purchase_earns_from_confirmation_date(
+def test_purchase_earns_from_day_after_wallet_confirmation(
     income_services,
 ):
+    """钱包 T+1 确认：确认日收益按前一交易日份额；次日收益日起息。"""
     repository, projector, income = income_services
     seed_cash(repository, "cash", "10000", provider="wallet_plus")
     confirm_date = date(2026, 7, 30)
+    next_day = date(2026, 7, 31)
     repository.create_transaction(
         Transaction(
             id="t1-purchase:cash",
@@ -205,12 +207,15 @@ def test_purchase_earns_from_confirmation_date(
     projector.rebuild("cash")
     seed_quote(repository, "cash", INCOME_DATE, "0.5")
     seed_quote(repository, "cash", confirm_date, "0.5")
+    seed_quote(repository, "cash", next_day, "0.5")
 
     trade_day = income.accrue("cash", INCOME_DATE)
     confirm_day = income.accrue("cash", confirm_date)
+    earn_day = income.accrue("cash", next_day)
 
     assert trade_day.amount == Decimal("0.5")
-    assert confirm_day.amount == Decimal("0.750025")
+    assert confirm_day.amount == Decimal("0.500025")
+    assert earn_day.amount == Decimal("0.75005000125")
 
 
 def test_cash_income_skips_non_trading_day_even_with_a_fixed_quote(
@@ -265,6 +270,44 @@ def test_duplicate_accrual_returns_existing_event(income_services):
 
     assert second.id == first.id
     assert len(repository.list_transactions("cash")) == 2
+
+
+def test_reversed_wallet_accrual_can_reactivate_multiple_times(
+    income_services,
+):
+    from src.portfolio_transactions import PortfolioTransactionService
+
+    repository, projector, income = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    seed_quote(repository, "cash", INCOME_DATE, "0.5")
+    tx = PortfolioTransactionService(repository, projector)
+
+    first = income.accrue("cash", INCOME_DATE)
+    assert first is not None
+    tx.reverse_confirmed(
+        first.id,
+        "correct premature accrual",
+        "reverse:income:cash:1",
+        actor="ops",
+    )
+    second = income.accrue("cash", INCOME_DATE)
+    assert second is not None
+    assert second.id != first.id
+    assert second.status is TransactionStatus.CONFIRMED
+    assert second.idempotency_key.endswith(":reactivated")
+
+    tx.reverse_confirmed(
+        second.id,
+        "correct again",
+        "reverse:income:cash:2",
+        actor="ops",
+    )
+    third = income.accrue("cash", INCOME_DATE)
+    assert third is not None
+    assert third.id != second.id
+    assert third.status is TransactionStatus.CONFIRMED
+    assert third.idempotency_key.endswith(":reactivated:reactivated")
+    assert third.amount == Decimal("0.5")
 
 
 def test_missing_exact_income_quote_remains_retryable(income_services):
