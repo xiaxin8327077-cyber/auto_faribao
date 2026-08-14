@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-本系统部署在东京 AWS 服务器（13.158.229.204），实现 OA 日报的自动提取、提交与通知。系统由两个独立服务组成：
+本系统部署在阿里云服务器（8.213.145.226），实现 OA 日报的自动提取、提交与通知。系统由两个独立服务组成：
 
 1. **daily-report**：日报自动提交核心服务，负责定时提取智能表格任务、提交日报到 OA 系统、发送企业微信通知
 2. **status-page**：服务器状态监控页面，提供日报发送记录查询
@@ -11,7 +11,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    东京 AWS 服务器                        │
+│                    阿里云服务器                            │
 │                                                         │
 │  ┌──────────────────┐    ┌──────────────────────────┐   │
 │  │  status-page     │    │  daily-report            │   │
@@ -32,35 +32,73 @@
 
 ```
 daily_report_project/
-├── main.py                    # 日报主程序入口
-├── submit_for_date.py         # 指定日期提交脚本（被 status-page 调用）
-├── status_page.py             # 服务器状态页 + 日报发送集成
-├── status_page_original.py    # 原始状态页备份
-├── config.yaml                # 日报系统配置文件
-├── requirements.txt           # Python 依赖
+├── main.py                        # 日报主程序入口
+├── submit_for_date.py             # 指定日期提交脚本（被 status-page 调用）
+├── status_page.py                 # 服务器状态页 + 日报发送集成
+├── config.yaml                    # 日报系统配置文件
+├── requirements.txt               # Python 依赖
+├── config/
+│   └── mainland_workdays.json     # 中国法定节假日与调休日历
+├── data/                          # 运行时数据（SQLite、截图、缓存等）
 ├── src/
-│   ├── report_builder.py      # 日报内容构建器（智能表格 + 兜底逻辑）
-│   ├── target.py              # OA 系统交互（Playwright 自动化）
-│   ├── extractor.py           # 智能表格数据提取
-│   ├── processor.py           # 任务数据格式化
-│   ├── auth.py                # OA 系统登录（验证码识别）
-│   ├── captcha.py             # 验证码识别（多策略 + 子进程隔离）
-│   ├── captcha_worker.py      # 验证码识别子进程（ddddocr 用完即释放）
-│   ├── config.py              # 配置加载与数据类
-│   ├── browser_lock.py        # 浏览器互斥锁 + 低内存参数
-│   ├── notifier.py            # 通知分发（企业微信）
-│   ├── wechat_notifier.py     # 企业微信通知（Markdown/文本/图片）
-│   ├── wechat_callback.py     # 企业微信回调加解密
-│   ├── auto_cookies_updater.py# Cookies 更新工具（企业微信指令）
-│   ├── cookies_checker.py     # Cookies 有效性检查
-│   ├── pending_confirmation.py# 交互确认(是/否/超时)
-│   ├── scheduler.py           # 定时任务调度器
-│   ├── server.py              # Flask Web 服务（企业微信回调 + API）
-│   ├── beijing_time.py        # 北京时间工具
-│   └── workday_calendar.py    # 工作日历（节假日判断）
-└── systemd/
-    ├── daily-report.service   # daily-report systemd 服务
-    └── status-page.service    # status-page systemd 服务
+│   │ ─── 日报核心 ───
+│   ├── report_builder.py          # 日报内容构建器（智能表格 + 兜底逻辑）
+│   ├── target.py                  # OA 系统交互（Playwright 自动化）
+│   ├── extractor.py               # 智能表格数据提取
+│   ├── processor.py               # 任务数据格式化
+│   ├── daily_report_draft.py      # 日报草稿管理（保存/读取/修改/清除）
+│   ├── daily_report_edit_confirmation.py  # 日报编辑二次确认（TTL 120s）
+│   │ ─── 登录与验证码 ───
+│   ├── auth.py                    # OA 系统登录（验证码识别）
+│   ├── captcha.py                 # 验证码识别（多策略 + 子进程隔离）
+│   ├── captcha_worker.py          # 验证码识别子进程（ddddocr 用完即释放）
+│   ├── qr_login_renewer.py        # 二维码扫码登录续期（企业微信 Cookies）
+│   ├── auto_cookies_updater.py    # Cookies 更新工具（企业微信指令）
+│   ├── cookies_checker.py         # Cookies 有效性检查
+│   │ ─── 通知与调度 ───
+│   ├── notifier.py                # 通知分发（企业微信）
+│   ├── wechat_notifier.py         # 企业微信通知（Markdown/文本/图片）
+│   ├── wechat_callback.py         # 企业微信回调加解密
+│   ├── scheduler.py               # 定时任务调度器
+│   ├── server.py                  # Flask Web 服务（企业微信回调 + API）
+│   ├── browser_lock.py            # 浏览器互斥锁 + 低内存参数
+│   ├── pending_confirmation.py    # 交互确认(是/否/超时)
+│   │ ─── 净值监控 ───
+│   ├── nav_monitor.py             # 净值数据查询（信银理财/南银理财）
+│   ├── nav_dashboard.py           # 净值看板状态管理（收益记录/快照）
+│   ├── nav_holdings.py            # 持仓画像抓取（资产配置/前十大持仓）
+│   ├── nav_report_image.py        # 净值报告图片生成（PIL 绘制）
+│   │ ─── AI 助手 ───
+│   ├── ai_assistant.py            # AI 助手总入口（多 provider 热切换）
+│   ├── ai_chat.py                 # 聊天会话管理（多轮对话历史）
+│   ├── ai_command_router.py       # 自然语言指令路由（read/write/none）
+│   ├── ai_diagnostic_agent.py     # 诊断代理（规划→工具调用→报告）
+│   ├── ai_diagnostic_tools.py     # 诊断工具箱（定时快照/日志/源码搜索）
+│   ├── longcat_client.py          # LongCat LLM 客户端（OpenAI 兼容接口）
+│   │ ─── 理财组合 ───
+│   ├── portfolio_api.py           # REST API（产品/交易/持仓/定投/行情）
+│   ├── portfolio_runtime.py       # 运行时初始化（DB/迁移/仓库装配）
+│   ├── portfolio_db.py            # SQLite 数据库层（schema v4）
+│   ├── portfolio_repository.py    # 数据仓库层（CRUD 操作）
+│   ├── portfolio_models.py        # 数据模型（Product/Transaction/Position 等）
+│   ├── portfolio_positions.py    # 持仓投影（份额/成本计算）
+│   ├── portfolio_profit.py        # 收益计算（净值型/现金管理型/公募基金）
+│   ├── portfolio_transactions.py  # 交易服务（申购/赎回/转账/反转）
+│   ├── portfolio_income.py        # 现金管理产品收益计提
+│   ├── portfolio_sip.py           # 定投计划管理
+│   ├── portfolio_wallet.py        # 钱包Plus 虚拟产品
+│   ├── portfolio_providers.py     # 数据源适配器（信银/南银/公募基金）
+│   ├── portfolio_market.py        # 行情数据同步
+│   ├── portfolio_confirmation.py  # 交易确认规则（T+0/T+1）
+│   ├── portfolio_jobs.py          # 定时任务（行情同步/定投/计提）
+│   ├── portfolio_reports.py       # 报告生成（日/周/月/季/年）
+│   ├── portfolio_view.py          # 视图层序列化（看板 payload）
+│   ├── portfolio_migration.py     # 旧版数据迁移（JSON → SQLite）
+│   │ ─── 基础设施 ───
+│   ├── config.py                  # 配置加载与数据类
+│   ├── beijing_time.py            # 北京时间工具
+│   ├── workday_calendar.py        # 工作日历（节假日判断）
+│   └── calendar_updater.py        # 日历自动更新（holiday-cn）
 ```
 
 ## 核心模块详细逻辑
@@ -310,10 +348,10 @@ FORM_SELECTORS = {
 **调度时间（北京时间，可通过企业微信指令动态修改）**：
 - **09:45**：Cookies 有效性检查（`_run_cookies_check`）
   - 检查 Cookies 是否过期，异常时发送企业微信通知
-- **18:00**：日报自动提交（`_run_auto_submit`）
+- **17:56**：日报自动提交（`_run_auto_submit`）
   - 智能表格提取 → OA 提交 → 企业微信通知
   - 提取失败 + cookies 过期 → 企微交互确认（是/否/超时）
-- **18:38**：统计推送（`_run_stats_push`，周日或月末）
+- **18:10**：统计推送（`_run_stats_push`，周日或月末）
   - 周报/月报统计通过企业微信推送
 - **每月1号 04:00**：定时缓存清理（`_run_cache_cleanup`）
   - 清理截图、pycache、日志、系统缓存、验证码失败截图
@@ -405,7 +443,89 @@ FORM_SELECTORS = {
 - `is_today_workday()`：判断今天是否为工作日
 - `get_nearest_workday(day)`：获取 <= 指定日期的最近工作日
 
-### 17. config.py — 配置加载
+### 17. nav_monitor.py — 净值监控
+
+**功能**：查询理财产品净值数据，支持信银理财（citic_wealth）和南银理财（nanyin_wealth）两个数据源，提供按日期和周期（周/月/季/年/滚动区间）的净值查询。
+
+**定时推送**（config.yaml `nav_monitor` 段，可通过企业微信指令修改）：
+- **08:08**：净值早报推送（当日净值 + 涨跌幅图片）
+- **17:30**：净值预估推送（盘中预估收益）
+- **23:30**：净值晚报推送（晚间净值汇总）
+
+**产品配置**（config.yaml）：
+```yaml
+nav_monitor:
+  enabled: true
+  products:
+    - provider: citic_wealth    # 信银理财
+      code: AF233276B
+      name: 慧盈象固收增强一年持有期5号B
+      shares: 478056.94
+    - provider: nanyin_wealth   # 南银理财
+      code: A32069
+      name: 南银理财悦稳最低持有91天3号-B份额
+      shares: 100000.76
+```
+
+**相关模块**：
+- `nav_dashboard.py`：净值看板状态管理（收益记录、快照、自动刷新）
+- `nav_holdings.py`：持仓画像抓取（资产配置比例、前十大持仓）
+- `nav_report_image.py`：净值报告图片生成（PIL 绘制日报/周期报告图片）
+
+### 18. ai_assistant.py — AI 助手
+
+**功能**：集成 LLM 大模型，为企业微信用户提供智能问答、指令路由和系统诊断能力。支持多 provider 热切换（LongCat / DashScope）。
+
+**架构**：
+- `AiAssistant`（总入口）：从环境变量初始化，组合三大子服务
+- `AiChatService`（`ai_chat.py`）：多轮对话管理，按用户维护对话历史（默认10轮）
+- `AiCommandRouter`（`ai_command_router.py`）：自然语言指令分类（read/write/none），识别日报状态、净值查询等标准化指令
+- `DiagnosticAgent`（`ai_diagnostic_agent.py`）：系统诊断代理，采用"规划→工具调用→报告"三阶段流程
+- `DiagnosticToolbox`（`ai_diagnostic_tools.py`）：5个安全诊断工具（定时快照、服务状态、日志搜索、源码搜索、源码读取），内置敏感信息脱敏
+- `longcat_client.py`：LLM 客户端封装（OpenAI 兼容接口，支持 thinking 参数和超时控制）
+
+### 19. portfolio_*.py — 理财组合管理
+
+**功能**：完整的理财产品组合管理系统，提供持仓管理、交易记录、收益计算、定投计划、行情同步等功能，通过 Web 看板和 REST API 对外服务。
+
+**核心模块**：
+
+| 分层 | 模块 | 职责 |
+|------|------|------|
+| 数据层 | `portfolio_db.py` | SQLite 数据库（schema v4，含 products/quotes/transactions/positions/sip_plans 等表） |
+| 数据层 | `portfolio_repository.py` | 数据仓库，封装所有表 CRUD 操作 |
+| 数据层 | `portfolio_models.py` | 数据模型定义（Product/Transaction/Position/SipPlan 等） |
+| 业务层 | `portfolio_positions.py` | 持仓投影（份额/成本计算，支持反转/冲销） |
+| 业务层 | `portfolio_profit.py` | 收益计算（净值型/现金管理型/公募基金） |
+| 业务层 | `portfolio_transactions.py` | 交易服务（申购/赎回/转账/反转，含幂等校验） |
+| 业务层 | `portfolio_income.py` | 现金管理产品收益计提（万份收益 × 已确认份额） |
+| 业务层 | `portfolio_sip.py` | 定投计划管理（创建/暂停/自动扣款） |
+| 业务层 | `portfolio_wallet.py` | 钱包Plus 虚拟产品（固定年化 1.33%） |
+| 行情层 | `portfolio_providers.py` | 数据源适配器（信银/南银/公募基金行情接口） |
+| 行情层 | `portfolio_market.py` | 行情数据同步与验证 |
+| 行情层 | `portfolio_confirmation.py` | 交易确认规则（公募基金 T+1、净值型 T+1、现金管理 T+0） |
+| 调度层 | `portfolio_jobs.py` | 定时任务（每30分钟：同步行情→定投→确认交易→计提收益） |
+| 接口层 | `portfolio_api.py` | Flask Blueprint REST API（写操作限流 30次/分钟） |
+| 视图层 | `portfolio_view.py` | 看板 payload 序列化 |
+| 视图层 | `portfolio_reports.py` | 报告生成（日/周/月/季/年/滚动区间） |
+| 运行时 | `portfolio_runtime.py` | 全局单例，协调 DB/迁移/仓库装配 |
+| 迁移 | `portfolio_migration.py` | 旧版 JSON 状态迁移为 SQLite |
+
+**数据库**：`data/portfolio.db`（SQLite，SCHEMA_VERSION=4），迁移前自动备份到 `data/portfolio-backups/`
+
+### 20. qr_login_renewer.py — 二维码登录续期
+
+**功能**：通过 Playwright 自动化浏览器生成企业微信扫码登录二维码，刷新过期的智能表格 Cookies。
+
+**流程**：打开企业微信扫码页面 → 截取二维码图片 → 通过企业微信发送给用户 → 用户扫码 → 等待登录成功 → 提取新 Cookies → 更新 config.yaml → 验证有效性。
+
+**特性**：子进程隔离执行（超时 210 秒），支持浏览器互斥锁。
+
+### 21. calendar_updater.py — 工作日历自动更新
+
+**功能**：每年12月1日自动从 GitHub [holiday-cn](https://github.com/NateScarlet/holiday-cn) 仓库拉取下一年中国法定节假日数据，更新本地 `config/mainland_workdays.json`。
+
+### 22. config.py — 配置加载
 
 **功能**：从 YAML 配置文件加载配置。
 
@@ -420,15 +540,16 @@ FORM_SELECTORS = {
   - 登录路径、日报路径
   - 默认项目名称
   - 页面超时、元素超时
-	- `CaptchaConfig`：验证码识别配置
-	  - API Key、Base URL、模型名称、识别提示词
-	- `WechatConfig`：企业微信配置（corpid、corpsecret、agentid 等）
-	- `SchedulerConfig`：定时任务配置（各任务的小时/分钟）
-	- `Config`：顶层配置，包含以上所有子配置 + host + port
+- `CaptchaConfig`：验证码识别配置
+  - API Key、Base URL、模型名称、识别提示词
+- `WechatConfig`：企业微信配置（corpid、corpsecret、agentid 等）
+- `SchedulerConfig`：定时任务配置（各任务的小时/分钟）
+- `NavMonitorConfig`：净值监控配置（推送时间、产品列表）
+- `Config`：顶层配置，包含以上所有子配置 + host + port
 
 **安全检查**：配置文件权限不是 600 时输出警告。
 
-### 18. status_page.py — 服务器状态页
+### 23. status_page.py — 服务器状态页
 
 **功能**：服务器状态监控页面（日报发送功能已移除，统一由企业微信指令管理）。
 
@@ -492,16 +613,21 @@ FORM_SELECTORS = {
 ## 定时任务时间线（北京时间，工作日）
 
 ```
+08:08  净值早报推送（nav_monitor → 企业微信图片消息）
+17:30  净值预估推送（nav_monitor → 企业微信图片消息）
+
 09:45  Cookies 有效性检查（scheduler.py → cookies_checker.py）
        ├── Cookies 有效 → 跳过
        └── Cookies 过期 → 企业微信通知 + 启动二维码续期
 
-18:00  日报自动提交（scheduler.py → server.py → report_builder.py → target.py）
+17:56  日报自动提交（scheduler.py → server.py → report_builder.py → target.py）
        ├── 智能表格提取成功 → 提交日报 → 企业微信通知
        ├── 智能表格提取失败(cookies过期) → 企微交互确认(是/否/超时)
        └── 两者都失败 → 企业微信通知
 
-18:38  统计推送（仅周日或月末）→ 企业微信推送周报/月报
+18:10  统计推送（仅周日或月末）→ 企业微信推送周报/月报
+
+23:30  净值晚报推送（nav_monitor → 企业微信图片消息）
 
 04:00  每月1号：定时缓存清理（截图/pycache/日志/系统缓存/验证码失败截图）
 
@@ -520,7 +646,7 @@ FORM_SELECTORS = {
 
 ### 通过 status-page 网页
 ```
-用户访问 http://13.158.229.204 → 登录（完整版密码）
+用户访问 http://8.213.145.226 → 登录（完整版密码）
 → 点击"日报发送"菜单 → 选择日期 → 点击"发送日报"
 → status-page 调用 submit_for_date.py 子进程
 → 智能表格提取 → OA 提交 → 企业微信通知
@@ -770,9 +896,11 @@ pyyaml>=6.0
 playwright>=1.40
 openai>=1.0
 pytest>=7.0
+pycryptodome>=3.20
+pillow>=10.0
+pypdf>=5.0
 ```
 
 额外运行时依赖（可选）：
-- `ddddocr`：本地验证码识别
-- `Pillow`：模板验证码识别
+- `ddddocr`：本地验证码识别（子进程模式，用完即释放）
 - `zoneinfo`（Python 3.9+ 内置）：时区支持
