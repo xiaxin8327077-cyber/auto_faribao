@@ -129,9 +129,8 @@ def test_nav_page_contains_daily_profit_bottom_sheet():
     assert 'id="latestProfitDate"' in html
     assert "最新收益" in html
     assert "最新收益（${" not in html
-    assert 'id="mainDragAmount"' in html
-    assert 'id="mainGainAmount"' in html
-    assert "最新主要拖累" in html
+    assert 'id="mainDragAmount"' not in html
+    assert 'id="mainGainAmount"' not in html
     assert "本月收益贡献排行" in html
     assert "本月无正贡献" in html
     assert "本月无拖累" in html

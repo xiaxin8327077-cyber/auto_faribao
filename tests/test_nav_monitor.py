@@ -1227,22 +1227,29 @@ def test_scheduler_nav_weekly_period_push_rolls_to_first_workday(monkeypatch):
 
 
 def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
-    import src.nav_monitor
+    import src.portfolio_reports
     import src.scheduler
     from src.scheduler import _run_nav_monitor_push
 
     calls = []
 
-    def fake_daily(cfg):
-        calls.append(("daily", None))
-        return "daily"
+    def fake_push(
+        cfg,
+        repository,
+        target_date=None,
+        period=None,
+        holdings_as_of=None,
+        disclosed_on=None,
+        to_user=None,
+    ):
+        if period:
+            calls.append((period, target_date))
+        else:
+            calls.append(("daily", None))
+        return period or "daily"
 
-    def fake_period(cfg, period, base_date, to_user=None):
-        calls.append((period, base_date))
-        return period
-
-    monkeypatch.setattr(src.nav_monitor, "push_nav_report", fake_daily)
-    monkeypatch.setattr(src.nav_monitor, "push_nav_period_report", fake_period)
+    monkeypatch.setattr(src.scheduler, "_require_portfolio_repository", lambda: object())
+    monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fake_push)
     monkeypatch.setattr(
         src.scheduler,
         "_nav_period_push_jobs",
@@ -1259,16 +1266,26 @@ def test_scheduler_nav_push_sends_due_periods_after_daily(monkeypatch):
 
 
 def test_scheduler_nav_evening_push_calls_evening_report(monkeypatch):
-    import src.nav_monitor
+    import src.portfolio_reports
+    import src.scheduler
     from src.scheduler import _run_nav_evening_push
 
     calls = []
 
-    def fake_evening(cfg, as_of_date=None, to_user=None):
-        calls.append((as_of_date, to_user))
+    def fake_evening(
+        cfg,
+        repository,
+        target_date=None,
+        period=None,
+        holdings_as_of=None,
+        disclosed_on=None,
+        to_user=None,
+    ):
+        calls.append((target_date, to_user))
         return "ok"
 
-    monkeypatch.setattr(src.nav_monitor, "push_nav_evening_report", fake_evening)
+    monkeypatch.setattr(src.scheduler, "_require_portfolio_repository", lambda: object())
+    monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fake_evening)
 
     _run_nav_evening_push(
         Config({"wechat": {"to_user": "user1"}}),
@@ -1293,18 +1310,26 @@ def test_scheduler_nav_estimate_runs_on_workday(monkeypatch):
 
 def test_scheduler_nav_estimate_push_updates_profiles_before_estimate(monkeypatch):
     import src.nav_holdings
+    import src.portfolio_reports
+    import src.scheduler
     from src.scheduler import _run_nav_estimate_push
 
     calls = []
 
-    def fake_update(cfg, today=None, notify=False):
+    def fake_update(cfg, today=None, notify=False, products=None):
         calls.append(("update", today, notify))
         return []
 
-    def fake_push(cfg, to_user=None):
+    def fake_push(cfg, to_user=None, products=None):
         calls.append(("estimate", to_user))
         return "ok"
 
+    monkeypatch.setattr(src.scheduler, "_require_portfolio_repository", lambda: object())
+    monkeypatch.setattr(
+        src.portfolio_reports,
+        "list_portfolio_position_products",
+        lambda repository, as_of=None: [],
+    )
     monkeypatch.setattr(src.nav_holdings, "refresh_quarterly_profiles_if_due", fake_update)
     monkeypatch.setattr(src.nav_holdings, "push_estimate_report", fake_push)
 
@@ -1349,17 +1374,19 @@ def test_confirm_add_triggers_background_profile_refresh(monkeypatch, tmp_path):
 
 
 def test_scheduler_nav_push_exception_does_not_notify_report_failure(monkeypatch):
-    import src.nav_monitor
+    import src.portfolio_reports
     import src.notifier
+    import src.scheduler
     from src.scheduler import _run_nav_monitor_push
 
-    def fail_push(cfg):
+    def fail_push(*args, **kwargs):
         raise RuntimeError("nav provider down")
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("notify_report_failure should not be called")
 
-    monkeypatch.setattr(src.nav_monitor, "push_nav_report", fail_push)
+    monkeypatch.setattr(src.scheduler, "_require_portfolio_repository", lambda: object())
+    monkeypatch.setattr(src.portfolio_reports, "push_portfolio_report", fail_push)
     monkeypatch.setattr(src.notifier, "notify_report_failure", fail_if_called)
 
     _run_nav_monitor_push(Config({}))

@@ -23,6 +23,7 @@ from src.portfolio_view import (
     build_portfolio_payload,
     build_product_history_payload,
 )
+from src.portfolio_profit import calculate_holding_profit
 
 
 @pytest.fixture
@@ -185,22 +186,26 @@ def test_product_history_lists_nav_date_change_and_daily_profit_newest_first(
     portfolio_fixture,
 ):
     repository = portfolio_fixture
-    repository.upsert_quote(
-        "wealth",
-        MarketQuote(
-            "AF233276B",
-            date(2026, 7, 29),
-            "official",
-            "wealth-previous",
-            unit_nav=Decimal("1.070"),
-        ),
-        "2026-07-29T10:00:00",
-    )
+    for quote_date, nav, raw_hash in (
+        (date(2026, 8, 3), "1.070", "wealth-previous"),
+        (date(2026, 8, 4), "1.078", "wealth-latest"),
+    ):
+        repository.upsert_quote(
+            "wealth",
+            MarketQuote(
+                "AF233276B",
+                quote_date,
+                "official",
+                raw_hash,
+                unit_nav=Decimal(nav),
+            ),
+            f"{quote_date}T10:00:00",
+        )
 
     payload = build_product_history_payload(
         repository,
         "wealth",
-        as_of=date(2026, 7, 30),
+        as_of=date(2026, 8, 4),
     )
 
     assert payload["product"] == {
@@ -211,16 +216,16 @@ def test_product_history_lists_nav_date_change_and_daily_profit_newest_first(
     }
     assert payload["history"] == [
         {
-            "date": "2026-07-30",
+            "date": "2026-08-04",
             "unit_nav": "1.078",
             "change_pct": "0.7476635514018691588785046729",
             "profit": "0.8",
         },
         {
-            "date": "2026-07-29",
+            "date": "2026-08-03",
             "unit_nav": "1.07",
             "change_pct": None,
-            "profit": None,
+            "profit": "-0.8",
         },
     ]
 
@@ -228,15 +233,42 @@ def test_product_history_lists_nav_date_change_and_daily_profit_newest_first(
 def test_cash_product_history_lists_yield_date_and_recorded_income(
     portfolio_fixture,
 ):
-    payload = build_product_history_payload(
-        portfolio_fixture,
+    repository = portfolio_fixture
+    repository.upsert_quote(
         "cash",
-        as_of=date(2026, 7, 30),
+        MarketQuote(
+            "NYRR000007",
+            date(2026, 8, 4),
+            "official",
+            "cash-august",
+            income_per_10k=Decimal("0.4475"),
+            seven_day_annualized_rate=Decimal("0.016315"),
+        ),
+        "2026-08-04T10:00:00",
+    )
+    repository.create_transaction(
+        Transaction(
+            id="income:cash:2026-08-04",
+            product_id="cash",
+            transaction_type=TransactionType.INCOME_ACCRUAL,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 8, 4),
+            idempotency_key="income:cash:2026-08-04",
+            amount=Decimal("0.4475"),
+            shares=Decimal("0.4475"),
+        )
+    )
+    PositionProjector(repository).rebuild()
+
+    payload = build_product_history_payload(
+        repository,
+        "cash",
+        as_of=date(2026, 8, 4),
     )
 
     assert payload["history"] == [
         {
-            "date": "2026-07-30",
+            "date": "2026-08-04",
             "income_per_10k": "0.4475",
             "seven_day_yield": "0.016315",
             "profit": "0.4475",
@@ -607,8 +639,8 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
             product_id="fund",
             transaction_type=TransactionType.MANUAL_PURCHASE,
             status=TransactionStatus.CONFIRMED,
-            trade_date=date(2026, 7, 29),
-            confirmation_date=date(2026, 7, 30),
+            trade_date=date(2026, 8, 3),
+            confirmation_date=date(2026, 8, 4),
             idempotency_key="manual",
             amount=Decimal("100"),
             shares=Decimal("100"),
@@ -618,8 +650,8 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
             product_id="fund",
             transaction_type=TransactionType.SIP_PURCHASE,
             status=TransactionStatus.CONFIRMED,
-            trade_date=date(2026, 7, 30),
-            confirmation_date=date(2026, 7, 31),
+            trade_date=date(2026, 8, 4),
+            confirmation_date=date(2026, 8, 5),
             idempotency_key="sip",
             amount=Decimal("50"),
             shares=Decimal("50"),
@@ -629,8 +661,8 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
             product_id="fund",
             transaction_type=TransactionType.MANUAL_REDEMPTION,
             status=TransactionStatus.CONFIRMED,
-            trade_date=date(2026, 7, 31),
-            confirmation_date=date(2026, 8, 3),
+            trade_date=date(2026, 8, 5),
+            confirmation_date=date(2026, 8, 6),
             idempotency_key="redeem",
             amount=Decimal("20"),
             shares=Decimal("20"),
@@ -640,8 +672,8 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
             product_id="fund",
             transaction_type=TransactionType.MANUAL_PURCHASE,
             status=TransactionStatus.CONFIRMED,
-            trade_date=date(2026, 8, 4),
-            confirmation_date=date(2026, 8, 4),
+            trade_date=date(2026, 8, 7),
+            confirmation_date=date(2026, 8, 7),
             idempotency_key="same-day-purchase",
             amount=Decimal("13"),
             shares=Decimal("10"),
@@ -651,17 +683,17 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
             product_id="fund",
             transaction_type=TransactionType.MANUAL_REDEMPTION,
             status=TransactionStatus.PENDING_QUOTE,
-            trade_date=date(2026, 8, 4),
+            trade_date=date(2026, 8, 7),
             idempotency_key="pending-redemption",
             shares=Decimal("10"),
         ),
     ):
         repository.create_transaction(transaction)
     for quote_date, nav in (
-        (date(2026, 7, 30), "1.0"),
-        (date(2026, 7, 31), "1.1"),
-        (date(2026, 8, 3), "1.2"),
-        (date(2026, 8, 4), "1.3"),
+        (date(2026, 8, 4), "1.0"),
+        (date(2026, 8, 5), "1.1"),
+        (date(2026, 8, 6), "1.2"),
+        (date(2026, 8, 7), "1.3"),
     ):
         repository.upsert_quote(
             "fund",
@@ -672,26 +704,26 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
                 f"quote:{quote_date}",
                 unit_nav=Decimal(nav),
             ),
-            "2026-08-04T20:00:00",
+            "2026-08-07T20:00:00",
         )
     PositionProjector(repository).rebuild()
 
     sip_confirmation_payload = build_portfolio_payload(
-        repository, as_of=date(2026, 7, 31)
+        repository, as_of=date(2026, 8, 5)
     )
     profit_on_sip_confirmation = sip_confirmation_payload["products"][0][
         "latest_profit"
     ]
     profit_on_redemption_confirmation = build_portfolio_payload(
-        repository, as_of=date(2026, 8, 3)
+        repository, as_of=date(2026, 8, 6)
     )["products"][0]["latest_profit"]
     profit_after_redemption = build_portfolio_payload(
-        repository, as_of=date(2026, 8, 4)
+        repository, as_of=date(2026, 8, 7)
     )["products"][0]["latest_profit"]
 
     assert profit_on_sip_confirmation == "15"
     assert sip_confirmation_payload["products"][0]["holding_profit"] == "15"
-    assert profit_on_redemption_confirmation == "15"
+    assert profit_on_redemption_confirmation == "13"
     assert profit_after_redemption == "13"
 
     service = PortfolioTransactionService(
@@ -701,16 +733,16 @@ def test_public_fund_profit_uses_confirmed_manual_and_sip_shares(tmp_path):
     service.adjust_latest_profit(
         "fund",
         Decimal("7.5"),
-        date(2026, 8, 4),
+        date(2026, 8, 7),
         "校准最新收益",
         "web:latest-profit-consistency",
     )
     calibrated = build_portfolio_payload(
         repository,
-        as_of=date(2026, 8, 4),
+        as_of=date(2026, 8, 7),
     )["products"][0]
     assert calibrated["latest_profit"] == "7.5"
-    assert calibrated["holding_profit"] == "37.5"
+    assert calibrated["holding_profit"] == "35.5"
 
 
 def test_profit_calibration_sets_baseline_then_future_nav_profit_continues(
@@ -736,16 +768,16 @@ def test_profit_calibration_sets_baseline_then_future_nav_profit_continues(
             product_id="fund",
             transaction_type=TransactionType.OPENING_POSITION,
             status=TransactionStatus.CONFIRMED,
-            trade_date=date(2026, 7, 29),
-            confirmation_date=date(2026, 7, 29),
+            trade_date=date(2026, 8, 3),
+            confirmation_date=date(2026, 8, 3),
             idempotency_key="opening:fund",
             amount=Decimal("100"),
             shares=Decimal("100"),
         )
     )
     for quote_date, nav in (
-        (date(2026, 7, 29), "1"),
-        (date(2026, 7, 30), "1.1"),
+        (date(2026, 8, 3), "1"),
+        (date(2026, 8, 4), "1.1"),
     ):
         repository.upsert_quote(
             "fund",
@@ -756,41 +788,49 @@ def test_profit_calibration_sets_baseline_then_future_nav_profit_continues(
                 f"fund:{quote_date}",
                 unit_nav=Decimal(nav),
             ),
-            "2026-07-30T18:00:00+08:00",
+            "2026-08-04T18:00:00+08:00",
         )
     projector.rebuild()
 
     service.adjust_holding_profit(
         "fund",
         Decimal("25"),
-        date(2026, 7, 30),
+        date(2026, 8, 4),
         "平台累计收益校准",
         "web:profit-baseline",
     )
     calibrated_payload = build_portfolio_payload(
         repository,
-        as_of=date(2026, 7, 30),
+        as_of=date(2026, 8, 4),
     )
     calibrated = calibrated_payload["products"][0]
     repository.upsert_quote(
         "fund",
         MarketQuote(
             "003103",
-            date(2026, 7, 31),
+            date(2026, 8, 5),
             "official",
-            "fund:2026-07-31",
+            "fund:2026-08-05",
             unit_nav=Decimal("1.2"),
         ),
-        "2026-07-31T18:00:00+08:00",
+        "2026-08-05T18:00:00+08:00",
     )
     advanced = build_portfolio_payload(
         repository,
-        as_of=date(2026, 7, 31),
+        as_of=date(2026, 8, 5),
     )["products"][0]
 
-    assert calibrated["holding_profit"] == "25"
-    assert calibrated_payload["summary"]["latest_profit"] == "0"
-    assert advanced["holding_profit"] == "35"
+    assert calibrated["holding_profit"] == "10"
+    assert calibrated["latest_profit"] == "10"
+    assert calibrated_payload["summary"]["latest_profit"] == "10"
+    assert advanced["holding_profit"] == "20"
+    assert advanced["latest_profit"] == "10"
+    assert calculate_holding_profit(
+        repository, repository.get_product("fund"), date(2026, 8, 4)
+    ) == Decimal("25")
+    assert calculate_holding_profit(
+        repository, repository.get_product("fund"), date(2026, 8, 5)
+    ) == Decimal("35")
 
 
 def test_sip_view_exposes_fee_rate_in_percent_units(tmp_path):

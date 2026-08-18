@@ -48,7 +48,7 @@ class FakeProvider:
         self.resolve_calls = 0
         self.fetch_calls = []
         self.failure = None
-        self.quote_date = TRADE_DATE
+        self.quote_date = date.today()
 
     def resolve_product(self, code):
         self.resolve_calls += 1
@@ -158,8 +158,8 @@ def test_read_routes_require_private_token_and_return_json(client):
 def test_product_history_route_requires_token_and_returns_daily_rows(api_setup):
     client, _, repository, _ = api_setup
     for quote_date, nav in (
-        (date(2026, 7, 29), "1.00"),
-        (date(2026, 7, 30), "1.01"),
+        (date(2026, 8, 3), "1.00"),
+        (date(2026, 8, 4), "1.01"),
     ):
         repository.upsert_quote(
             "fund",
@@ -181,7 +181,7 @@ def test_product_history_route_requires_token_and_returns_daily_rows(api_setup):
     )
 
     assert response.status_code == 200
-    assert response.get_json()["history"][0]["date"] == "2026-07-30"
+    assert response.get_json()["history"][0]["date"] == "2026-08-04"
 
 
 def test_product_history_route_returns_not_found_for_unknown_product(client):
@@ -711,7 +711,7 @@ def test_product_create_requires_previewed_complete_identity(api_setup):
     assert created.status_code == 201
     product = repository.get_product_by_provider_code("test", "003103")
     assert product is not None
-    assert repository.latest_quote(product.id).quote_date == TRADE_DATE
+    assert repository.latest_quote(product.id).quote_date == date.today()
 
 
 def test_product_create_resolves_again_rejects_identity_drift_and_audits(
@@ -1241,16 +1241,16 @@ def test_latest_profit_adjustment_updates_profits_without_note(api_setup):
             product_id="fund",
             transaction_type=TransactionType.OPENING_POSITION,
             status=TransactionStatus.CONFIRMED,
-            trade_date=date(2026, 7, 29),
-            confirmation_date=date(2026, 7, 29),
+            trade_date=date(2026, 8, 3),
+            confirmation_date=date(2026, 8, 3),
             idempotency_key="opening:fund",
             amount=Decimal("100"),
             shares=Decimal("100"),
         )
     )
     for quote_date, nav in (
-        (date(2026, 7, 29), "1"),
-        (date(2026, 7, 30), "1.1"),
+        (date(2026, 8, 3), "1"),
+        (date(2026, 8, 4), "1.1"),
     ):
         repository.upsert_quote(
             "fund",
@@ -1276,7 +1276,7 @@ def test_latest_profit_adjustment_updates_profits_without_note(api_setup):
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["preview"]["latest_profit_date"] == "2026-07-30"
+    assert payload["preview"]["latest_profit_date"] == "2026-08-04"
     assert payload["preview"]["current_latest_profit"] == "10"
     assert payload["preview"]["profit_difference"] == "-2.5"
     assert payload["transaction"]["transaction_type"] == (

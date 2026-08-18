@@ -570,9 +570,11 @@ def test_calibration_transactions_have_an_exclusive_filter():
 
 def test_top_metrics_unchanged():
     page = _read_page()
-    assert "总资产(元)" in page
-    assert "估算市值(元)" in page
-    assert "今日披露" in page
+    assert "总资产" in page
+    assert "估算市值" in page
+    assert "最新披露" in page
+    assert "总资产(元)" not in page
+    assert "今日披露" not in page
 
 
 def format_holding(share_text, nav_text):
