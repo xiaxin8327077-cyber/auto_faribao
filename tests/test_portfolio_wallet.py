@@ -18,8 +18,10 @@ from src.portfolio_repository import PortfolioRepository
 from src.portfolio_wallet import (
     WALLET_CODE,
     WALLET_PRODUCT_ID,
+    WALLET_PROVIDER,
     WalletPlusProvider,
     consolidate_cash_products,
+    is_wallet_plus_product,
 )
 
 
@@ -58,7 +60,8 @@ def _add_cash(repository, product_id, amount):
     )
 
 
-def test_wallet_provider_returns_fixed_yield_on_trading_days_only():
+def test_wallet_provider_returns_fixed_yield_for_every_calendar_day():
+    """现金产品含周末：周六日也有万份收益行情。"""
     provider = get_market_provider("wallet_plus")
 
     assert isinstance(provider, WalletPlusProvider)
@@ -68,6 +71,8 @@ def test_wallet_provider_returns_fixed_yield_on_trading_days_only():
     assert product.name == "钱包Plus"
     assert product.product_type is ProductType.CASH_MANAGEMENT
     assert [quote.quote_date for quote in quotes] == [
+        date(2026, 8, 2),
+        date(2026, 8, 1),
         DAY,
         date(2026, 7, 30),
     ]
@@ -75,6 +80,27 @@ def test_wallet_provider_returns_fixed_yield_on_trading_days_only():
     assert {quote.seven_day_annualized_rate for quote in quotes} == {
         Decimal("0.0133")
     }
+
+
+def test_wallet_plus_product_helper_matches_provider_only():
+    wallet = Product(
+        id="wallet",
+        provider=WALLET_PROVIDER,
+        code=WALLET_CODE,
+        name="钱包Plus",
+        product_type=ProductType.CASH_MANAGEMENT,
+    )
+    other_cash = Product(
+        id="cash",
+        provider="test",
+        code="cash",
+        name="现金",
+        product_type=ProductType.CASH_MANAGEMENT,
+    )
+
+    assert is_wallet_plus_product(wallet) is True
+    assert is_wallet_plus_product(other_cash) is False
+    assert is_wallet_plus_product(None) is False
 
 
 def test_cash_consolidation_moves_balances_and_sip_source_once(tmp_path):
@@ -129,22 +155,25 @@ def test_cash_consolidation_moves_balances_and_sip_source_once(tmp_path):
     ) == 3
 
 
-def test_cash_consolidation_succeeds_on_non_trading_day_without_quote(tmp_path):
+def test_cash_consolidation_succeeds_on_weekend_and_writes_yesterday_quote(tmp_path):
     repository = _repository(tmp_path)
     _add_cash(repository, "cash-a", "100")
     saturday = date(2026, 8, 1)
+    friday = date(2026, 7, 31)
 
     result = consolidate_cash_products(repository, saturday)
 
     assert result.migrated_balance == Decimal("100")
     assert repository.require_product(WALLET_PRODUCT_ID).status is ProductStatus.ACTIVE
+    # 周末启动也只写到昨天，不写当天。
     assert repository.get_quote(WALLET_PRODUCT_ID, saturday) is None
+    assert repository.get_quote(WALLET_PRODUCT_ID, friday) is not None
     assert PositionProjector(repository).calculate(
         WALLET_PRODUCT_ID
     ).total_shares == Decimal("100")
 
 
-def test_repeat_cash_consolidation_on_non_trading_day_does_not_require_quote(
+def test_repeat_cash_consolidation_on_weekend_keeps_yesterday_quote(
     tmp_path,
 ):
     repository = _repository(tmp_path)

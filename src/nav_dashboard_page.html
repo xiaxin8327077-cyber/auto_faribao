@@ -1267,6 +1267,9 @@
         });
       });
     }
+    function todayDateStr() {
+      return new Date().toLocaleDateString('en-CA', {timeZone: 'Asia/Shanghai'});
+    }
     // 判断产品是否应隐藏(已清仓且到账日已过)
     // 注意:旧系统产品没有 portfolio 数据,默认不过滤
     function isClearedAndSettled(productId, positions, transactions) {
@@ -1289,7 +1292,7 @@
       const latest = txns.sort((a, b) => String(rowValue(b, 'confirmation_date', 'trade_date')).localeCompare(String(rowValue(a, 'confirmation_date', 'trade_date'))))[0];
       const settleDate = rowValue(latest, 'settlement_date', 'settlement_date', 'confirmation_date');
       if (!settleDate) return true;
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayDateStr();
       return settleDate < today;
     }
     function renderPositions() {
@@ -1309,7 +1312,7 @@
       const groups = ['wealth_nav', 'cash_management', 'public_fund'];
       const list = $('positionsList');
       // 在途资金提示(区分申购和赎回)
-      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayStr = todayDateStr();
       const inTransitBuy = transactions.filter(t => {
         const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
         return normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('purchase');
@@ -1317,7 +1320,7 @@
       const inTransitSell = transactions.filter(t => {
         const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
         const settleDate = rowValue(t, 'settlement_date');
-        return normalStatus(rowValue(t, 'status')) === 'confirmed' && type.includes('redemption') && settleDate && settleDate >= todayStr;
+        return normalStatus(rowValue(t, 'status')) === 'confirmed' && type.includes('redemption') && settleDate && settleDate > todayStr;
       }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
       const inTransitText = [
         inTransitBuy > 0 ? `申购在途 ${money(inTransitBuy)} 元` : '',
@@ -1428,8 +1431,12 @@
       const incomeStop = rowValue(row, 'income_stop_date');
       const note = rowValue(row, 'note');
       const settlementDate = rowValue(row, 'settlement_date', 'settlement_date');
-      const todayStr = new Date().toISOString().slice(0, 10);
-      const notSettled = settlementDate && settlementDate >= todayStr;
+      const todayStr = todayDateStr();
+      const status = normalStatus(rowValue(row, 'status'));
+      const notSettled = settlementDate && (
+        settlementDate > todayStr
+        || (settlementDate === todayStr && status !== 'confirmed')
+      );
       const add = (label, value, full = false) => {
         if (value === '') return;
         details.push(`<div class="transaction-detail${full ? ' full' : ''}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`);
@@ -1688,13 +1695,13 @@
       countUp($('totalAssets'), holdingsValue + pendingBuy - pendingSell, v => money(roundCent(v)), 600);
       countUp($('marketValue'), holdingsValue, v => money(roundCent(v)), 600);
       // 在途资金:区分申购和赎回
-      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayStr = todayDateStr();
       const inTransitBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase'))
         .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
       const inTransitSell = pfTxList.filter(t => {
         const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
         const settleDate = rowValue(t, 'settlement_date');
-        return normalStatus(rowValue(t, 'status')) === 'confirmed' && type.includes('redemption') && settleDate && settleDate >= todayStr;
+        return normalStatus(rowValue(t, 'status')) === 'confirmed' && type.includes('redemption') && settleDate && settleDate > todayStr;
       }).reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
       const inTransitText = [
         inTransitBuy > 0 ? `申购在途 ${money(inTransitBuy)} 元` : '',
@@ -1729,7 +1736,7 @@
         const unsettledRedemptionAmount = pfTxList.filter(t => {
           const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
           const settleDate = rowValue(t, 'settlement_date');
-          return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'confirmed' && type.includes('redemption') && settleDate && settleDate >= todayStr;
+          return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'confirmed' && type.includes('redemption') && settleDate && settleDate > todayStr;
         }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
         const inTransitText = [
           pendingBuyAmt > 0 ? `申购在途 ${money(pendingBuyAmt)} 元` : '',

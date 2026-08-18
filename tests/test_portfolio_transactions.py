@@ -1469,6 +1469,80 @@ def test_adjustment_services_allow_reason_to_be_omitted(services):
     assert latest_profit_adjustment.note == ""
 
 
+def test_cash_latest_profit_adjustment_updates_shares_and_market_value(services):
+    """现金最新收益校准差额应计入份额（金额=份额），从而改变持仓市值/总资产。"""
+    from src.portfolio_view import build_portfolio_payload
+
+    repository, transactions, projector = services
+    seed_cash(repository, "cash", "10000")
+    repository.create_transaction(
+        Transaction(
+            id="income:cash:latest",
+            product_id="cash",
+            transaction_type=TransactionType.INCOME_ACCRUAL,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=TRADE_DATE,
+            confirmation_date=TRADE_DATE,
+            idempotency_key="income:cash:latest",
+            amount=Decimal("3.146"),
+            shares=Decimal("3.146"),
+            confirmation_nav=Decimal("1"),
+        )
+    )
+    projector.rebuild("cash")
+    before = build_portfolio_payload(repository, as_of=TRADE_DATE)
+    cash_before = next(row for row in before["products"] if row["id"] == "cash")
+    assert cash_before["latest_profit"] == "3.146"
+    assert cash_before["shares"] == "10003.146"
+    assert cash_before["market_value"] == "10003.146"
+
+    adjustment = transactions.adjust_latest_profit(
+        "cash",
+        Decimal("9.44"),
+        TRADE_DATE,
+        "校准最新收益",
+        "web:cash-latest-profit-shares",
+    )
+
+    assert adjustment.amount == Decimal("6.294")
+    assert adjustment.shares == Decimal("6.294")
+    after = build_portfolio_payload(repository, as_of=TRADE_DATE)
+    cash_after = next(row for row in after["products"] if row["id"] == "cash")
+    assert cash_after["latest_profit"] == "9.44"
+    assert cash_after["shares"] == "10009.44"
+    assert cash_after["market_value"] == "10009.44"
+    assert after["summary"]["market_value"] == "10009.44"
+
+
+def test_nav_latest_profit_adjustment_does_not_change_shares(services):
+    """净值产品校准最新收益只改收益展示，不改份额/市值。"""
+    from src.portfolio_view import build_portfolio_payload
+
+    repository, transactions, projector = services
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_opening_position(repository, "fund", "100")
+    seed_quote(repository, fund, date(2026, 7, 29), Decimal("1"))
+    seed_quote(repository, fund, TRADE_DATE, Decimal("1.1"))
+    projector.rebuild("fund")
+    before = build_portfolio_payload(repository, as_of=TRADE_DATE)
+    fund_before = next(row for row in before["products"] if row["id"] == "fund")
+
+    adjustment = transactions.adjust_latest_profit(
+        "fund",
+        Decimal("7.5"),
+        TRADE_DATE,
+        "校准最新收益",
+        "web:fund-latest-profit-no-shares",
+    )
+
+    assert adjustment.shares == Decimal("0")
+    after = build_portfolio_payload(repository, as_of=TRADE_DATE)
+    fund_after = next(row for row in after["products"] if row["id"] == "fund")
+    assert fund_after["latest_profit"] == "7.5"
+    assert fund_after["shares"] == fund_before["shares"]
+    assert fund_after["market_value"] == fund_before["market_value"]
+
+
 def test_adjust_holding_retry_rejects_corrupt_cost_payload(services):
     repository, transactions, _ = services
     seed_cash(repository, "cash", "1000")
@@ -2409,6 +2483,82 @@ def test_cash_purchase_does_not_earn_until_day_after_confirmation(services):
     next_day = income.accrue("wallet", date(2026, 8, 3))
     assert next_day is not None
     assert next_day.amount == Decimal("0.75005000125")
+
+
+def test_wallet_plus_redemption_confirms_immediately_on_trade_date(services):
+    """钱包Plus 赎回当天到账，不能按申购规则挂到 T+1。"""
+    from src.portfolio_wallet import WALLET_PROVIDER
+
+    repository, transactions, projector = services
+    repository.add_product(
+        Product(
+            id="wallet",
+            provider=WALLET_PROVIDER,
+            code="WALLETPLUS",
+            name="钱包Plus",
+            product_type=ProductType.CASH_MANAGEMENT,
+        )
+    )
+    seed_opening_position(repository, "wallet", "1000")
+    seed_cash(repository, "destination", "10")
+
+    redemption = transactions.record_redemption(
+        "wallet",
+        Decimal("400"),
+        date(2026, 8, 18),
+        "web:wallet-plus-instant-redemption",
+        destination_cash_product_id="destination",
+        trade_time="2026-08-18T10:54:00",
+    )
+
+    cash_leg = linked_leg(repository, redemption)
+    assert redemption.status is TransactionStatus.CONFIRMED
+    assert redemption.confirmation_date == date(2026, 8, 18)
+    assert redemption.settlement_date == date(2026, 8, 18)
+    assert cash_leg.status is TransactionStatus.CONFIRMED
+    assert cash_leg.confirmation_date == date(2026, 8, 18)
+    assert projector.calculate("wallet").total_shares == Decimal("600")
+    assert projector.calculate("wallet").locked_shares == Decimal("0")
+    assert projector.calculate("destination").total_shares == Decimal("410")
+
+
+def test_pending_wallet_plus_redemption_settles_on_trade_date(services):
+    """历史上已挂起的钱包Plus 赎回，交易日当天就应确认到账。"""
+    from src.portfolio_wallet import WALLET_PROVIDER
+
+    repository, transactions, projector = services
+    repository.add_product(
+        Product(
+            id="wallet",
+            provider=WALLET_PROVIDER,
+            code="WALLETPLUS",
+            name="钱包Plus",
+            product_type=ProductType.CASH_MANAGEMENT,
+        )
+    )
+    seed_opening_position(repository, "wallet", "1000")
+    pending = Transaction(
+        id="pending-wallet-redemption",
+        product_id="wallet",
+        transaction_type=TransactionType.MANUAL_REDEMPTION,
+        status=TransactionStatus.PENDING_CONFIRMATION,
+        trade_date=date(2026, 8, 18),
+        idempotency_key="pending-wallet-redemption",
+        trade_time="2026-08-18T10:54:00",
+        amount=Decimal("400"),
+        shares=Decimal("400"),
+        confirmation_nav=Decimal("1"),
+        settlement_date=date(2026, 8, 18),
+    )
+    repository.create_transaction(pending)
+    projector.rebuild("wallet")
+
+    assert transactions.settle_pending(date(2026, 8, 18))[0].status is (
+        TransactionStatus.CONFIRMED
+    )
+    settled = repository.get_transaction_by_id(pending.id)
+    assert settled.confirmation_date == date(2026, 8, 18)
+    assert projector.calculate("wallet").total_shares == Decimal("600")
 
 
 def test_purchase_rejects_same_cash_product_as_source(services):

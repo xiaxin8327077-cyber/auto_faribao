@@ -818,6 +818,7 @@ def _portfolio_daily_profit_totals(repository, as_of: date) -> dict:
                 repository,
                 product,
                 quote_date,
+                bundle_non_trading_days=False,
             )
             if profit_date == quote_date and profit is not None:
                 totals[quote_date.isoformat()] += profit
@@ -923,7 +924,12 @@ def _apply_portfolio_rankings(payload, repository, portfolio, as_of) -> None:
             if quote.quote_date in seen_dates:
                 continue
             seen_dates.add(quote.quote_date)
-            pd, profit = calculate_latest_profit(repository, repo_product, quote.quote_date)
+            pd, profit = calculate_latest_profit(
+                repository,
+                repo_product,
+                quote.quote_date,
+                bundle_non_trading_days=False,
+            )
             if pd == quote.quote_date and profit is not None:
                 total += profit
         if total != 0:

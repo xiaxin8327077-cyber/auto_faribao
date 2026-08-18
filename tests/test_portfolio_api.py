@@ -491,6 +491,55 @@ def test_transaction_preview_normalizes_server_side_values(client):
     assert "warning" in preview
 
 
+def test_wallet_plus_redemption_preview_confirms_same_day(api_setup):
+    from src.portfolio_wallet import WALLET_CODE, WALLET_NAME, WALLET_PROVIDER
+
+    client, _, repository, _ = api_setup
+    repository.add_product(
+        Product(
+            id="wallet",
+            provider=WALLET_PROVIDER,
+            code=WALLET_CODE,
+            name=WALLET_NAME,
+            product_type=ProductType.CASH_MANAGEMENT,
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="opening:wallet",
+            product_id="wallet",
+            transaction_type=TransactionType.OPENING_POSITION,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 1),
+            idempotency_key="opening:wallet",
+            amount=Decimal("1000"),
+            shares=Decimal("1000"),
+            confirmation_nav=Decimal("1"),
+            confirmation_date=date(2026, 7, 1),
+        )
+    )
+    PositionProjector(repository).rebuild("wallet")
+
+    response = client.post(
+        "/api/portfolio/transactions/preview",
+        headers=write_headers(idem="preview-wallet-plus-redemption"),
+        json={
+            "kind": "redemption",
+            "product_id": "wallet",
+            "shares": "400",
+            "trade_time": "2026-08-18T10:54:00",
+        },
+    )
+
+    assert response.status_code == 200
+    preview = response.get_json()["preview"]
+    assert preview["status_prediction"] == "confirmed"
+    assert preview["normalized_input"]["trade_date"] == "2026-08-18"
+    assert preview["normalized_input"]["settlement_date"] == "2026-08-18"
+    assert preview["normalized_input"]["expected_confirmation_date"] == "2026-08-18"
+    assert preview["warning"] == ""
+
+
 def test_transaction_preview_uses_entered_time_for_cutoff_and_confirmation(
     client,
 ):

@@ -16,16 +16,17 @@ from src.portfolio_models import (
     TransactionType,
 )
 from src.portfolio_positions import PositionProjector
-from src.portfolio_confirmation import (
-    MissingTradingCalendarError,
-    is_trading_day,
-)
+from src.portfolio_confirmation import MissingTradingCalendarError
 
 
 WALLET_PRODUCT_ID = "wallet-plus"
 WALLET_PROVIDER = "wallet_plus"
 WALLET_CODE = "WALLETPLUS"
 WALLET_NAME = "钱包Plus"
+
+
+def is_wallet_plus_product(product) -> bool:
+    return getattr(product, "provider", None) == WALLET_PROVIDER
 WALLET_ANNUALIZED_RATE = Decimal("0.0133")
 WALLET_INCOME_PER_10K = Decimal("0.3644")
 _MIGRATION_AUDIT_ID = str(
@@ -34,28 +35,39 @@ _MIGRATION_AUDIT_ID = str(
 
 
 def previous_wallet_income_date(as_of: date) -> date:
-    """Wallet books the previous trading day's income when as_of runs."""
-    previous = as_of - timedelta(days=1)
-    for _ in range(14):
-        try:
-            if is_trading_day(previous):
-                return previous
-        except MissingTradingCalendarError:
-            return previous
-        previous -= timedelta(days=1)
+    """Cash books through the previous calendar day; never books today."""
     return as_of - timedelta(days=1)
 
 
+def cash_income_dates_to_accrue(as_of: date, lookback_days: int = 14) -> list[date]:
+    """Catch up cash income through yesterday (inclusive).
+
+    On Monday this covers Friday, Saturday and Sunday — e.g. on 2026-08-10
+    the window ends at 2026-08-09 (周日收益), not Monday itself.
+    """
+    if lookback_days < 0:
+        raise ValueError("lookback_days must be non-negative")
+    end = as_of - timedelta(days=1)
+    start = end - timedelta(days=lookback_days)
+    dates = []
+    current = start
+    while current <= end:
+        dates.append(current)
+        current += timedelta(days=1)
+    return dates
+
+
 def wallet_quote_sync_end_date(day: date, now=None, cfg=None) -> date:
-    """Never synthesize today's wallet quote; keep quotes through prior income day."""
+    """Sync wallet quotes through yesterday inclusive (weekends included)."""
     from src.beijing_time import now as beijing_now
 
     current = now or beijing_now()
     if getattr(current, "tzinfo", None) is not None:
         current = current.replace(tzinfo=None)
-    if day >= current.date():
-        return previous_wallet_income_date(current.date())
-    return day
+    end = previous_wallet_income_date(current.date())
+    if day < end:
+        return day
+    return end
 
 
 class WalletPlusProvider:
@@ -90,9 +102,6 @@ class WalletPlusProvider:
         quotes = []
         current = start_date
         while current <= end_date:
-            if not is_trading_day(current):
-                current += timedelta(days=1)
-                continue
             raw = {
                 "annualized_rate": str(WALLET_ANNUALIZED_RATE),
                 "income_per_10k": str(WALLET_INCOME_PER_10K),
@@ -152,7 +161,7 @@ def consolidate_cash_products(
             (_MIGRATION_AUDIT_ID,),
         ).fetchone()
         if existing_audit is not None:
-            # 已合并后的重复启动只保证前一交易日行情存在，绝不写入当天行情。
+            # 已合并后的重复启动：补齐至昨日（含周末）行情，删除当日及未来行情。
             quote_day = previous_wallet_income_date(effective_date)
             _upsert_wallet_quote(repository, quote_day, conn)
             conn.execute(
@@ -282,7 +291,11 @@ def consolidate_cash_products(
                 conn=conn,
             )
 
-        _upsert_wallet_quote(repository, effective_date, conn)
+        _upsert_wallet_quote(
+            repository,
+            previous_wallet_income_date(effective_date),
+            conn,
+        )
 
         repository.append_audit(
             _MIGRATION_AUDIT_ID,

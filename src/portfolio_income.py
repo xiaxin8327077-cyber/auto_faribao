@@ -8,10 +8,6 @@ from src.portfolio_models import (
     TransactionStatus,
     TransactionType,
 )
-from src.portfolio_confirmation import (
-    MissingTradingCalendarError,
-    is_trading_day,
-)
 from src.portfolio_wallet import WALLET_PROVIDER, previous_wallet_income_date
 
 
@@ -34,15 +30,10 @@ class CashIncomeService:
                 raise ValueError("product must be cash_management")
             is_wallet = product.provider == WALLET_PROVIDER
             if is_wallet:
-                # 钱包Plus：当天只记前一交易日收益，不记账当日。
+                # 钱包Plus：只记到昨天（含周末），不记账当日。
+                # 周一补齐周五、周六、周日，最新一笔是昨天（如 8/9）。
                 today = beijing_now().date()
                 if quote_date >= today:
-                    return None
-                try:
-                    trading_day = is_trading_day(quote_date)
-                except MissingTradingCalendarError:
-                    return None
-                if not trading_day:
                     return None
 
             existing = self.repository.get_transaction_by_idempotency(
@@ -76,8 +67,8 @@ class CashIncomeService:
                 return None
 
             # 现金：已确认份额（含当日确认）计息，确认日当天起息。
-            # 钱包Plus：按收益日前一交易日已确认份额计息（T+1 确认后，
-            # 确认日当天的万份收益仍不含当日新确认份额）。
+            # 钱包Plus：按收益日前一自然日已确认份额计息（T+1 确认后，
+            # 确认日当天的万份收益仍不含当日新确认份额）；周末也计息。
             shares_as_of = (
                 previous_wallet_income_date(quote_date)
                 if is_wallet

@@ -10,6 +10,7 @@ from src.portfolio_models import (
 )
 from src.portfolio_confirmation import confirmation_schedule
 from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
+from src.portfolio_wallet import is_wallet_plus_product
 
 
 _ZERO = Decimal("0")
@@ -96,6 +97,7 @@ def build_product_history_payload(repository, product_id, as_of=None) -> dict:
             repository,
             product,
             quote.quote_date,
+            bundle_non_trading_days=False,
         )
         daily_profit = profit if profit_date == quote.quote_date else None
         if product.product_type is ProductType.CASH_MANAGEMENT:
@@ -194,7 +196,12 @@ def _product_row(repository, product, as_of):
     for quote in repository.list_quotes(product.id, on_or_before=as_of):
         if quote.quote_date < date(2026, 8, 1):
             continue
-        pd, profit = calculate_latest_profit(repository, product, quote.quote_date)
+        pd, profit = calculate_latest_profit(
+            repository,
+            product,
+            quote.quote_date,
+            bundle_non_trading_days=False,
+        )
         if pd == quote.quote_date and profit is not None:
             holding_profit += profit
     row = {
@@ -357,20 +364,19 @@ def _summary(products, profit_history, as_of, repository=None):
     cumulative_profit = sum(
         (Decimal(row.get("holding_profit") or "0") for row in products), _ZERO
     )
-    daily_profit_history = [
-        row
-        for row in profit_history
-        if row.get("source") != "ledger_cumulative_adjustment"
-    ]
+    # 最新收益：取各产品 latest_profit（现金含周末合并披露）在全局最新日期上的合计
     latest_date = max(
-        (row["date"] for row in daily_profit_history),
+        (row.get("latest_profit_date") or "" for row in products),
         default="",
     )
     latest_profit = sum(
         (
-            Decimal(row["amount"])
-            for row in daily_profit_history
-            if row["date"] == latest_date
+            Decimal(row["latest_profit"])
+            for row in products
+            if (
+                row.get("latest_profit_date") == latest_date
+                and row.get("latest_profit") not in (None, "")
+            )
         ),
         _ZERO,
     )
@@ -403,7 +409,16 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
         products_by_id.get(linked.product_id) if linked is not None else None
     )
     expected_confirmation_date = transaction.confirmation_date
-    if (
+    wallet_plus_redemption = (
+        product is not None
+        and is_wallet_plus_product(product)
+        and transaction.transaction_type is TransactionType.MANUAL_REDEMPTION
+    )
+    if wallet_plus_redemption and expected_confirmation_date is None:
+        expected_confirmation_date = (
+            transaction.settlement_date or transaction.trade_date
+        )
+    elif (
         expected_confirmation_date is None
         and product is not None
         and transaction.transaction_type

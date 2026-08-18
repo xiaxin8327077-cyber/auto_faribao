@@ -163,8 +163,20 @@ def calculate_holding_profit(
     return profit
 
 
-def calculate_latest_profit(repository, product, as_of: date, conn=None):
-    """Return the product's latest disclosed profit date and adjusted amount."""
+def calculate_latest_profit(
+    repository,
+    product,
+    as_of: date,
+    conn=None,
+    *,
+    bundle_non_trading_days: bool = True,
+):
+    """Return the product's latest disclosed profit date and adjusted amount.
+
+    For cash products, weekend income is disclosed together: when the latest
+    income day is Sunday, the amount is Fri+Sat+Sun (仍标注为周日日期).
+    Pass bundle_non_trading_days=False for per-day history / cumulative sums.
+    """
     transactions = repository.list_transactions(
         product_id=product.id,
         conn=conn,
@@ -183,6 +195,9 @@ def calculate_latest_profit(repository, product, as_of: date, conn=None):
         if not income_dates:
             return None, None
         profit_date = max(income_dates)
+        start_date = profit_date
+        if bundle_non_trading_days:
+            start_date = _last_trading_day_on_or_before(profit_date)
         profit = sum(
             (
                 transaction.amount or ZERO
@@ -194,7 +209,7 @@ def calculate_latest_profit(repository, product, as_of: date, conn=None):
                         TransactionType.INCOME_ACCRUAL,
                         TransactionType.LATEST_PROFIT_ADJUSTMENT,
                     }
-                    and transaction.trade_date == profit_date
+                    and start_date <= transaction.trade_date <= profit_date
                 )
             ),
             ZERO,
@@ -239,3 +254,20 @@ def calculate_latest_profit(repository, product, as_of: date, conn=None):
         latest.quote_date,
         shares * (latest.unit_nav - previous.unit_nav) + adjustment,
     )
+
+
+def _last_trading_day_on_or_before(day: date) -> date:
+    from src.portfolio_confirmation import (
+        MissingTradingCalendarError,
+        is_trading_day,
+    )
+
+    cursor = day
+    for _ in range(14):
+        try:
+            if is_trading_day(cursor):
+                return cursor
+        except MissingTradingCalendarError:
+            return cursor
+        cursor -= timedelta(days=1)
+    return day

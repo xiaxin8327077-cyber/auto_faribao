@@ -449,6 +449,9 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert 'class="manage-card transaction-card ${kind.className}"' in page
     assert 'class="transaction-head-actions"' in page
     assert "function transactionDetailsHtml(" in page
+    assert "function todayDateStr()" in page
+    assert "settlementDate > todayStr" in page
+    assert "timeZone: 'Asia/Shanghai'" in page
 
 
 def test_trade_form_applies_wallet_plus_rules_and_redemption_context():
@@ -461,6 +464,7 @@ def test_trade_form_applies_wallet_plus_rules_and_redemption_context():
     assert "function updateTradeRedemptionContext()" in page
     assert "`可用份额 ${money(availableShares)}`" in page
     assert "settlementInput.value = tradeDateFromInput();" in page
+    assert "settleDate && settleDate > todayStr" in page
     assert "const fixedCashPurchase = !redemption && productType === 'cash_management';" in page
     assert "$('tradeProduct').value = rowValue(walletPlus, 'id', 'product_id') || '';" in page
     assert "fillTradeCashOptions(fixedCashPurchase ? walletPlusId : '', walletRedemption ? selectedProductId : '');" in page

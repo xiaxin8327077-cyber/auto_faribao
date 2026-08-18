@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 import threading
 
@@ -218,9 +218,8 @@ def test_purchase_earns_from_day_after_wallet_confirmation(
     assert earn_day.amount == Decimal("0.75005000125")
 
 
-def test_cash_income_skips_non_trading_day_even_with_a_fixed_quote(
-    income_services,
-):
+def test_wallet_income_accrues_on_weekend(income_services):
+    """现金产品周末也计提收益。"""
     repository, projector, income = income_services
     seed_cash(repository, "cash", "10000", provider="wallet_plus")
     saturday = date(2026, 8, 1)
@@ -228,11 +227,86 @@ def test_cash_income_skips_non_trading_day_even_with_a_fixed_quote(
 
     result = income.accrue("cash", saturday)
 
-    assert result is None
-    assert repository.get_transaction_by_idempotency(
-        "income:cash:2026-08-01"
-    ) is None
-    assert projector.calculate("cash").total_shares == Decimal("10000")
+    assert result is not None
+    assert result.amount == Decimal("0.5")
+    assert projector.calculate("cash").total_shares == Decimal("10000.5")
+
+
+def test_cash_income_dates_to_accrue_covers_fri_sat_sun_on_monday():
+    """周一（如 8/10）补齐到昨天：周五、周六、周日（最新为 8/9）。"""
+    from src.portfolio_wallet import cash_income_dates_to_accrue
+
+    assert cash_income_dates_to_accrue(date(2026, 8, 10), lookback_days=2) == [
+        date(2026, 8, 7),
+        date(2026, 8, 8),
+        date(2026, 8, 9),
+    ]
+
+
+def test_wallet_monday_accrues_friday_saturday_sunday(income_services, monkeypatch):
+    """周一连续计提时，周五、周六、周日三天都应入账，不含周一。"""
+    from datetime import datetime
+
+    repository, projector, income = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    for day in (date(2026, 8, 7), date(2026, 8, 8), date(2026, 8, 9)):
+        seed_quote(repository, "cash", day, "0.5")
+    monkeypatch.setattr(
+        "src.portfolio_income.beijing_now",
+        lambda: datetime(2026, 8, 10, 9, 0),
+    )
+    from src.portfolio_wallet import cash_income_dates_to_accrue
+
+    booked = []
+    for target in cash_income_dates_to_accrue(date(2026, 8, 10), lookback_days=2):
+        result = income.accrue("cash", target)
+        assert result is not None
+        booked.append((target, result.amount))
+
+    assert [day for day, _ in booked] == [
+        date(2026, 8, 7),
+        date(2026, 8, 8),
+        date(2026, 8, 9),
+    ]
+    assert income.accrue("cash", date(2026, 8, 10)) is None
+    assert booked[0][1] == Decimal("0.5")
+    assert booked[1][1] == Decimal("0.500025")
+    assert booked[2][1] == Decimal("0.50005000125")
+    assert projector.calculate("cash").total_shares == Decimal("10001.50007500125")
+
+
+def test_cash_latest_profit_bundles_friday_saturday_sunday(income_services, monkeypatch):
+    """最新收益在周一应显示周五+周六+周日合计，日期仍为周日。"""
+    from datetime import datetime
+    from src.portfolio_profit import calculate_latest_profit
+    from src.portfolio_wallet import cash_income_dates_to_accrue
+
+    repository, projector, income = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    for day in (date(2026, 8, 7), date(2026, 8, 8), date(2026, 8, 9)):
+        seed_quote(repository, "cash", day, "0.5")
+    monkeypatch.setattr(
+        "src.portfolio_income.beijing_now",
+        lambda: datetime(2026, 8, 10, 9, 0),
+    )
+    for target in cash_income_dates_to_accrue(date(2026, 8, 10), lookback_days=2):
+        income.accrue("cash", target)
+
+    product = repository.require_product("cash")
+    profit_date, profit = calculate_latest_profit(
+        repository, product, date(2026, 8, 10)
+    )
+    assert profit_date == date(2026, 8, 9)
+    assert profit == Decimal("1.50007500125")
+
+    single_date, single = calculate_latest_profit(
+        repository,
+        product,
+        date(2026, 8, 9),
+        bundle_non_trading_days=False,
+    )
+    assert single_date == date(2026, 8, 9)
+    assert single == Decimal("0.50005000125")
 
 
 def test_future_pending_cash_out_does_not_reduce_earlier_income(
@@ -258,6 +332,40 @@ def test_future_pending_cash_out_does_not_reduce_earlier_income(
     result = income.accrue("cash", INCOME_DATE)
 
     assert result.amount == Decimal("0.5")
+
+
+def test_wallet_plus_redemption_stops_earning_after_trade_date(
+    income_services,
+    monkeypatch,
+):
+    """钱包Plus 赎回当天到账后，次日收益不能再按赎回前份额计息。"""
+    from src.portfolio_transactions import PortfolioTransactionService
+    from src.portfolio_wallet import WALLET_PROVIDER
+
+    repository, projector, income = income_services
+    seed_cash(repository, "wallet", "10000", provider=WALLET_PROVIDER)
+    transactions = PortfolioTransactionService(repository, projector)
+    transactions.record_redemption(
+        "wallet",
+        Decimal("4000"),
+        date(2026, 8, 18),
+        "web:wallet-plus-redemption-income",
+        trade_time="2026-08-18T10:54:00",
+    )
+    seed_quote(repository, "wallet", date(2026, 8, 18), "0.5")
+    seed_quote(repository, "wallet", date(2026, 8, 19), "0.5")
+    monkeypatch.setattr(
+        "src.portfolio_income.beijing_now",
+        lambda: datetime(2026, 8, 20, 9, 0),
+    )
+
+    trade_day = income.accrue("wallet", date(2026, 8, 18))
+    next_day = income.accrue("wallet", date(2026, 8, 19))
+
+    assert trade_day.amount == Decimal("0.5")
+    assert next_day.amount == Decimal("0.300025")
+    assert projector.calculate("wallet").total_shares == Decimal("6000.800025")
+    assert projector.calculate("wallet").locked_shares == Decimal("0")
 
 
 def test_duplicate_accrual_returns_existing_event(income_services):

@@ -15,6 +15,7 @@ SHARE_DIRECTION = {
     TransactionType.SIP_PURCHASE: Decimal("1"),
     TransactionType.CASH_TRANSFER_IN: Decimal("1"),
     TransactionType.INCOME_ACCRUAL: Decimal("1"),
+    TransactionType.LATEST_PROFIT_ADJUSTMENT: Decimal("1"),
     TransactionType.HOLDING_ADJUSTMENT: Decimal("1"),
     TransactionType.MANUAL_REDEMPTION: Decimal("-1"),
     TransactionType.CASH_TRANSFER_OUT: Decimal("-1"),
@@ -39,6 +40,7 @@ _COST_ADDITION_TYPES = {
     TransactionType.SIP_PURCHASE,
     TransactionType.CASH_TRANSFER_IN,
     TransactionType.INCOME_ACCRUAL,
+    TransactionType.LATEST_PROFIT_ADJUSTMENT,
 }
 _AVERAGE_COST_OUTFLOW_TYPES = {
     TransactionType.MANUAL_REDEMPTION,
@@ -99,8 +101,14 @@ class PositionProjector:
             if transaction.transaction_type in {
                 TransactionType.CASH_DIVIDEND,
                 TransactionType.PROFIT_ADJUSTMENT,
-                TransactionType.LATEST_PROFIT_ADJUSTMENT,
             }:
+                continue
+            # 净值产品的最新收益校准 shares=0，仅改展示；现金校准有非零份额。
+            if (
+                transaction.transaction_type
+                is TransactionType.LATEST_PROFIT_ADJUSTMENT
+                and shares == ZERO
+            ):
                 continue
 
             share_delta = (

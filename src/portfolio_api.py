@@ -35,6 +35,7 @@ from src.portfolio_positions import PositionProjector
 from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
 from src.portfolio_sip import SipService
 from src.portfolio_transactions import PortfolioTransactionService
+from src.portfolio_wallet import is_wallet_plus_product
 
 
 _WRITE_LIMIT = 30
@@ -688,9 +689,12 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             if product.product_type is ProductType.CASH_MANAGEMENT
             else (quote.unit_nav if quote is not None else None)
         )
+        wallet_plus_redemption = (
+            kind == "redemption" and is_wallet_plus_product(product)
+        )
         status = (
             "confirmed"
-            if nav is not None and schedule is None
+            if nav is not None and (schedule is None or wallet_plus_redemption)
             else "pending_confirmation"
             if nav is not None
             else "pending_quote"
@@ -805,11 +809,16 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         elif settlement_date is not None:
             normalized["settlement_date"] = settlement_date.isoformat()
         if schedule is not None:
+            expected_confirmation = (
+                trade_date
+                if wallet_plus_redemption
+                else schedule.confirmation_date
+            )
             normalized.update(
                 {
                     "trade_time": normalized_trade_time,
                     "expected_confirmation_date": (
-                        schedule.confirmation_date.isoformat()
+                        expected_confirmation.isoformat()
                     ),
                 }
             )

@@ -94,7 +94,11 @@ class PortfolioTransactionService:
                     raise ValueError("insufficient available shares")
 
             status, nav = self._status_and_nav(
-                product, trade_date, conn, trade_time=trade_time
+                product,
+                trade_date,
+                conn,
+                trade_time=trade_time,
+                transaction_type=TransactionType.MANUAL_PURCHASE,
             )
             fee_amount = amount * fee_rate if nav is not None else None
             shares = None
@@ -248,7 +252,11 @@ class PortfolioTransactionService:
                 raise ValueError("insufficient available shares")
 
             status, nav = self._status_and_nav(
-                product, trade_date, conn, trade_time=trade_time
+                product,
+                trade_date,
+                conn,
+                trade_time=trade_time,
+                transaction_type=TransactionType.MANUAL_REDEMPTION,
             )
             amount = shares * nav if nav is not None else None
             if amount is not None:
@@ -1205,6 +1213,12 @@ class PortfolioTransactionService:
             if current_profit is None:
                 raise ValueError("product has no latest disclosed profit")
             difference = actual_profit - current_profit
+            # 现金产品：收益即份额变动（金额=份额）。净值产品只改收益展示。
+            shares = (
+                difference
+                if product.product_type is ProductType.CASH_MANAGEMENT
+                else ZERO
+            )
             adjustment = Transaction(
                 id=str(uuid4()),
                 product_id=product_id,
@@ -1213,13 +1227,15 @@ class PortfolioTransactionService:
                 trade_date=latest_profit_date,
                 idempotency_key=idempotency_key,
                 amount=difference,
-                shares=ZERO,
+                shares=shares,
                 confirmation_date=latest_profit_date,
                 note=reason,
                 created_by=actor,
                 trade_time=datetime.now().strftime("%H:%M:%S"),
             )
             self.repository.create_transaction(adjustment, conn)
+            if shares != ZERO:
+                self._rebuild_positions({product_id}, conn)
             self._append_operation_audit(
                 idempotency_key,
                 "adjust_latest_profit",
@@ -1993,12 +2009,24 @@ class PortfolioTransactionService:
             )
         self._require_consistent_link(transaction, conn)
 
-    def _status_and_nav(self, product, trade_date, conn, trade_time=""):
+    def _status_and_nav(
+        self,
+        product,
+        trade_date,
+        conn,
+        trade_time="",
+        transaction_type=None,
+    ):
         if product.product_type is ProductType.CASH_MANAGEMENT:
-            from src.portfolio_wallet import WALLET_PROVIDER
+            from src.portfolio_wallet import is_wallet_plus_product
 
-            # 钱包Plus：始终 T+1 确认。其他现金产品保留原“有 trade_time 才挂起”行为。
-            if product.provider == WALLET_PROVIDER or trade_time:
+            # 钱包Plus 赎回当天到账；申购仍始终 T+1。其他现金保留“有 trade_time 才挂起”。
+            if (
+                is_wallet_plus_product(product)
+                and transaction_type is TransactionType.MANUAL_REDEMPTION
+            ):
+                return TransactionStatus.CONFIRMED, ONE
+            if is_wallet_plus_product(product) or trade_time:
                 return TransactionStatus.PENDING_CONFIRMATION, ONE
             return TransactionStatus.CONFIRMED, ONE
         quote = self.repository.get_quote(product.id, trade_date, conn=conn)
@@ -2030,10 +2058,15 @@ class PortfolioTransactionService:
         trade_time,
         trade_date,
     ):
-        from src.portfolio_wallet import WALLET_PROVIDER
+        from src.portfolio_wallet import is_wallet_plus_product
 
+        if (
+            is_wallet_plus_product(product)
+            and transaction_type is TransactionType.MANUAL_REDEMPTION
+        ):
+            return trade_date
         if not trade_time:
-            if product.provider == WALLET_PROVIDER:
+            if is_wallet_plus_product(product):
                 submitted = datetime.combine(trade_date, time(12, 0))
                 return confirmation_schedule(
                     product,

@@ -313,6 +313,115 @@ def test_external_cash_route_is_named_wallet(portfolio_fixture):
     assert rows[redemption.id]["redemption_destination"] == "钱包"
 
 
+def test_wallet_plus_redemption_dates_use_same_day_arrival_and_income_stop(
+    tmp_path,
+):
+    """钱包Plus 赎回的预计确认、到账、收益停止必须是同一天，不能到账日 T+0、停息 T+1。"""
+    from src.portfolio_wallet import WALLET_PROVIDER
+
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    repository.add_product(
+        Product(
+            id="wallet",
+            provider=WALLET_PROVIDER,
+            code="WALLETPLUS",
+            name="钱包Plus",
+            product_type=ProductType.CASH_MANAGEMENT,
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="opening:wallet",
+            product_id="wallet",
+            transaction_type=TransactionType.OPENING_POSITION,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 1),
+            idempotency_key="opening:wallet",
+            amount=Decimal("1000"),
+            shares=Decimal("1000"),
+            confirmation_nav=Decimal("1"),
+            confirmation_date=date(2026, 7, 1),
+        )
+    )
+    PositionProjector(repository).rebuild("wallet")
+    service = PortfolioTransactionService(
+        repository,
+        PositionProjector(repository),
+    )
+    redemption = service.record_redemption(
+        "wallet",
+        Decimal("400"),
+        date(2026, 8, 18),
+        "web:wallet-plus-redemption-dates",
+        trade_time="2026-08-18T10:54:00",
+    )
+
+    row = next(
+        item
+        for item in build_portfolio_payload(
+            repository,
+            as_of=date(2026, 8, 18),
+        )["transactions"]
+        if item["id"] == redemption.id
+    )
+
+    assert row["trade_date"] == "2026-08-18"
+    assert row["settlement_date"] == "2026-08-18"
+    assert row["expected_confirmation_date"] == "2026-08-18"
+    assert row["income_stop_date"] == "2026-08-18"
+    assert row["confirmation_date"] == "2026-08-18"
+
+
+def test_pending_wallet_plus_redemption_view_does_not_show_t1_income_stop(
+    tmp_path,
+):
+    """已挂起的钱包Plus 赎回，看板也不能把收益停止显示成确认日次日。"""
+    from src.portfolio_wallet import WALLET_PROVIDER
+
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    repository.add_product(
+        Product(
+            id="wallet",
+            provider=WALLET_PROVIDER,
+            code="WALLETPLUS",
+            name="钱包Plus",
+            product_type=ProductType.CASH_MANAGEMENT,
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="pending-wallet-redemption",
+            product_id="wallet",
+            transaction_type=TransactionType.MANUAL_REDEMPTION,
+            status=TransactionStatus.PENDING_CONFIRMATION,
+            trade_date=date(2026, 8, 18),
+            idempotency_key="pending-wallet-redemption",
+            trade_time="2026-08-18T10:54:00",
+            amount=Decimal("400"),
+            shares=Decimal("400"),
+            confirmation_nav=Decimal("1"),
+            settlement_date=date(2026, 8, 18),
+        )
+    )
+
+    row = next(
+        item
+        for item in build_portfolio_payload(
+            repository,
+            as_of=date(2026, 8, 18),
+        )["transactions"]
+        if item["id"] == "pending-wallet-redemption"
+    )
+
+    assert row["settlement_date"] == "2026-08-18"
+    assert row["expected_confirmation_date"] == "2026-08-18"
+    assert row["income_stop_date"] == "2026-08-18"
+
+
 def test_position_row_shows_available_shares_and_pending_purchase_amount(
     portfolio_fixture,
 ):

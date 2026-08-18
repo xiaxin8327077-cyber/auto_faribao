@@ -85,7 +85,11 @@ def build_portfolio_jobs(runtime, strict=False):
     sync_service = QuoteSyncService(repository, get_market_provider)
 
     def sync_quotes(day):
-        from src.portfolio_wallet import WALLET_PROVIDER, wallet_quote_sync_end_date
+        from src.portfolio_wallet import (
+            WALLET_PROVIDER,
+            cash_income_dates_to_accrue,
+            wallet_quote_sync_end_date,
+        )
 
         synced = 0
         for product in repository.list_products(active_only=True):
@@ -97,12 +101,15 @@ def build_portfolio_jobs(runtime, strict=False):
                 registration_code=product.registration_code,
                 metadata=_product_metadata(product),
             )
-            end_date = day
             if product.provider == WALLET_PROVIDER:
                 end_date = wallet_quote_sync_end_date(day)
+                start_date = cash_income_dates_to_accrue(day)[0]
+            else:
+                end_date = day
+                start_date = day - timedelta(days=1)
             try:
                 quotes = sync_service.sync_product(
-                    market_product, day - timedelta(days=1), end_date
+                    market_product, start_date, end_date
                 )
             except Exception:
                 logger.error(
@@ -155,30 +162,33 @@ def build_portfolio_jobs(runtime, strict=False):
     def accrue_income(day):
         from src.portfolio_wallet import (
             WALLET_PROVIDER,
-            previous_wallet_income_date,
+            cash_income_dates_to_accrue,
         )
 
         accrued = 0
         for product in repository.list_products(active_only=True):
             if product.product_type is not ProductType.CASH_MANAGEMENT:
                 continue
-            target_day = day
             if product.provider == WALLET_PROVIDER:
-                # 当天只更新前一交易日收益。
-                target_day = previous_wallet_income_date(day)
-            try:
-                result = income_service.accrue(product.id, target_day)
-            except Exception:
-                logger.error(
-                    "Portfolio income accrual failed for %s",
-                    product.code,
-                    exc_info=True,
-                )
-                if strict:
-                    raise
-                continue
-            if result is not None:
-                accrued += 1
+                # 现金含周末：补齐至昨天。周一即补周五、周六、周日。
+                target_days = cash_income_dates_to_accrue(day)
+            else:
+                target_days = [day]
+            for target_day in target_days:
+                try:
+                    result = income_service.accrue(product.id, target_day)
+                except Exception:
+                    logger.error(
+                        "Portfolio income accrual failed for %s on %s",
+                        product.code,
+                        target_day.isoformat(),
+                        exc_info=True,
+                    )
+                    if strict:
+                        raise
+                    continue
+                if result is not None:
+                    accrued += 1
         return accrued
 
     return PortfolioJobs(sync_quotes, create_intents, settle_pending, accrue_income)
