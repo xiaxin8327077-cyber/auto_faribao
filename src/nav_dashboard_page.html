@@ -287,8 +287,8 @@
     }
     .daily-profit-row.expanded .profit-row-chevron { transform: rotate(90deg); }
     .daily-profit-products { padding: 0 0 8px 22px; }
-    .daily-profit-product { display: grid; grid-template-columns: 1fr auto; align-items: center; min-height: 36px; }
-    .daily-profit-product-name { color: var(--muted); font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .daily-profit-product { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; min-height: 36px; padding: 6px 0; }
+    .daily-profit-product-name { color: var(--muted); font-size: 12px; font-weight: 700; line-height: 1.35; white-space: normal; overflow: visible; }
     .daily-profit-product .daily-profit-amount { font-size: 12px; }
     .daily-profit-date { color: var(--text); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
     .daily-profit-amount { font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; }
@@ -1606,7 +1606,7 @@
           ? `<button class="daily-profit-row${expanded ? ' expanded' : ''}" type="button" data-profit-row-key="${esc(key)}" aria-expanded="${expanded}">${rowInner}</button>`
           : `<div class="daily-profit-row">${rowInner}</div>`;
         const children = expanded
-          ? `<div class="daily-profit-products">${products.map(product => `<div class="daily-profit-product"><span class="daily-profit-product-name">${esc(shortName(product.name || product.code))}</span><span class="daily-profit-amount ${tone(product.amount)}">${signedMoney(product.amount)} 元</span></div>`).join('')}</div>`
+          ? `<div class="daily-profit-products">${products.map(product => `<div class="daily-profit-product"><span class="daily-profit-product-name">${esc(product.name || product.code)}</span><span class="daily-profit-amount ${tone(product.amount)}">${signedMoney(product.amount)} 元</span></div>`).join('')}</div>`
           : '';
         return `<div class="daily-profit-group">${row}${children}</div>`;
       }).join('') : '<div class="empty">暂无收益明细</div>';

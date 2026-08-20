@@ -664,6 +664,18 @@ def test_profit_sheet_expands_one_period_row_at_a_time():
     assert "const expandable = products.length > 0;" in html
 
 
+def test_profit_product_rows_use_full_product_name():
+    html = _read_page()
+    marker = 'class="daily-profit-product-name">'
+    snippet = html[html.index(marker): html.index(marker) + 120]
+    assert "${esc(product.name || product.code)}" in snippet
+    assert "shortName(" not in snippet
+    name_css_start = html.index(".daily-profit-product-name")
+    name_css = html[name_css_start:name_css_start + 280]
+    assert "white-space: nowrap" not in name_css
+    assert "white-space: normal" in name_css
+
+
 def test_profit_sheet_clears_expanded_row_on_tab_change_and_close():
     html = _read_page()
     assert "function setProfitView(view)" in html
