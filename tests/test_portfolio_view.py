@@ -957,6 +957,21 @@ def test_sip_view_exposes_effective_cash_deduction_count_and_amount(
         )
     repository.create_transaction(
         Transaction(
+            id="sip-two",
+            product_id="fund",
+            transaction_type=TransactionType.SIP_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 30),
+            confirmation_date=date(2026, 7, 30),
+            idempotency_key="sip-two",
+            amount=Decimal("30"),
+            shares=Decimal("18.5"),
+            linked_transaction_id="cash-out-two",
+            plan_id="plan-with-deductions",
+        )
+    )
+    repository.create_transaction(
+        Transaction(
             id="cash-out-refunded",
             product_id="cash",
             transaction_type=TransactionType.CASH_TRANSFER_OUT,
@@ -997,6 +1012,20 @@ def test_sip_view_exposes_effective_cash_deduction_count_and_amount(
 
     assert plan["deduction_count"] == 2
     assert plan["deduction_amount"] == "50"
+    assert plan["records"] == [
+        {
+            "date": "2026-07-30",
+            "amount": "30",
+            "status": "confirmed",
+            "shares": "18.5",
+        },
+        {
+            "date": "2026-07-30",
+            "amount": "20",
+            "status": "confirmed",
+            "shares": None,
+        },
+    ]
 
 
 def test_sip_view_does_not_count_legacy_locked_cash_as_deducted(
@@ -1067,3 +1096,4 @@ def test_sip_view_does_not_count_legacy_locked_cash_as_deducted(
 
     assert plan["deduction_count"] == 0
     assert plan["deduction_amount"] == "0"
+    assert plan["records"] == []

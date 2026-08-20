@@ -294,6 +294,18 @@
     .daily-profit-amount { font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; }
     .daily-profit-amount.positive { color: var(--positive); }
     .daily-profit-amount.negative { color: var(--negative); }
+    .sip-record-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 2px 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .sip-record-row:last-child { border-bottom: 0; }
+    .sip-record-date { color: var(--text); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .sip-record-amount { color: var(--text); font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
+    .sip-record-status { color: var(--muted); font-size: 11px; font-weight: 650; }
+    .sip-record-shares { color: var(--muted); font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; }
     .management-tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; display: grid; grid-template-columns: repeat(4, 1fr); background: var(--panel); border-top: 1px solid var(--line); }
     .management-tab-indicator { display: none; }
     .management-tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 54px; padding: 8px 0 calc(6px + env(safe-area-inset-bottom)); border: 0; background: transparent; color: var(--muted); font-size: 11px; font-weight: 700; cursor: pointer; transition: color .15s ease; }
@@ -580,6 +592,23 @@
       </div>
       <div class="daily-profit-columns"><span id="profitPeriodColumn">净值日期</span><span id="profitAmountColumn">当日收益</span></div>
       <div class="daily-profit-list" id="dailyProfitList" role="tabpanel" aria-labelledby="dailyProfitTab"><div class="empty">暂无收益明细</div></div>
+    </section>
+  </div>
+
+  <div class="sheet-backdrop" id="sipRecordBackdrop" hidden>
+    <section class="bottom-sheet profit-page" id="sipRecordSheet" role="dialog" aria-modal="true" aria-labelledby="sipRecordTitle">
+      <header class="sheet-head">
+        <button class="icon-button sheet-close" id="sipRecordClose" type="button" title="返回" aria-label="返回定投">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+        </button>
+        <h2 id="sipRecordTitle">定投记录</h2>
+      </header>
+      <div class="sheet-summary">
+        <div><div class="sheet-summary-label" id="sipRecordProductName">定投计划</div><div class="sheet-summary-total" id="sipRecordTotal">-- 元</div></div>
+        <div class="sheet-period" id="sipRecordCount">已扣款 0 次</div>
+      </div>
+      <div class="daily-profit-columns"><span>扣款日</span><span>金额 / 份额</span></div>
+      <div class="daily-profit-list" id="sipRecordList"><div class="empty">暂无定投记录</div></div>
     </section>
   </div>
 
@@ -1525,10 +1554,11 @@
               : '';
         const edit = `<button class="row-action" type="button" data-write-operation="sip-edit" data-sip-id="${esc(id)}">修改计划</button>`;
         const remove = `<button class="row-action" type="button" data-write-operation="sip-delete" data-sip-id="${esc(id)}">删除计划</button>`;
+        const records = `<button class="row-action" type="button" data-view-sip-records="${esc(id)}">定投记录</button>`;
         const statusLabel = ({draft: '草稿', active: '执行中', paused: '已暂停'})[status] || status;
         const deductionCount = number(rowValue(row, 'deduction_count'));
         const deductionAmount = rowValue(row, 'deduction_amount') || 0;
-        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${money(rowValue(row, 'amount', 'daily_amount') || 0)} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'purchase_fee_rate_percent') || '--')}%</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div><div class="manage-stat"><span>${esc(`已扣款 ${deductionCount} 次`)}</span><b>${esc(`${money(deductionAmount)} 元`)}</b></div></div><div class="row-actions">${edit}${controls}${remove}</div></article>`;
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${money(rowValue(row, 'amount', 'daily_amount') || 0)} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'purchase_fee_rate_percent') || '--')}%</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div><div class="manage-stat"><span>${esc(`已扣款 ${deductionCount} 次`)}</span><b>${esc(`${money(deductionAmount)} 元`)}</b></div></div><div class="row-actions">${edit}${controls}${remove}${records}</div></article>`;
       }).join('') : '<div class="empty">暂无定投计划。</div>';
       updateWriteControls();
     }
@@ -1621,11 +1651,15 @@
       expandedProfitKey = '';
       renderDailyProfits();
     }
+    function updateSheetLock() {
+      const open = !$('dailyProfitBackdrop').hidden || !$('sipRecordBackdrop').hidden;
+      document.body.classList.toggle('sheet-open', open);
+    }
     function openDailyProfits() {
       activeProfitView = 'daily';
       $('dailyProfitBackdrop').hidden = false;
       $('cumulativeProfitTrigger').setAttribute('aria-expanded', 'true');
-      document.body.classList.add('sheet-open');
+      updateSheetLock();
       renderDailyProfits();
       $('dailyProfitClose').focus();
     }
@@ -1634,8 +1668,29 @@
       expandedProfitKey = '';
       $('dailyProfitBackdrop').hidden = true;
       $('cumulativeProfitTrigger').setAttribute('aria-expanded', 'false');
-      document.body.classList.remove('sheet-open');
+      updateSheetLock();
       $('cumulativeProfitTrigger').focus();
+    }
+    function openSipRecords(planId) {
+      const plan = portfolioRows('sip_plans', portfolioRows('sips', [])).find(row => (
+        String(rowValue(row, 'id', 'sip_id')) === String(planId)
+      ));
+      const records = Array.isArray(plan?.records) ? plan.records : [];
+      $('sipRecordProductName').textContent = rowValue(plan, 'product_name', 'name') || '定投计划';
+      $('sipRecordTotal').textContent = `${money(rowValue(plan, 'deduction_amount') || 0)} 元`;
+      $('sipRecordCount').textContent = `已扣款 ${number(rowValue(plan, 'deduction_count'))} 次`;
+      $('sipRecordList').innerHTML = records.length ? records.map(record => {
+        const shares = rowValue(record, 'shares');
+        return `<div class="sip-record-row"><span class="sip-record-date">${esc(rowValue(record, 'date') || '--')}</span><span class="sip-record-amount">${esc(money(rowValue(record, 'amount')))} 元</span><span class="sip-record-status">${transactionStatusLabel(rowValue(record, 'status'))}</span><span class="sip-record-shares">${shares === '' ? '--' : `${esc(money(shares))} 份`}</span></div>`;
+      }).join('') : '<div class="empty">暂无定投记录</div>';
+      $('sipRecordBackdrop').hidden = false;
+      updateSheetLock();
+      $('sipRecordClose').focus();
+    }
+    function closeSipRecords() {
+      if ($('sipRecordBackdrop').hidden) return;
+      $('sipRecordBackdrop').hidden = true;
+      updateSheetLock();
     }
     function parseDashboardTime(value) {
       const parsed = value ? new Date(value).getTime() : 0;
@@ -2081,6 +2136,7 @@
       if (!state.writeEnabled) return;
       const form = $('tradeForm');
       form.reset();
+      form.dataset.prefillProductId = String(productId || '');
       const selectedProduct = portfolioRows('products', []).find(row => (
         String(rowValue(row, 'id', 'product_id', 'code')) === String(productId)
       ));
@@ -2174,7 +2230,8 @@
     }
     function fillHoldingProducts() {
       const select = $('tradeHoldingProduct');
-      const selectedId = select.value;
+      const form = $('tradeForm');
+      const preferredId = String(select.value || form.dataset.prefillProductId || '');
       const positions = portfolioRows('positions', []);
       const products = portfolioRows('products', []);
       const options = positions.filter(p => Number(rowValue(p, 'total_shares', 'shares')) > 0).map(p => {
@@ -2183,7 +2240,7 @@
         return `<option value="${esc(pid)}">${esc(rowValue(product, 'name', 'code') || '未命名')} (${rowValue(p, 'code', pid)})</option>`;
       });
       select.innerHTML = '<option value="">请选择持仓产品</option>' + options.join('');
-      if ([...select.options].some(option => option.value === selectedId)) select.value = selectedId;
+      if ([...select.options].some(option => option.value === preferredId)) select.value = preferredId;
     }
     function openSip(sipId = '') {
       if (!state.writeEnabled) return;
@@ -2464,6 +2521,7 @@
     }
     $('cumulativeProfitTrigger').addEventListener('click', openDailyProfits);
     $('dailyProfitClose').addEventListener('click', closeDailyProfits);
+    $('sipRecordClose').addEventListener('click', closeSipRecords);
     $('dailyProfitList').addEventListener('click', event => {
       const button = event.target.closest('[data-profit-row-key]');
       if (!button) return;
@@ -2543,6 +2601,11 @@
       if (!view) return;
       openProductDetail(view.dataset.viewProduct);
     });
+    document.addEventListener('click', event => {
+      const view = event.target.closest('[data-view-sip-records]');
+      if (!view) return;
+      openSipRecords(view.dataset.viewSipRecords);
+    });
     $('tradeForm').addEventListener('submit', async event => {
       event.preventDefault();
       try {
@@ -2600,8 +2663,16 @@
     $('dailyProfitBackdrop').addEventListener('click', event => {
       if (event.target === $('dailyProfitBackdrop')) closeDailyProfits();
     });
+    $('sipRecordBackdrop').addEventListener('click', event => {
+      if (event.target === $('sipRecordBackdrop')) closeSipRecords();
+    });
     window.addEventListener('keydown', event => {
-      if (event.key === 'Escape') closeDailyProfits();
+      if (event.key !== 'Escape') return;
+      if (!$('sipRecordBackdrop').hidden) {
+        closeSipRecords();
+        return;
+      }
+      closeDailyProfits();
     });
     window.addEventListener('hashchange', () => location.reload());
     window.addEventListener('resize', () => setActiveTab(state.activeTab));

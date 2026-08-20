@@ -430,6 +430,13 @@ def test_trade_form_filters_products_and_shows_type_specific_fields():
     assert "pending[1] === 'external_cash' ? '钱包'" in page
 
 
+def test_redemption_preselects_holding_product_opened_from_positions():
+    page = _read_page()
+    assert "form.dataset.prefillProductId = String(productId || '');" in page
+    assert "const preferredId = String(select.value || form.dataset.prefillProductId || '');" in page
+    assert "if ([...select.options].some(option => option.value === preferredId)) select.value = preferredId;" in page
+
+
 def test_transactions_and_preview_use_chinese_business_labels():
     page = _read_page()
     assert "function transactionTypeLabel(value)" in page
@@ -483,6 +490,26 @@ def test_sip_card_shows_deduction_count_and_amount_in_fourth_stat():
     assert "`${money(deductionAmount)} 元`" in page
     assert "rowValue(row, 'deduction_count')" in page
     assert "rowValue(row, 'deduction_amount')" in page
+
+
+def test_sip_card_opens_full_page_deduction_records():
+    page = _read_page()
+    assert ">定投记录<" in page
+    assert 'data-view-sip-records="${esc(id)}"' in page
+    assert 'id="sipRecordBackdrop"' in page
+    assert 'id="sipRecordTitle">定投记录<' in page
+    assert 'aria-label="返回定投"' in page
+    assert "function openSipRecords(planId)" in page
+    assert "function closeSipRecords()" in page
+    assert "const records = Array.isArray(plan?.records) ? plan.records : [];" in page
+    assert "`已扣款 ${number(rowValue(plan, 'deduction_count'))} 次`" in page
+    assert "暂无定投记录" in page
+    assert "class=\"sip-record-row\"" in page
+    assert "transactionStatusLabel(rowValue(record, 'status'))" in page
+    assert "openSipRecords(view.dataset.viewSipRecords)" in page
+    assert "if (event.key !== 'Escape') return;" in page
+    assert "if (!$('sipRecordBackdrop').hidden)" in page
+    assert "data-write-operation=\"sip-records\"" not in page
 
 
 def test_transaction_cards_visually_distinguish_purchase_and_redemption():

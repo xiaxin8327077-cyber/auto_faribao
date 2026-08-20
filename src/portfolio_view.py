@@ -504,6 +504,38 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
     return row
 
 
+def _sip_purchase_for_deduction(deduction, transactions):
+    for transaction in transactions:
+        if transaction.transaction_type is not TransactionType.SIP_PURCHASE:
+            continue
+        if transaction.linked_transaction_id == deduction.id:
+            return transaction
+        if deduction.linked_transaction_id == transaction.id:
+            return transaction
+    return None
+
+
+def _sip_plan_records(deductions, transactions):
+    records = []
+    for deduction in sorted(
+        deductions,
+        key=lambda row: (row.trade_date.isoformat(), row.id),
+        reverse=True,
+    ):
+        purchase = _sip_purchase_for_deduction(deduction, transactions)
+        status = purchase.status if purchase is not None else deduction.status
+        shares = purchase.shares if purchase is not None else None
+        records.append(
+            {
+                "date": deduction.trade_date.isoformat(),
+                "amount": decimal_text(deduction.amount or _ZERO),
+                "status": status.value,
+                "shares": _optional_decimal_text(shares),
+            }
+        )
+    return records
+
+
 def _sip_plan_row(repository, plan, products_by_id):
     product = products_by_id.get(plan.product_id)
     source = products_by_id.get(plan.source_cash_product_id)
@@ -583,6 +615,7 @@ def _sip_plan_row(repository, plan, products_by_id):
         "deduction_amount": decimal_text(
             sum((row.amount or Decimal("0") for row in deductions), Decimal("0"))
         ),
+        "records": _sip_plan_records(deductions, transactions),
         "skip_reason": "",
     }
 
