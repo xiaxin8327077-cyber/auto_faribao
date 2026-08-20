@@ -116,7 +116,10 @@ def test_nav_page_contains_daily_profit_bottom_sheet():
     assert 'aria-controls="dailyProfitSheet"' in html
     assert 'id="dailyProfitSheet"' in html
     assert 'id="dailyProfitList"' in html
-    assert "每日收益明细" in html
+    assert "收益明细" in html
+    assert "每日收益明细" not in html
+    assert "profit-page" in html
+    assert 'aria-label="返回总览"' in html
     assert 'id="dailyProfitTab"' in html
     assert 'id="monthlyProfitTab"' in html
     assert 'id="yearlyProfitTab"' in html

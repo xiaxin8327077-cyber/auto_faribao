@@ -664,6 +664,20 @@ def test_profit_sheet_expands_one_period_row_at_a_time():
     assert "const expandable = products.length > 0;" in html
 
 
+def test_profit_detail_opens_as_full_page_not_bottom_sheet():
+    html = _read_page()
+    sheet = html[html.index(".bottom-sheet"): html.index(".bottom-sheet") + 420]
+    assert "height: 100%" in sheet
+    assert "max-height: 70vh" not in html[html.index(".bottom-sheet"): html.index("@keyframes")]
+    assert 'id="dailyProfitTitle">收益明细<' in html
+    assert 'aria-label="返回总览"' in html
+    assert "sheet-handle" not in html
+    backdrop = html[html.index(".sheet-backdrop {"): html.index(".sheet-backdrop[hidden]")]
+    assert "z-index: 200" in backdrop
+    list_css = html[html.index(".daily-profit-list"): html.index(".daily-profit-list") + 220]
+    assert "max-height: none" in list_css
+
+
 def test_profit_product_rows_use_full_product_name():
     html = _read_page()
     marker = 'class="daily-profit-product-name">'
