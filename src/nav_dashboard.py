@@ -823,13 +823,12 @@ def _product_breakdown_rows(amounts_by_id, products_by_id) -> list:
     return rows
 
 
-def _portfolio_daily_profit_totals(repository, as_of: date) -> dict:
-    """Rebuild per-day profits from ledger quotes / income (all products)."""
+def _portfolio_daily_product_profits(repository, as_of: date) -> dict:
     from collections import defaultdict
 
     from src.portfolio_profit import calculate_latest_profit
 
-    totals = defaultdict(lambda: Decimal("0"))
+    daily = defaultdict(dict)
     for product in repository.list_products(active_only=True):
         quote_dates = sorted(
             {
@@ -848,8 +847,21 @@ def _portfolio_daily_profit_totals(repository, as_of: date) -> dict:
                 bundle_non_trading_days=False,
             )
             if profit_date == quote_date and profit is not None:
-                totals[quote_date.isoformat()] += profit
-    return dict(totals)
+                day = quote_date.isoformat()
+                daily[day][product.id] = (
+                    daily[day].get(product.id, Decimal("0")) + profit
+                )
+    return dict(daily)
+
+
+def _portfolio_daily_profit_totals(repository, as_of: date) -> dict:
+    """Rebuild per-day profits from ledger quotes / income (all products)."""
+    return {
+        day: sum(amounts.values(), Decimal("0"))
+        for day, amounts in _portfolio_daily_product_profits(
+            repository, as_of
+        ).items()
+    }
 
 
 def _apply_portfolio_profit_views(payload, repository, portfolio) -> None:
@@ -864,10 +876,15 @@ def _apply_portfolio_profit_views(payload, repository, portfolio) -> None:
         as_of = date.today()
 
     try:
-        ledger_daily = _portfolio_daily_profit_totals(repository, as_of)
+        ledger_daily_products = _portfolio_daily_product_profits(repository, as_of)
     except Exception:
         logger.exception("Failed to rebuild dashboard daily profits from ledger")
         return
+
+    ledger_daily = {
+        day: sum(amounts.values(), Decimal("0"))
+        for day, amounts in ledger_daily_products.items()
+    }
 
     if not ledger_daily and not portfolio.get("profit_history"):
         return
@@ -890,31 +907,60 @@ def _apply_portfolio_profit_views(payload, repository, portfolio) -> None:
         if day >= CUTOFF_DATE
     }
 
+    products_by_id = {
+        product.id: product
+        for product in repository.list_products(active_only=True)
+    }
+
+    def products_for(days):
+        return _product_breakdown_rows(
+            _sum_product_amounts(ledger_daily_products, days),
+            products_by_id,
+        )
+
     payload["daily_profits"] = [
-        {"date": day, "amount": format(amount, "f")}
+        {
+            "date": day,
+            "amount": format(amount, "f"),
+            "products": products_for([day]),
+        }
         for day, amount in sorted(merged_daily.items(), reverse=True)
     ]
 
     # 只保留 8 月及之后的月度/年度汇总
     CUTOFF_MONTH = "2026-08"
     monthly_map = {}
+    monthly_days = {}
     for day, amount in merged_daily.items():
         month = day[:7]
         if month < CUTOFF_MONTH:
             continue
         monthly_map[month] = monthly_map.get(month, Decimal("0")) + amount
+        monthly_days.setdefault(month, []).append(day)
 
     payload["monthly_profits"] = [
-        {"period": period, "amount": format(amount, "f")}
+        {
+            "period": period,
+            "amount": format(amount, "f"),
+            "products": products_for(monthly_days[period]),
+        }
         for period, amount in sorted(monthly_map.items(), reverse=True)
     ]
 
     yearly_map = {}
+    yearly_days = {}
+    for day in merged_daily:
+        year = day[:4]
+        yearly_days.setdefault(year, []).append(day)
     for period, amount in monthly_map.items():
         year = period[:4]
         yearly_map[year] = yearly_map.get(year, Decimal("0")) + amount
     payload["yearly_profits"] = [
-        {"period": year, "amount": format(amount, "f")}
+        {
+            "period": year,
+            "amount": format(amount, "f"),
+            "products": products_for(yearly_days[year]),
+        }
         for year, amount in sorted(yearly_map.items(), reverse=True)
     ]
 

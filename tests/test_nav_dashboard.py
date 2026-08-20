@@ -391,3 +391,120 @@ def test_sum_product_amounts_adds_the_same_product_across_days():
         "a": Decimal("12"),
         "b": Decimal("-5"),
     }
+
+
+from src.nav_dashboard import _apply_portfolio_profit_views
+from src.portfolio_db import PortfolioDatabase
+from src.portfolio_models import (
+    MarketQuote,
+    Product,
+    ProductType,
+    Transaction,
+    TransactionStatus,
+    TransactionType,
+)
+from src.portfolio_repository import PortfolioRepository
+
+
+def _period_profit_repository(tmp_path):
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    products = (
+        Product("a", "citic_wealth", "P1", "产品甲", ProductType.WEALTH_NAV),
+        Product("b", "citic_wealth", "P2", "产品乙", ProductType.WEALTH_NAV),
+        Product("c", "citic_wealth", "P3", "产品丙", ProductType.WEALTH_NAV),
+    )
+    shares = {"a": Decimal("100"), "b": Decimal("50"), "c": Decimal("10")}
+    quotes = {
+        "a": (
+            (date(2026, 8, 1), Decimal("1.00")),
+            (date(2026, 8, 3), Decimal("1.10")),
+            (date(2026, 9, 1), Decimal("1.15")),
+        ),
+        "b": (
+            (date(2026, 8, 1), Decimal("1.00")),
+            (date(2026, 8, 3), Decimal("0.90")),
+            (date(2026, 9, 1), Decimal("0.80")),
+        ),
+        "c": (
+            (date(2026, 8, 1), Decimal("1.00")),
+            (date(2026, 8, 3), Decimal("1.00")),
+        ),
+    }
+    for product in products:
+        repository.add_product(product)
+        repository.create_transaction(
+            Transaction(
+                id=f"open:{product.id}",
+                product_id=product.id,
+                transaction_type=TransactionType.OPENING_POSITION,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=date(2026, 8, 1),
+                confirmation_date=date(2026, 8, 1),
+                idempotency_key=f"open:{product.id}",
+                amount=shares[product.id],
+                shares=shares[product.id],
+                confirmation_nav=Decimal("1"),
+            )
+        )
+        for quote_date, unit_nav in quotes[product.id]:
+            repository.upsert_quote(
+                product.id,
+                MarketQuote(
+                    product.code,
+                    quote_date,
+                    "official",
+                    f"{product.id}-{quote_date.isoformat()}",
+                    unit_nav=unit_nav,
+                ),
+                f"{quote_date.isoformat()}T10:00:00",
+            )
+    return repository
+
+
+def test_apply_portfolio_profit_views_attaches_products_that_sum_to_each_row(tmp_path):
+    repository = _period_profit_repository(tmp_path)
+    payload = {"daily_profits": [], "monthly_profits": [], "yearly_profits": []}
+    portfolio = {
+        "summary": {"as_of": "2026-09-02"},
+        "products": [
+            {"id": "a", "name": "产品甲", "code": "P1"},
+            {"id": "b", "name": "产品乙", "code": "P2"},
+            {"id": "c", "name": "产品丙", "code": "P3"},
+        ],
+    }
+
+    _apply_portfolio_profit_views(payload, repository, portfolio)
+
+    daily = {row["date"]: row for row in payload["daily_profits"]}
+    assert daily["2026-08-03"]["amount"] == "5.0"
+    assert daily["2026-08-03"]["products"] == [
+        {"name": "产品甲", "code": "P1", "amount": "10.0"},
+        {"name": "产品乙", "code": "P2", "amount": "-5.0"},
+    ]
+    assert daily["2026-09-01"]["amount"] == "0.00"
+    assert daily["2026-09-01"]["products"] == [
+        {"name": "产品甲", "code": "P1", "amount": "5.00"},
+        {"name": "产品乙", "code": "P2", "amount": "-5.0"},
+    ]
+    assert all(row.get("products") is not None for row in payload["daily_profits"])
+
+    monthly = {row["period"]: row for row in payload["monthly_profits"]}
+    assert monthly["2026-08"]["amount"] == "5.0"
+    assert monthly["2026-08"]["products"] == daily["2026-08-03"]["products"]
+    assert monthly["2026-09"]["products"] == daily["2026-09-01"]["products"]
+
+    yearly = {row["period"]: row for row in payload["yearly_profits"]}
+    assert yearly["2026"]["products"] == [
+        {"name": "产品甲", "code": "P1", "amount": "15.00"},
+        {"name": "产品乙", "code": "P2", "amount": "-10.0"},
+    ]
+    for row in (
+        *payload["daily_profits"],
+        *payload["monthly_profits"],
+        *payload["yearly_profits"],
+    ):
+        assert sum(Decimal(item["amount"]) for item in row["products"]) == Decimal(
+            row["amount"]
+        )
