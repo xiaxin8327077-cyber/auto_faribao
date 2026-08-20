@@ -1,891 +1,129 @@
-# 日报自动提交系统
+# daily_report
 
-## 项目概述
+生产部署目录：`/home/ubuntu/daily_report`  
+服务器：阿里云 `8.213.145.226`  
+仓库：`git@gitee.com:xiaxin8327077-cyber/daily_report.git`（默认分支 **master**）
 
-本系统部署在阿里云服务器（8.213.145.226），实现 OA 日报的自动提取、提交与通知。系统由两个独立服务组成：
+这台机器上的个人自动化服务。名字还叫日报，实际包含三块：
 
-1. **daily-report**：日报自动提交核心服务，负责定时提取智能表格任务、提交日报到 OA 系统、发送企业微信通知
-2. **status-page**：服务器状态监控页面，提供日报发送记录查询
+1. **OA 日报**：从企业微信智能表格抽任务，用 Playwright 提交到 OA，结果走企业微信
+2. **理财净值 / 组合账本**：拉取信银、南银等净值，SQLite 记账，看板在 `/nav`
+3. **企业微信控制台 + AI**：文字指令操作日报/净值/运维；未命中指令时走 LongCat 助手
 
-## 系统架构
+通知只走企业微信，不再发邮件。
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    阿里云服务器                            │
-│                                                         │
-│  ┌──────────────────┐    ┌──────────────────────────┐   │
-│  │  status-page     │    │  daily-report            │   │
-│  │  (端口 80)       │    │  (端口 8080)             │   │
-│  │                  │    │                          │   │
-│  │  - 系统状态监控   │    │  - 定时任务调度          │   │
-│  │  - 文件管理      │    │  - 智能表格提取          │   │
-│  │  - Tailscale/Xray│    │  - OA 日报提交          │   │
-│  │  - 发送记录查询   │    │  - 企业微信通知          │   │
-│  │                  │    │  - 浏览器串行化调度       │   │
-│  └──────────────────┘    └──────────────────────────┘   │
-│                                                         │
-│  systemd: status-page.service + daily-report.service    │
-└─────────────────────────────────────────────────────────┘
-```
-
-## 目录结构
+## 架构
 
 ```
-daily_report_project/
-├── main.py                        # 日报主程序入口
-├── submit_for_date.py             # 指定日期提交脚本（被 status-page 调用）
-├── status_page.py                 # 服务器状态页 + 日报发送集成
-├── config.yaml                    # 日报系统配置文件
-├── requirements.txt               # Python 依赖
-├── config/
-│   └── mainland_workdays.json     # 中国法定节假日与调休日历
-├── data/                          # 运行时数据（SQLite、截图、缓存等）
-├── src/
-│   │ ─── 日报核心 ───
-│   ├── report_builder.py          # 日报内容构建器（智能表格 + 兜底逻辑）
-│   ├── target.py                  # OA 系统交互（Playwright 自动化）
-│   ├── extractor.py               # 智能表格数据提取
-│   ├── processor.py               # 任务数据格式化
-│   ├── daily_report_draft.py      # 日报草稿管理（保存/读取/修改/清除）
-│   ├── daily_report_edit_confirmation.py  # 日报编辑二次确认（TTL 120s）
-│   │ ─── 登录与验证码 ───
-│   ├── auth.py                    # OA 系统登录（验证码识别）
-│   ├── captcha.py                 # 验证码识别（多策略 + 子进程隔离）
-│   ├── captcha_worker.py          # 验证码识别子进程（ddddocr 用完即释放）
-│   ├── qr_login_renewer.py        # 二维码扫码登录续期（企业微信 Cookies）
-│   ├── auto_cookies_updater.py    # Cookies 更新工具（企业微信指令）
-│   ├── cookies_checker.py         # Cookies 有效性检查
-│   │ ─── 通知与调度 ───
-│   ├── notifier.py                # 通知分发（企业微信）
-│   ├── wechat_notifier.py         # 企业微信通知（Markdown/文本/图片）
-│   ├── wechat_callback.py         # 企业微信回调加解密
-│   ├── scheduler.py               # 定时任务调度器
-│   ├── server.py                  # Flask Web 服务（企业微信回调 + API）
-│   ├── browser_lock.py            # 浏览器互斥锁 + 低内存参数
-│   ├── pending_confirmation.py    # 交互确认(是/否/超时)
-│   │ ─── 净值监控 ───
-│   ├── nav_monitor.py             # 净值数据查询（信银理财/南银理财）
-│   ├── nav_dashboard.py           # 净值看板状态管理（收益记录/快照）
-│   ├── nav_holdings.py            # 持仓画像抓取（资产配置/前十大持仓）
-│   ├── nav_report_image.py        # 净值报告图片生成（PIL 绘制）
-│   │ ─── AI 助手 ───
-│   ├── ai_assistant.py            # AI 助手总入口（多 provider 热切换）
-│   ├── ai_chat.py                 # 聊天会话管理（多轮对话历史）
-│   ├── ai_command_router.py       # 自然语言指令路由（read/write/none）
-│   ├── ai_diagnostic_agent.py     # 诊断代理（规划→工具调用→报告）
-│   ├── ai_diagnostic_tools.py     # 诊断工具箱（定时快照/日志/源码搜索）
-│   ├── longcat_client.py          # LongCat LLM 客户端（OpenAI 兼容接口）
-│   │ ─── 理财组合 ───
-│   ├── portfolio_api.py           # REST API（产品/交易/持仓/定投/行情）
-│   ├── portfolio_runtime.py       # 运行时初始化（DB/迁移/仓库装配）
-│   ├── portfolio_db.py            # SQLite 数据库层（schema v4）
-│   ├── portfolio_repository.py    # 数据仓库层（CRUD 操作）
-│   ├── portfolio_models.py        # 数据模型（Product/Transaction/Position 等）
-│   ├── portfolio_positions.py    # 持仓投影（份额/成本计算）
-│   ├── portfolio_profit.py        # 收益计算（净值型/现金管理型/公募基金）
-│   ├── portfolio_transactions.py  # 交易服务（申购/赎回/转账/反转）
-│   ├── portfolio_income.py        # 现金管理产品收益计提
-│   ├── portfolio_sip.py           # 定投计划管理
-│   ├── portfolio_wallet.py        # 钱包Plus 虚拟产品
-│   ├── portfolio_providers.py     # 数据源适配器（信银/南银/公募基金）
-│   ├── portfolio_market.py        # 行情数据同步
-│   ├── portfolio_confirmation.py  # 交易确认规则（T+0/T+1）
-│   ├── portfolio_jobs.py          # 定时任务（行情同步/定投/计提）
-│   ├── portfolio_reports.py       # 报告生成（日/周/月/季/年）
-│   ├── portfolio_view.py          # 视图层序列化（看板 payload）
-│   ├── portfolio_migration.py     # 旧版数据迁移（JSON → SQLite）
-│   │ ─── 基础设施 ───
-│   ├── config.py                  # 配置加载与数据类
-│   ├── beijing_time.py            # 北京时间工具
-│   ├── workday_calendar.py        # 工作日历（节假日判断）
-│   └── calendar_updater.py        # 日历自动更新（holiday-cn）
+阿里云 /home/ubuntu/daily_report
+└── daily-report.service     端口 8080（当前唯一在跑的服务）
+    ├── Flask：Web UI / 企微回调 / 净值看板 / 组合 API
+    ├── 调度器：日报、Cookies、净值推送、账本同步
+    └── Playwright：OA 登录提交、智能表格提取（浏览器互斥锁）
 ```
 
-## 核心模块详细逻辑
+仓库里还有一份 `status_page.py`，只是历史副本。本机没有 `status-page.service`，`/opt/status-page` 也不存在，80 端口未监听。运维看服务器状态改走企业微信指令。
 
-### 1. main.py — 主程序入口
+无参数启动 `main.py` 会同时拉起调度器和 Flask。systemd 工作目录就是本路径：
 
-**功能**：解析命令行参数，根据不同模式执行对应操作。
-
-**命令行参数**：
-- `--config / -c`：配置文件路径，默认 `config.yaml`
-- `--test-login`：仅测试 OA 登录和验证码识别
-- `--dry-run`：填写表单但不提交，截图保存到 `dry_run_form.png`
-- `--extract`：从智能表格提取当日任务并打印
-- `--submit`：实际提交日报到 OA 系统
-- `--check-cookies`：检查智能表格 Cookies 是否有效
-- `--message / -m`：日报内容（dry-run 或 submit 模式下使用）
-- `--date / -d`：指定日报日期（格式 `2026-05-29`），不指定则使用当天
-
-**运行模式**：
-1. 无参数启动：启动调度器 + Flask Web 服务
-2. 指定 `--test-login`：测试登录流程
-3. 指定 `--extract`：测试智能表格提取
-4. 指定 `--check-cookies`：检查 Cookies 有效性
-5. 指定 `--submit`：提交一次日报
-6. 指定 `--dry-run`：填写但不提交
-
-### 2. submit_for_date.py — 指定日期提交脚本
-
-**功能**：命令行工具，可指定日期提交日报。支持被外部脚本调用。
-
-**执行流程**：
-1. 从命令行参数获取日期（可选）
-2. 调用 `build_report_with_meta()` 构建日报内容（智能表格提取 → 兜底上次日报）
-3. 输出元数据标记：`Report source:`、`Smart doc status:`、`Smart doc error:`
-4. 输出提取内容预览：`Extracted: {前200字符}...`
-5. 调用 `submit_daily_report()` 提交到 OA
-6. 成功则调用 `notify_report_success()` 发送企业微信通知
-7. 失败则调用 `notify_report_failure()` 发送企业微信通知
-8. 如果内容生成阶段就失败，输出 `FAILURE_NOTIFIED` 标记
-
-### 3. report_builder.py — 日报内容构建器
-
-**功能**：构建日报内容，包含智能表格提取和兜底逻辑。
-
-**类**：
-- `ReportBuildError(ValueError)`：日报构建失败异常，携带 `report_source`、`smart_doc_status`、`smart_doc_error` 属性
-
-**核心函数**：
-- `build_report_content(cfg, report_date)` → `(report, source)`：简化版，只返回内容和来源
-- `build_report_with_meta(cfg, report_date)` → `(report, source, meta)`：完整版，返回元数据
-
-**构建逻辑**：
-1. **首选**：从智能表格提取任务（`extract_tasks` + `format_report`）
-   - 成功 → 返回 `source="smart_sheet"`，`smart_doc_status="normal"`
-2. **兜底**：智能表格提取失败或无匹配数据时，读取 OA 系统中上一次日报内容（`get_previous_report_content`）
-   - 成功 → 返回 `source="previous_report"`
-3. **双重失败**：智能表格和上次日报都失败 → 抛出 `ReportBuildError`
-
-**元数据字典结构**：
-```python
-{
-    "report_source": "smart_sheet" | "previous_report",
-    "smart_doc_status": "normal" | "error",
-    "smart_doc_error": "错误详情或空字符串",
-}
+```
+/home/ubuntu/daily_report/venv/bin/python /home/ubuntu/daily_report/main.py
 ```
 
-### 4. target.py — OA 系统交互
+日志：`service.log`、`daily_send.log`。
 
-**功能**：通过 Playwright 浏览器自动化与 OA 系统交互。
+## 当前定时（北京时间，以 config.yaml 为准）
 
-**核心函数**：
-
-#### `submit_daily_report(content, cfg, dry_run=False, report_date=None)`
-提交日报到 OA 系统。
-
-**流程**：
-1. 规范化日期（`_normalize_report_date`）：无日期时取北京时间今天
-2. 通过 API 登录 OA（`login_with_captcha`）
-3. 设置 Cookie（DQMS-Token + LoginModeKey）
-4. 导航到日报页面
-5. **重复检查**（`_check_existing_report`）：扫描表格行，检查指定日期是否已有日报
-6. 点击"添加项目日志"按钮
-7. 填写表单（`_fill_report_form`）：
-   - 选择项目（`_select_project`）：搜索并选择默认项目
-   - 设置日期（`_set_dates`）：开始日期和结束日期都设为 report_date
-   - 设置出差为"否"（`_set_travel_no`）
-   - 填写日报内容（`_fill_detail`）
-8. 提交对话框（`_submit_dialog`）：点击"确定"并等待对话框关闭
-9. 检查是否有错误提示（`_visible_error_text`）
-
-#### `modify_daily_report(content, cfg)`
-修改今天已提交的日报。
-
-#### `get_previous_report_content(cfg, before_date=None)`
-读取 OA 系统中指定日期之前的最近一条日报内容，用于兜底提交。
-
-**多策略读取（按优先级）**：
-1. **展开行读取**：点击行首展开箭头，从展开的详情区域读取内容（最可靠，无需修改权限）
-2. **表格行直接读取**：从表格单元格中直接提取内容
-3. **弹窗读取**：点击查看/详情/修改按钮打开弹窗读取
-   - 编辑模式：从 textarea 读取
-   - 查看模式：从纯文本元素读取（支持已审核通过的日报）
-
-#### `get_report_status(cfg, report_date=None)`
-查询指定日期的日报状态。
-- 返回字典包含：`exists`（是否存在）、`date`（日期）、`status`（状态）、`content`（内容）、`project`（项目）、`approved`（是否已审核）
-
-#### `delete_daily_report(cfg, report_date=None)`
-删除指定日期的日报。
-- 返回 `(success, message)` 元组
-- 已审核的日报无法删除，返回失败
-
-#### `get_recent_reports(cfg, count=5)`
-获取最近 N 条日报记录。
-- 返回列表，每条包含：`date`、`status`、`project`、`content_preview`
-
-#### `get_monthly_statistics(cfg, year=None, month=None)`
-获取本月日报提交统计。
-- 返回包含：`submitted_days`、`approved_days`、`pending_days`、`missing_days`、`submitted_dates`
-
-**表单选择器**：
-```python
-FORM_SELECTORS = {
-    "project_input": '.el-dialog input[placeholder="请选择项目"]',
-    "date_start": '.el-dialog input[placeholder="开始日期"]',
-    "date_end": '.el-dialog input[placeholder="结束日期"]',
-    "hours": '.el-dialog .el-form-item:has-text("工时") input.el-input__inner',
-    "detail": '.el-dialog textarea, .el-dialog .el-textarea__inner',
-}
-```
-
-### 5. extractor.py — 智能表格数据提取
-
-**功能**：通过 Playwright + JS SDK 从企业微信智能表格提取任务数据。
-
-**提取流程**：
-1. 构建文档 URL：`https://doc.weixin.qq.com/smartsheet/{doc_id}?scode={scode}&tab={tab_id}&viewId={view_id}`
-2. 设置 Cookies（`.weixin.qq.com` 域名下的 13 个 Cookie 字段）
-3. 打开页面，等待 DOM 加载
-4. 检查是否跳转到登录页（Cookies 过期）
-5. 等待 `ContainerApp.containerSdk.smartSheetSdk.editor.getCore` 可用
-6. 通过 JS 代码提取数据：
-   - 获取表格核心对象
-   - 构建字段映射（fieldMap）和选项映射（optionMaps，用于 select 类型字段）
-   - 遍历所有记录，按条件过滤：
-     - **状态过滤**：`status_field` 的值包含配置的 `status_values`（如"进行中"）
-     - **人员过滤**：`person_field` 的值包含配置的 `person_names`（如"夏鑫"）
-   - 提取任务名称和描述，拼接为 `任务名称：任务描述` 格式
-7. 返回任务列表
-
-**Cookie 字段列表**：
-`low_login_enable`, `utype`, `TOK`, `traceid`, `hashkey`, `tdoc_uid`, `wedoc_openid`, `wedoc_sid`, `wedoc_sids`, `wedoc_skey`, `wedoc_ticket`, `language`, `fingerprint`
-
-### 6. processor.py — 任务数据格式化
-
-**功能**：将提取的任务名称列表格式化为日报文本。
-
-**格式化规则**：
-- 每条任务编号：`1. 任务名称：任务描述`
-- 任务间换行分隔
-- 内容不足 20 字符时追加"完成今日常规开发与运维任务"
-- 无任务时返回空字符串
-
-### 7. auth.py — OA 系统登录
-
-**功能**：处理 OA 系统的登录流程，包含验证码识别。
-
-**登录流程**：
-1. 调用 `/prod-api/captchaImage` 获取验证码图片（base64）和 uuid
-2. 调用 `recognize_captcha()` 识别验证码
-3. 调用 `/prod-api/login` 提交登录请求（username + password + code + uuid）
-4. 返回 JWT Token
-5. 验证码错误时自动重试，最多 3 次
-
-### 8. captcha.py — 验证码识别
-
-**功能**：多策略验证码识别。
-
-**识别策略（按优先级）**：
-1. **DdddOcrSolver**：使用 ddddocr 库本地识别
-2. **DashScopeSolver**：使用阿里云 DashScope API（qwen3-vl-flash 视觉模型）识别
-3. **TemplateCaptchaSolver**：基于模板匹配的识别（Hamming 距离）
-
-**后处理**（`_normalize_digits`）：
-- 去除非数字字符
-- 字母→数字映射：O→0, I→1, B→8, S→5, Z→2 等
-- 取最后 4 位数字
-
-**失败处理**：所有策略都失败时，保存验证码图片到 `data/captcha/failed/` 目录。
-
-### 9. notifier.py — 通知分发
-
-**功能**：日报提交结果通知分发（仅企业微信渠道）。
-
-**通知类型**（全部通过企业微信应用消息发送，不再使用邮件）：
-1. `notify_report_success`：日报提交成功 — Markdown 格式，含发送时间、日期、类型、内容
-2. `notify_report_failure`：日报提交失败 — Markdown 格式，含错误信息、建议手动提交
-3. `notify_cookies_expired`：Cookies 过期提醒
-4. `notify_cookies_valid`：Cookies 更新成功确认
-5. `notify_cookies_invalid`：Cookies 更新失败提醒
-
-底层调用 `wechat_notifier.py` 通过企业微信 API 发送消息。
-
-### 10. wechat_notifier.py — 企业微信通知
-
-**功能**：企业微信应用消息发送（文本/Markdown/图片）。
-
-- `send_text()`：发送文本消息
-- `send_markdown()`：发送 Markdown 消息
-- `send_image()`：上传并发送图片（用于二维码等）
-
-### 11. auto_cookies_updater.py — Cookies 更新工具
-
-**功能**：通过企业微信指令更新智能表格 Cookies。
-
-- `update_cookies_from_wechat()`：解析企业微信消息中的 Cookies 并更新 config.yaml
-- `parse_cookies_from_text()`：支持多种格式（key=value、key:value、key value）
-- 更新后自动验证新 Cookies 是否有效
-- 验证失败自动回滚配置
-3. 比较新旧值，确定需要更新的字段
-4. 备份旧值
-5. 更新 `config.yaml`
-6. 调用 `check_cookies()` 验证新 Cookies
-7. 验证成功 → 发送企业微信通知
-8. 验证失败 → 回滚配置 + 发送企业微信通知
-
-**Cookie 字段列表**：
-`TOK`, `traceid`, `hashkey`, `tdoc_uid`, `wedoc_openid`, `wedoc_sid`, `wedoc_sids`, `wedoc_skey`, `wedoc_ticket`, `fingerprint`
-
-### 12. cookies_checker.py — Cookies 有效性检查
-
-**功能**：检查智能表格 Cookies 是否有效。
-
-**检查流程**：
-1. 构建文档 URL 并设置 Cookies
-2. 打开页面，等待加载
-3. 检查是否跳转到登录页
-4. 等待 SmartSheet SDK 加载
-5. 执行 JS 代码尝试获取 SDK 核心对象
-6. 检查页面文本是否包含"登录"、"无权限"等关键词
-
-### 13. scheduler.py — 定时任务调度器
-
-**功能**：在工作日定时执行 Cookies 检查、日报自动提交、统计推送、缓存清理。
-
-**调度时间（北京时间，可通过企业微信指令动态修改）**：
-- **09:45**：Cookies 有效性检查（`_run_cookies_check`）
-  - 检查 Cookies 是否过期，异常时发送企业微信通知
-- **17:56**：日报自动提交（`_run_auto_submit`）
-  - 智能表格提取 → OA 提交 → 企业微信通知
-  - 提取失败 + cookies 过期 → 企微交互确认（是/否/超时）
-- **18:10**：统计推送（`_run_stats_push`，周日或月末）
-  - 周报/月报统计通过企业微信推送
-- **每月1号 04:00**：定时缓存清理（`_run_cache_cleanup`）
-  - 清理截图、pycache、日志、系统缓存、验证码失败截图
-- **每年12月1日**：自动更新下一年工作日历（`_run_calendar_update`）
-  - 清理服务日志文件
-  - 清理 Linux 页面缓存
-  - 清理 APT 包缓存
-  - 清理系统日志（保留7天）
-  - 清理 /tmp 临时文件（保留7天）
-  - 完成后发送企业微信通知
-
-**工作日判断**：使用 `workday_calendar.is_workday()` 判断，支持中国法定节假日和调休。
-
-### 14. server.py — Flask Web 服务
-
-**功能**：提供 Web UI 和 API 接口用于手动提交日报。
-
-**路由**：
-- `GET /`：返回 Web UI 页面
-- `POST /api/submit`：接收日报提交请求
-  - 参数：`message`（日报内容）、`date`（日期，可选）
-  - 在后台线程中执行提交
-
-**企业微信指令支持**：
-在企业微信应用中发送以下文字指令，系统会自动响应：
-
-| 分类 | 指令（模糊匹配） | 功能 |
-|-----|-----------------|------|
-| 📝 日报提交 | 发送日报 / 提交日报 / 立即发送日报 | 立即触发日报提交任务（智能文档提取，失败则兜底） |
-| 📝 日报提交 | 根据前一天内容发送 / 用昨天内容提交 / 沿用昨日日报 | 读取前一天日报内容，直接提交今日日报 |
-| 📝 日报提交 | 重新发送今日日报 / 重发今日日报 | 删除今日日报后，重新从智能文档提取并提交 |
-| 🔍 状态查询 | 今日状态 / 今天提交了吗 / 今日日报 | 查询今日日报提交状态和内容 |
-| 🔍 状态查询 | 最近记录 / 历史记录 / 最近日报 | 查看最近5条日报提交记录 |
-| 🔍 状态查询 | 本周统计 / 周报统计 | 查看本周日报提交统计（周一至周日） |
-| 🔍 状态查询 | 本月统计 / 提交统计 / 月报统计 | 查看本月日报提交统计 |
-| 📄 内容查询 | 读取智能文档内容 / 读取日报 | 从智能表格提取今日任务并回复 |
-| 📄 内容查询 | 获取前一天日报 / 读取上次日报 / 上一天日报 | 从 OA 系统读取前一天日报内容并回复 |
-| 🗑️ 操作管理 | 撤回今日日报 / 删除今天日报 / 撤销今日 | 删除今日已提交的日报（已审核的无法删除） |
-| ⚙️ 系统管理 | 生成二维码 / 重新登录 / 扫码登录 | 生成企业微信扫码登录二维码，续期 Cookies |
-| ⚙️ 系统管理 | 检查Cookies / Cookies状态 / cookies状态 | 主动检查智能表格 Cookies 是否有效 |
-| ⚙️ 系统管理 | 查看配置 / 当前配置 | 查看当前系统配置信息 |
-| ⚙️ 系统管理 | 查看定时配置 / 定时配置 / 定时任务 | 查看所有定时任务及修改指令 |
-| ⚙️ 系统管理 | 设置Cookies检查时间 HH:MM | 永久修改Cookies检查时间（工作日） |
-| ⚙️ 系统管理 | 设置日报提交时间 HH:MM | 永久修改日报自动提交时间（工作日） |
-| ⚙️ 系统管理 | 设置统计推送时间 HH:MM | 永久修改统计自动推送时间（周日/月末） |
-| ⚙️ 系统管理 | 设置缓存清理时间 HH:MM | 永久修改缓存自动清理时间（每月1号） |
-| 🖥️ 服务器运维 | 服务器状态 / 系统状态 | 查看内存详情、磁盘、运行时间、Swap、APT缓存、系统日志等 |
-| 🖥️ 服务器运维 | 运行服务 / 运行进程 | 查看所有运行中的服务及内存占用 |
-| 🖥️ 服务器运维 | 清理缓存 / 清除缓存 | 系统级清理：页面缓存、APT包缓存、系统日志(7天前)、/tmp临时文件、项目截图、__pycache__、服务日志 |
-| 🖥️ 服务器运维 | 查看日志 / 最近日志 | 查看最近30条服务日志 |
-| 🖥️ 服务器运维 | 重启服务 | 重启 daily-report 服务（会短暂中断） |
-| ❓ 帮助 | 指令 / 帮助 / help / 菜单 | 查看所有可用指令及说明 |
-| ⚙️ 系统管理 | （直接发送 Cookies 字符串） | 更新智能表格 Cookies 并验证 |
-
-**`auto_submit_if_needed(cfg)`**：
-自动提交函数：
-1. 调用 `build_report_with_meta()` 构建日报内容
-2. 调用 `submit_daily_report()` 提交
-3. 提取失败 + cookies 过期 → 企微交互确认(是/否/超时)
-4. 根据结果发送成功/失败通知（仅企业微信）
-
-### 15. beijing_time.py — 北京时间工具
-
-**功能**：提供北京时间相关的工具函数。
-
-**函数**：
-- `now()` → 当前北京时间 datetime
-- `today()` → 当前北京时间 date
-- `today_str(fmt)` → 当前北京时间格式化字符串
-
-**时区**：UTC+8（`timezone(timedelta(hours=8))`）
-
-### 16. workday_calendar.py — 工作日历
-
-**功能**：判断指定日期是否为工作日，支持中国法定节假日和调休。
-
-**数据来源**：`config/mainland_workdays.json`
-
-**类 `WorkdayCalendar`**：
-- `from_file(path)`：从 JSON 文件加载日历数据
-- `is_workday(day)`：判断是否为工作日
-  - 节假日列表中的日期 → 非工作日
-  - 调休工作日列表中的日期 → 工作日
-  - 其他：周一至周五 → 工作日，周六周日 → 非工作日
-- `previous_workday(day)`：获取指定日期之前的最近工作日
-
-**全局函数**：
-- `is_workday(day)`：判断是否为工作日
-- `is_today_workday()`：判断今天是否为工作日
-- `get_nearest_workday(day)`：获取 <= 指定日期的最近工作日
-
-### 17. nav_monitor.py — 净值监控
-
-**功能**：查询理财产品净值数据，支持信银理财（citic_wealth）和南银理财（nanyin_wealth）两个数据源，提供按日期和周期（周/月/季/年/滚动区间）的净值查询。
-
-**定时推送**（config.yaml `nav_monitor` 段，可通过企业微信指令修改）：
-- **08:08**：净值早报推送（当日净值 + 涨跌幅图片）
-- **17:30**：净值预估推送（盘中预估收益）
-- **23:30**：净值晚报推送（晚间净值汇总）
-
-**产品配置**（config.yaml）：
-```yaml
-nav_monitor:
-  enabled: true
-  products:
-    - provider: citic_wealth    # 信银理财
-      code: AF233276B
-      name: 慧盈象固收增强一年持有期5号B
-      shares: 478056.94
-    - provider: nanyin_wealth   # 南银理财
-      code: A32069
-      name: 南银理财悦稳最低持有91天3号-B份额
-      shares: 100000.76
-```
-
-**相关模块**：
-- `nav_dashboard.py`：净值看板状态管理（收益记录、快照、自动刷新）
-- `nav_holdings.py`：持仓画像抓取（资产配置比例、前十大持仓）
-- `nav_report_image.py`：净值报告图片生成（PIL 绘制日报/周期报告图片）
-
-### 18. ai_assistant.py — AI 助手
-
-**功能**：集成 LLM 大模型，为企业微信用户提供智能问答、指令路由和系统诊断能力。支持多 provider 热切换（LongCat / DashScope）。
-
-**架构**：
-- `AiAssistant`（总入口）：从环境变量初始化，组合三大子服务
-- `AiChatService`（`ai_chat.py`）：多轮对话管理，按用户维护对话历史（默认10轮）
-- `AiCommandRouter`（`ai_command_router.py`）：自然语言指令分类（read/write/none），识别日报状态、净值查询等标准化指令
-- `DiagnosticAgent`（`ai_diagnostic_agent.py`）：系统诊断代理，采用"规划→工具调用→报告"三阶段流程
-- `DiagnosticToolbox`（`ai_diagnostic_tools.py`）：5个安全诊断工具（定时快照、服务状态、日志搜索、源码搜索、源码读取），内置敏感信息脱敏
-- `longcat_client.py`：LLM 客户端封装（OpenAI 兼容接口，支持 thinking 参数和超时控制）
-
-### 19. portfolio_*.py — 理财组合管理
-
-**功能**：完整的理财产品组合管理系统，提供持仓管理、交易记录、收益计算、定投计划、行情同步等功能，通过 Web 看板和 REST API 对外服务。
-
-**核心模块**：
-
-| 分层 | 模块 | 职责 |
+| 时间 | 条件 | 任务 |
 |------|------|------|
-| 数据层 | `portfolio_db.py` | SQLite 数据库（schema v4，含 products/quotes/transactions/positions/sip_plans 等表） |
-| 数据层 | `portfolio_repository.py` | 数据仓库，封装所有表 CRUD 操作 |
-| 数据层 | `portfolio_models.py` | 数据模型定义（Product/Transaction/Position/SipPlan 等） |
-| 业务层 | `portfolio_positions.py` | 持仓投影（份额/成本计算，支持反转/冲销） |
-| 业务层 | `portfolio_profit.py` | 收益计算（净值型/现金管理型/公募基金） |
-| 业务层 | `portfolio_transactions.py` | 交易服务（申购/赎回/转账/反转，含幂等校验） |
-| 业务层 | `portfolio_income.py` | 现金管理产品收益计提（万份收益 × 已确认份额） |
-| 业务层 | `portfolio_sip.py` | 定投计划管理（创建/暂停/自动扣款） |
-| 业务层 | `portfolio_wallet.py` | 钱包Plus 虚拟产品（固定年化 1.33%） |
-| 行情层 | `portfolio_providers.py` | 数据源适配器（信银/南银/公募基金行情接口） |
-| 行情层 | `portfolio_market.py` | 行情数据同步与验证 |
-| 行情层 | `portfolio_confirmation.py` | 交易确认规则（公募基金 T+1、净值型 T+1、现金管理 T+0） |
-| 调度层 | `portfolio_jobs.py` | 定时任务（每30分钟：同步行情→定投→确认交易→计提收益） |
-| 接口层 | `portfolio_api.py` | Flask Blueprint REST API（写操作限流 30次/分钟） |
-| 视图层 | `portfolio_view.py` | 看板 payload 序列化 |
-| 视图层 | `portfolio_reports.py` | 报告生成（日/周/月/季/年/滚动区间） |
-| 运行时 | `portfolio_runtime.py` | 全局单例，协调 DB/迁移/仓库装配 |
-| 迁移 | `portfolio_migration.py` | 旧版 JSON 状态迁移为 SQLite |
+| 08:08 | 工作日 | 净值早间推送 |
+| 09:45 | 工作日 | 智能表格 Cookies 检查 |
+| 17:30 | 工作日 | 净值预估 |
+| 17:56 | 工作日 | 自动提交日报 |
+| 18:10 | 周日或月末 | 日报周报/月报 |
+| 23:30 | 工作日 | 净值晚间检查 |
+| 约每 30 分钟 | 持续 | 组合账本：行情 / 在途确认 / 现金收益 |
+| 每月 1 日 04:00 | — | 缓存清理 |
+| 每年 12 月 1 日 | — | 更新下一年工作日历 |
 
-**数据库**：`data/portfolio.db`（SQLite，SCHEMA_VERSION=4），迁移前自动备份到 `data/portfolio-backups/`
+可用企微指令改调度时间，写入 `config.yaml` 后立即生效。
 
-### 20. qr_login_renewer.py — 二维码登录续期
+日报内容：先读智能表格（负责人「夏鑫」、状态「进行中」）；失败则沿用 OA 上一条；Cookies 过期会在企微里确认是否继续。
 
-**功能**：通过 Playwright 自动化浏览器生成企业微信扫码登录二维码，刷新过期的智能表格 Cookies。
+## HTTP
 
-**流程**：打开企业微信扫码页面 → 截取二维码图片 → 通过企业微信发送给用户 → 用户扫码 → 等待登录成功 → 提取新 Cookies → 更新 config.yaml → 验证有效性。
+| 路径 | 说明 |
+|------|------|
+| `GET /` | 日报手动提交页 |
+| `POST /api/submit` | 提交日报 |
+| `GET /nav` | 理财看板（需访问令牌） |
+| `GET /api/nav-dashboard` | 看板数据 |
+| `POST /api/nav-dashboard/refresh` | 手动刷新看板（有冷却） |
+| `/api/portfolio/*` | 组合产品 / 交易 / 持仓 / 定投 |
+| `GET|POST /api/wechat/callback` | 企业微信回调 |
 
-**特性**：子进程隔离执行（超时 210 秒），支持浏览器互斥锁。
+## 企业微信
 
-### 21. calendar_updater.py — 工作日历自动更新
+在应用里发文字即可。常见分组：
 
-**功能**：每年12月1日自动从 GitHub [holiday-cn](https://github.com/NateScarlet/holiday-cn) 仓库拉取下一年中国法定节假日数据，更新本地 `config/mainland_workdays.json`。
+- **日报**：发送日报、根据前一天内容发送、今日状态、本周/本月统计、草稿与修改、撤回
+- **净值**：立即查询净值、按日期/周期查询、持仓画像；交易操作走 `/nav` 网页
+- **系统**：查看配置、改定时、检查/更新 Cookies、扫码续期
+- **运维**：服务器状态、清理缓存、查看日志、重启服务
+- **帮助**：`指令` / `帮助` / 数字菜单 `0`–`5`
+- **AI**：未命中固定指令时，由 LongCat 聊天或诊断路由处理
 
-### 22. config.py — 配置加载
+直接发送 Cookies 字符串会校验并写入配置；失败回滚。
 
-**功能**：从 YAML 配置文件加载配置。
-
-**配置类**：
-- `SourceConfig`：智能表格数据源配置
-  - 文档 ID、表格 ID、视图 ID
-  - 字段映射：任务名称、任务描述、启动时间、预计完成时间、负责人、任务状态
-  - 过滤条件：负责人姓名列表、状态值列表
-  - Cookie 字段（13 个）
-- `TargetConfig`：OA 目标系统配置
-  - URL、用户名、密码
-  - 登录路径、日报路径
-  - 默认项目名称
-  - 页面超时、元素超时
-- `CaptchaConfig`：验证码识别配置
-  - API Key、Base URL、模型名称、识别提示词
-- `WechatConfig`：企业微信配置（corpid、corpsecret、agentid 等）
-- `SchedulerConfig`：定时任务配置（各任务的小时/分钟）
-- `NavMonitorConfig`：净值监控配置（推送时间、产品列表）
-- `Config`：顶层配置，包含以上所有子配置 + host + port
-
-**安全检查**：配置文件权限不是 600 时输出警告。
-
-### 23. status_page.py — 服务器状态页
-
-**功能**：服务器状态监控页面（日报发送功能已移除，统一由企业微信指令管理）。
-
-**技术栈**：Python 标准库 `http.server.ThreadingHTTPServer`（非 Flask）
-
-#### 日报发送相关新增内容
-
-**常量**：
-- `REPORT_HISTORY_FILE`：发送记录存储路径 `/var/lib/status-page/report_history.json`
-- `RECLOCK`：`threading.RLock()`（使用 RLock 防止死锁，因为 `save_report_record` 内部调用 `load_report_records`，两者都需要加锁）
-
-**函数**：
-- `save_report_record(record)`：保存发送记录到 JSON 文件
-  - 使用 `RECLOCK` 加锁
-  - 自动生成 16 位 hex ID
-	- `load_report_records()`：加载所有发送记录
-
-> **注意**：日报手动发送功能已移除，统一通过企业微信指令或定时任务提交。`send_report_failure_fallback`、`POST /api/report` 等相关代码已删除。
-- `GET /api/report-history`：获取发送记录列表
-
-**前端（日报发送 Tab）**：
-- 日期选择器 + 快捷日期按钮（今天/昨天/前天/三天前）
-- `setReportDate(offset)`：使用本地时间设置日期（修复了 `toISOString()` UTC 时区偏移 bug）
-- `sendReport()`：发送日报请求
-- `loadReportHistory()`：加载并渲染发送记录表格
-  - 内容列：超过 50 字符截断显示
-  - 详情列：`\n` 转 `<br>`，直接显示文字（不使用 tooltip）
-  - 状态列：成功绿色、失败红色、其他黄色
-
-**访问控制**：日报发送功能仅对"完整版"角色可见。
-
-#### 状态页原有功能
-
-**系统监控**：
-- CPU、内存、负载、磁盘、网络流量
-- CPU/内存趋势图（SVG 折线图）
-- 资源仪表盘（conic-gradient 环形图）
-- 近七日流量柱状图
-
-**服务管理**：
-- Tailscale：状态查看 + 启停控制
-- Xray：状态查看 + 启停/重启控制
-
-**文件管理**：
-- 目录浏览、搜索、上传、下载
-- 图片/文本预览
-- 批量删除、新建文件夹
-
-**访问控制**：
-- 双密码体系：完整版密码 + 只读版密码
-- 登录频率限制（1 分钟 12 次，10 分钟 6 次失败锁定）
-- Session 管理（12 小时有效期）
-
-**数据持久化**：
-- `/var/lib/status-page/traffic_state.json`：流量统计
-- `/var/lib/status-page/metric_history.json`：指标历史
-- `/var/lib/status-page/auth_config.json`：密码配置
-- `/var/lib/status-page/report_history.json`：日报发送记录
-- `/var/lib/status-page/uploads/`：上传文件目录
-
-## 定时任务时间线（北京时间，工作日）
+## 目录
 
 ```
-08:08  净值早报推送（nav_monitor → 企业微信图片消息）
-17:30  净值预估推送（nav_monitor → 企业微信图片消息）
-
-09:45  Cookies 有效性检查（scheduler.py → cookies_checker.py）
-       ├── Cookies 有效 → 跳过
-       └── Cookies 过期 → 企业微信通知 + 启动二维码续期
-
-17:56  日报自动提交（scheduler.py → server.py → report_builder.py → target.py）
-       ├── 智能表格提取成功 → 提交日报 → 企业微信通知
-       ├── 智能表格提取失败(cookies过期) → 企微交互确认(是/否/超时)
-       └── 两者都失败 → 企业微信通知
-
-18:10  统计推送（仅周日或月末）→ 企业微信推送周报/月报
-
-23:30  净值晚报推送（nav_monitor → 企业微信图片消息）
-
-04:00  每月1号：定时缓存清理（截图/pycache/日志/系统缓存/验证码失败截图）
-
-12月1日  每年：自动更新下一年工作日历
+/home/ubuntu/daily_report
+├── main.py                 入口：调度器 + Flask
+├── submit_for_date.py      指定日期提交（命令行）
+├── status_page.py          旧状态页源码（服务已下线，未再部署）
+├── config.yaml             运行配置（含密钥，权限应为 600，勿提交）
+├── requirements.txt
+├── config/mainland_workdays.json
+├── data/                   运行时：portfolio.db、看板状态、令牌（勿提交）
+├── src/
+│   ├── 日报：report_builder / extractor / processor / target
+│   │         daily_report_draft / daily_report_edit_confirmation
+│   ├── 登录：auth / captcha / captcha_worker / qr_login_renewer
+│   │         cookies_checker / auto_cookies_updater
+│   ├── 调度通知：scheduler / server / notifier / wechat_*
+│   │            browser_lock / pending_confirmation
+│   ├── 净值：nav_monitor / nav_dashboard / nav_holdings / nav_report_image
+│   ├── 账本：portfolio_*（SQLite schema v4）
+│   └── AI：ai_assistant / ai_chat / ai_command_router
+│          ai_diagnostic_* / longcat_client
+└── tests/
 ```
 
-## 日报提交流程
+本地忽略：`venv/`、`backups/`、日志、`config.yaml`、`data/`。仓库历史里可能仍有旧副本，新增密钥不要再提交。
 
-### 通过企业微信指令
-```
-用户发送"发送日报"或"提交日报"
-→ 系统立即响应"正在读取智能文档并提交日报"
-→ 后台线程执行：智能表格提取 → OA 提交 → 企业微信通知
-→ 完成后通过企业微信发送结果通知
-```
+## 命令
 
-### 通过 status-page 网页
-```
-用户访问 http://8.213.145.226 → 登录（完整版密码）
-→ 点击"日报发送"菜单 → 选择日期 → 点击"发送日报"
-→ status-page 调用 submit_for_date.py 子进程
-→ 智能表格提取 → OA 提交 → 企业微信通知
-→ 页面显示发送结果 + 更新历史记录
+```bash
+source venv/bin/activate
+python main.py                  # 生产模式：调度器 + Web
+python main.py --extract        # 只抽智能表格
+python main.py --check-cookies
+python main.py --dry-run -m "..." -d 2026-08-20
+python main.py --submit -d 2026-08-20
 ```
 
-### 通过 daily-report 自带 Web UI（8080端口）
-```
-用户访问 Web UI → 填写日报内容和日期 → 点击提交
-→ 后台线程执行提交 → 企业微信通知
-```
+OA 验证码：ddddocr 子进程 → 阿里云视觉模型 → 模板匹配。浏览器任务串行，避免和 Cookies 检查抢 Chromium。
 
-> **注意**：所有日报提交结果通知统一通过企业微信发送，不再使用邮件。
+## systemd
 
-## systemd 服务配置
+**daily-report.service**（本机唯一相关服务）
 
-### daily-report.service
-- **工作目录**：`/home/ubuntu/daily_report`
-- **执行命令**：`/home/ubuntu/daily_report/venv/bin/python /home/ubuntu/daily_report/main.py`
-- **日志**：`/home/ubuntu/daily_report/service.log`
-- **自动重启**：30 秒后重启
+- 工作目录：`/home/ubuntu/daily_report`
+- 命令：`venv/bin/python main.py`
+- 失败 30 秒后重启
 
-### status-page.service
-- **工作目录**：`/opt/status-page`
-- **执行命令**：`/usr/bin/python3 /opt/status-page/status_page.py`
-- **端口**：80
-- **自动重启**：3 秒后重启
-- **环境变量**：
-  - `STATUS_PAGE_HOST=0.0.0.0`
-  - `STATUS_PAGE_PORT=80`
-  - `STATUS_PAGE_REFRESH=8`
-  - `STATUS_PAGE_SAMPLE_INTERVAL=60`
-  - `STATUS_PAGE_STATE_DIR=/var/lib/status-page`
-
-## 关键 Bug 修复记录
-
-### 1. 死锁问题（threading.Lock → RLock）
-- **问题**：`save_report_record` 内部调用 `load_report_records`，两者都使用 `with RECLOCK`（普通 Lock），导致同一线程重复获取锁，产生死锁，整个服务卡死
-- **修复**：`threading.Lock()` → `threading.RLock()`（可重入锁）
-
-### 2. JS 时区偏移
-- **问题**：`toISOString().split('T')[0]` 返回 UTC 日期，北京时间晚上 8 点后"今天"会显示为"昨天"
-- **修复**：改用 `getFullYear()` + `getMonth()` + `getDate()` 拼接本地日期
-
-### 3. 页面全部"加载中"
-- **问题**：在 `bindTabMenu()` 后直接调用 `setReportDate(0)`，该函数在定义之前执行，导致 JS 整体崩溃
-- **修复**：仅在切换到日报 Tab 时调用 `setReportDate(0)`
-
-### 4. 历史记录内容显示
-- **问题**：内容列显示"(自动从智能表格提取)"而非真实内容
-- **修复**：从 submit_for_date.py 的 stdout 解析 `Extracted:` 行获取真实内容
-
-### 5. 失败详情显示
-- **问题**：详情列使用 tooltip/overflow:hidden 显示，用户无法直接看到
-- **修复**：去掉 `overflow:hidden` + `title` 属性，改为 `word-break:break-word` 直接显示文字，`\n` 转 `<br>`
-
-### 6. 日报内容悬浮提示
-- **问题**：历史记录中日报内容列被截断为 50 字符，无法查看完整内容
-- **修复**：使用浏览器原生 `title` 属性实现悬浮提示，鼠标悬浮到内容列自动显示完整日报内容。最初尝试自定义 CSS tooltip，但因 `overflow:hidden` 在 `<td>` 上遮挡了子元素 tooltip 导致无法显示，最终改用原生 `title` 方案
-
-### 7. 邮件通知策略优化
-- **问题**：Cookies 过期、Cookies 更新成功/失败等场景都会发送邮件，通知过于频繁；且担心邮件连接问题影响主流程
-- **修复**：
-  1. 邮件通知仅保留**日报提交成功/失败**两种场景
-  2. Cookies 相关通知（过期、更新成功、更新失败）仅通过企业微信发送
-  3. 增加双重异常保护：`send_email()` 和 `_send()` 均有 try-except 包裹，确保邮件发送失败不会影响主流程
-
-### 8. 上一天日报内容读取优化
-- **问题**：原逻辑通过点击"修改"按钮打开弹窗读取上一天日报内容作为兜底，但日报审核通过后没有"修改"按钮，导致无法读取
-- **修复**：实现多策略读取（按优先级）：
-  1. **展开行读取**（首选）：点击行首展开箭头，从下方展开的详情区域直接读取内容，无需任何权限
-  2. **表格行直接读取**：从表格单元格中提取内容
-  3. **弹窗读取**：依次尝试查看/详情/预览/修改按钮，支持编辑模式（textarea）和查看模式（纯文本）
-- 新增企业微信指令：发送"获取前一天日报"即可查看 OA 系统中上一天的日报内容
-
-### 9. 手动触发日报不发送邮件
-- **问题**：手动触发（企业微信指令、Web UI）的日报提交也会发送邮件，通知过于频繁
-- **修复**：
-  1. 给 `notify_report_success`、`notify_report_failure` 增加 `send_email` 参数（默认 `True`）
-  2. 给 `auto_submit_if_needed`、`_submit_and_notify` 增加 `send_email` 参数（默认 `True`）
-  3. 所有手动触发场景（网页手动提交、企业微信"发送日报"指令、企业微信"根据前一天内容发送"指令）调用时设置 `send_email=False`
-  4. 定时任务自动提交保持默认（发送邮件）
-  5. 更新 Web UI 提示文字，从"邮件通知"改为"企业微信通知"
-
-### 10. 新增丰富的企业微信指令
-- **新增指令**：
-  1. **今日状态** / **今天提交了吗** / **今日日报** — 查询今日日报提交状态和内容
-  2. **检查Cookies** / **Cookies状态** — 主动检查智能表格Cookies是否有效
-  3. **最近记录** / **历史记录** / **最近日报** — 查看最近5条日报提交记录
-  4. **本月统计** / **提交统计** — 查看本月日报提交统计
-  5. **撤回今日日报** / **删除今天日报** / **撤销今日** — 删除今日已提交的日报
-  6. **重新发送今日日报** / **重发今日日报** — 删除后重新从智能文档提取提交
-  7. **查看配置** / **当前配置** — 查看当前系统配置信息
-  8. **指令** / **帮助** / **help** / **菜单** — 查看所有可用指令及说明
-- **新增函数**（target.py）：
-  - `get_report_status(cfg, report_date)` — 查询指定日期日报状态
-  - `delete_daily_report(cfg, report_date)` — 删除指定日期日报
-  - `get_recent_reports(cfg, count)` — 获取最近N条日报记录
-  - `get_monthly_statistics(cfg, year, month)` — 获取月度提交统计
-  - `_login_and_navigate(cfg)` — 登录并导航到日报页面（公共辅助函数）
-
-### 11. 调度器配置化 + 本周统计 + 自动统计推送
-- **调度器配置化**：
-  - 新增 `SchedulerConfig` 配置类，时间从配置文件读取而非硬编码
-  - 默认日报提交时间调整为 **20:00**（原 23:23）
-  - 默认统计推送时间为 **21:00**
-  - 新增 `update_runtime_config(cfg)` 函数支持运行时动态修改
-- **新增本周统计**：
-  - 新增 `get_weekly_statistics(cfg, year, month, day)` 函数（target.py）
-  - 统计周期：周一至周日，包含提交天数、已审核/待审核/未提交数量
-  - 新增企业微信指令：**本周统计** / **周报统计**
-- **自动统计推送**：
-  - 每周日 21:00 自动推送本周统计
-  - 每月最后一天 21:00 自动推送本月统计
-  - 通过企业微信 Markdown 消息发送
-- **修改提交时间指令**：
-  - 新增指令：**设置提交时间 HH:MM** / **修改提交时间 HH:MM** / **设置日报时间 HH:MM**
-  - 永久修改配置文件并立即生效（运行时更新调度器）
-  - 支持格式：`设置提交时间 20:00`
-
-### 12. 本月/本周统计已提交为 0 的问题
-- **问题**：统计功能的已提交天数始终显示为 0，原因是 `_collect_all_rows` 函数在翻页时收集的是 Playwright `ElementHandle` 对象，页面翻页后前一页的 DOM 元素失效，后续统计时调用 `row.inner_text()` 无法获取数据
-- **修复**：
-  1. 修改 `_collect_all_rows` 函数，在翻页前就提取所有需要的数据（日期、行文本、是否有删除/修改按钮），存入字典列表返回，而不是保存失效的 ElementHandle
-  2. 修改 `get_monthly_statistics` 和 `get_weekly_statistics` 函数，直接使用预提取的字典数据进行统计，不再操作 DOM 元素
-  3. 增加收集结果日志，输出收集到的唯一记录条数和页数，便于排查
-
-### 13. 今日日报指令内容预览为空
-- **问题**：发送"今日日报"指令后，回复中"内容预览"为空，无法看到日报内容
-- **原因**：`get_report_status` 函数中只尝试了两种读取内容方式（展开行读取、表格行直接读取），如果这两种方式都失败，`content` 就为空字符串
-- **修复**：增加第三种读取方式，当展开行和表格行读取都失败时，尝试使用 `_read_content_by_open_dialog` 打开弹窗读取内容
-
-### 14. 撤回今日日报指令变量名冲突
-- **问题**：发送"撤回今日日报"指令时出错
-- **原因**：`process_delete` 函数中局部变量 `msg` 与外部企业微信消息对象 `msg` 同名，导致变量名冲突，可能引发闭包捕获错误
-- **修复**：将局部变量 `msg` 改名为 `result_msg`，避免与外部消息对象冲突
-
-### 15. 撤回今日日报指令误触发状态查询
-- **问题**：发送"撤回今日日报"指令后，返回的却是今日日报状态查询结果
-- **原因**：指令匹配使用子串包含判断，"今日日报"是"撤回今日日报"的子串，且状态查询分支在撤回分支之前，导致误命中
-- **修复**：调整企业微信指令匹配顺序，将"撤回今日日报"和"重新发送今日日报"分支前移，优先匹配更长、更具体的指令，避免子串误命中
-
-### 16. 新增服务器运维指令
-- **新增指令**：
-  1. **服务器状态 / 系统状态** — 查看服务器内存、磁盘、运行时间、临时文件大小等状态
-  2. **清理缓存 / 清除缓存** — 清理1天前的临时截图、__pycache__ 缓存目录、清空日志文件，返回清理结果和释放空间
-  3. **查看日志 / 最近日志** — 查看最近30条 daily_send.log 日志内容
-  4. **重启服务** — 重启 daily-report 服务（会短暂中断）
-- **技术实现**：
-  - 使用 `subprocess` 执行系统命令获取服务器状态（free、df、uptime、find 等）
-  - 清理缓存时仅清理1天前的 PNG 文件，避免清理正在使用的截图
-  - 重启服务采用延迟退出方案：先发送确认消息给用户，等待3秒后调用 `os._exit(0)` 退出进程，依赖 systemd 的 `Restart=always` 策略在 30 秒内自动重启服务
-  - 配置 `/etc/sudoers.d/daily-report` 允许 ubuntu 用户免密执行 `systemctl restart daily-report`
-- **同时修复**：`process_resend` 函数中 `msg` 变量名冲突问题（与 #14 相同）
-
-### 17. 帮助消息格式化 + 重启指令优化
-- **帮助消息格式化**：
-  - 将帮助文本从纯文本改为 **Markdown 格式**，使用 `send_markdown` 发送
-  - 使用 `#`/`##` 标题分隔各大类指令，指令名称加粗，功能说明使用引用格式
-  - 企业微信中显示效果更清晰、层次分明
-- **重启指令优化**：
-  - 原方案：`subprocess.Popen` 异步执行 `systemctl restart`，但进程被 kill 后无法回复用户
-  - 新方案：重启前写入标志文件（`/tmp/daily_report_restart.flag`）记录用户ID，等待3秒确保消息送达后调用 `os._exit(0)` 退出
-  - 服务启动时自动检测标志文件，若存在则发送"服务已重启完成，运行正常！"确认消息给用户，然后删除标志文件
-  - systemd 的 `Restart=always` 策略会在 30 秒内自动重启服务
-  - 用户能收到完整的重启流程反馈：重启前提示 → 重启后确认
-
-### 18. 清理缓存指令权限问题
-- **问题**：发送"清理缓存"指令报错 `Permission denied: service.log`
-- **原因**：`service.log` 由 systemd（root）创建，ubuntu 用户无写权限
-- **修复**：
-  - 清理日志时先尝试普通写入，失败则用 `sudo truncate -s 0` 清空
-  - 更新 sudoers 配置，增加 `truncate` 命令免密权限
-
-### 19. 系统级缓存清理 + 服务器状态优化
-- **清理缓存升级为系统级**：
-  - 新增清理 Linux 页面缓存（`drop_caches`，释放 buff/cache）
-  - 新增清理 APT 包缓存（`apt-get clean` + `autoremove`）
-  - 新增清理 Systemd 日志（保留最近 7 天）
-  - 新增清理 `/tmp` 临时文件（保留最近 7 天）
-  - 保留原有服务级清理（PNG 截图、`__pycache__`、服务日志）
-  - 使用 `/usr/local/bin/clear-server-cache` 包装脚本，通过 sudoers 限制权限范围
-  - 清理完成后显示可用内存
-- **服务器状态指令优化**：
-  - 新增内存详情：总量、已用、缓存（可回收）、可用
-  - 新增 Swap 使用情况
-  - 新增 APT 缓存大小和系统日志大小
-  - 格式化显示，层次更清晰
-- **技术实现**：
-  - 创建 `/usr/local/bin/clear-server-cache` 脚本，支持 `pagecache`、`apt`、`journal`、`tmp` 四种子命令
-  - 更新 sudoers 配置，仅允许执行该脚本和 `truncate`、`systemctl restart`
-  - 服务器状态使用 `free -b` 获取精确字节数，自动转换为合适的单位
-
-### 20. 新增查看定时配置指令 + 扩展修改定时功能
-- **新增指令**：
-  1. **查看定时配置 / 定时配置 / 定时任务** — 查看所有定时任务配置及修改指令提示
-  2. **设置Cookies检查时间 HH:MM / 修改Cookies检查时间 HH:MM** — 永久修改Cookies检查时间（工作日）
-  3. **设置统计推送时间 HH:MM / 修改统计推送时间 HH:MM** — 永久修改统计自动推送时间（周日/月末）
-  4. 原有 **设置日报提交时间 HH:MM** 保留不变
-- **功能说明**：
-  - 查看定时配置会显示三项定时任务的当前时间，并附带修改指令提示
-  - 所有修改指令都支持永久保存到配置文件，**立即生效**（运行时更新调度器，无需重启服务），重启后配置仍然保留
-  - 帮助文本已同步更新
-
-### 21. 新增定时缓存清理功能
-- **功能说明**：
-  - 新增定时缓存清理任务，每月1号自动清理服务器缓存（默认 04:00）
-  - 清理内容：项目截图、__pycache__、服务日志、Linux 页面缓存、APT 包缓存、系统日志、/tmp 临时文件
-  - 清理完成后自动发送企业微信通知
-- **新增指令**：
-  1. **设置缓存清理时间 HH:MM / 修改缓存清理时间 HH:MM** — 永久修改缓存自动清理时间（每月1号）
-  2. **查看定时配置** — 新增显示缓存清理时间
-- **配置变更**：
-  - `config.yaml` 新增 `scheduler.cache_cleanup_hour` 和 `scheduler.cache_cleanup_minute` 配置项
-  - 默认值：04:00（凌晨4点）
-
-### 22. 🔥 彻底移除邮件，改用企业微信
-- **问题**：邮件通知（SMTP/IMAP）在 911MB 小内存服务器上占用资源，且每5分钟邮箱轮询会与定时日报提交产生 chromium 并发导致超时
-- **修复**：
-  1. 删除 `email_notifier.py`、`email_reader.py`，所有通知统一使用企业微信
-  2. 删除 `EmailConfig` 配置类，移除 config.yaml 中 email 段
-  3. 删除定时邮件轮询（`_run_cookies_email_check`），消除并发 chromium 根源
-  4. 新增 `browser_lock.py` 全局浏览器互斥锁 + 低内存启动参数
-  5. 新增 `notifier.py` 纯企业微信通知分发
-  6. 新增 `wechat_notifier.py` 企业微信消息发送
-
-### 23. dddocr 子进程隔离，降低基线内存
-- **问题**：ddddocr 本地 OCR 模型加载后常驻 ~50MB，进程基线从 48MB 涨到 ~100MB
-- **修复**：将 dddocr 识别改为子进程模式（`captcha_worker.py`），stdin 收图 → 识别 → stdout 输出 → 退出释放
-
-### 24. 补全浏览器互斥锁 + cookies 过期交互确认
-- 补全 `_login_and_navigate`、`qr_login_renewer` 的 browser_operation 锁
-- 补全"生成二维码"指令的 _try_start_cmd 互斥锁
-- 定时提交发现 cookies 过期 → 企微交互确认（是/否/5分钟超时）
-
-### 25. 工作日历自动更新 + 代理服务管理指令
-- 新增 `calendar_updater.py`：每年12月1日自动从 GitHub holiday-cn 拉取下一年节假日
-- 新增企业微信指令：启动Xray/停止Xray/重启Xray、启动Hy2/停止Hy2/重启Hy2
-- 服务器状态新增 CPU 占用显示
+`status-page.service` 已不存在，无需启动。
 
 ## 依赖
 
@@ -901,6 +139,4 @@ pillow>=10.0
 pypdf>=5.0
 ```
 
-额外运行时依赖（可选）：
-- `ddddocr`：本地验证码识别（子进程模式，用完即释放）
-- `zoneinfo`（Python 3.9+ 内置）：时区支持
+可选：`ddddocr`（本地验证码，用完即释放）。
