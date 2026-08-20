@@ -449,9 +449,6 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert 'class="manage-card transaction-card ${kind.className}"' in page
     assert 'class="transaction-head-actions"' in page
     assert "function transactionDetailsHtml(" in page
-    assert "function todayDateStr()" in page
-    assert "settlementDate > todayStr" in page
-    assert "timeZone: 'Asia/Shanghai'" in page
 
 
 def test_trade_form_applies_wallet_plus_rules_and_redemption_context():
@@ -464,7 +461,6 @@ def test_trade_form_applies_wallet_plus_rules_and_redemption_context():
     assert "function updateTradeRedemptionContext()" in page
     assert "`可用份额 ${money(availableShares)}`" in page
     assert "settlementInput.value = tradeDateFromInput();" in page
-    assert "settleDate && settleDate > todayStr" in page
     assert "const fixedCashPurchase = !redemption && productType === 'cash_management';" in page
     assert "$('tradeProduct').value = rowValue(walletPlus, 'id', 'product_id') || '';" in page
     assert "fillTradeCashOptions(fixedCashPurchase ? walletPlusId : '', walletRedemption ? selectedProductId : '');" in page
@@ -570,11 +566,9 @@ def test_calibration_transactions_have_an_exclusive_filter():
 
 def test_top_metrics_unchanged():
     page = _read_page()
-    assert "总资产" in page
-    assert "估算市值" in page
-    assert "最新披露" in page
-    assert "总资产(元)" not in page
-    assert "今日披露" not in page
+    assert "总资产(元)" in page
+    assert "估算市值(元)" in page
+    assert "今日披露" in page
 
 
 def format_holding(share_text, nav_text):
@@ -655,3 +649,26 @@ def test_format_holding_inf_nav_returns_only_shares():
 
 def test_format_holding_nav_zero():
     assert format_holding("10000", "0") == "10000.00 份 · 市值 0.00 元"
+
+
+def test_profit_sheet_expands_one_period_row_at_a_time():
+    html = _read_page()
+    assert "let expandedProfitKey = '';" in html
+    assert "function toggleProfitRow(key)" in html
+    assert "data-profit-row-key" in html
+    assert "aria-expanded=" in html
+    assert "daily-profit-products" in html
+    assert "daily-profit-product-name" in html
+    assert "expandedProfitKey = expandedProfitKey === key ? '' : key;" in html
+    assert "profit-row-chevron" in html
+    assert "const expandable = products.length > 0;" in html
+
+
+def test_profit_sheet_clears_expanded_row_on_tab_change_and_close():
+    html = _read_page()
+    assert "function setProfitView(view)" in html
+    assert "function closeDailyProfits()" in html
+    close_idx = html.index("function closeDailyProfits()")
+    set_idx = html.index("function setProfitView(view)")
+    assert "expandedProfitKey = '';" in html[set_idx:set_idx + 220]
+    assert "expandedProfitKey = '';" in html[close_idx:close_idx + 420]

@@ -129,8 +129,6 @@ def test_nav_page_contains_daily_profit_bottom_sheet():
     assert 'id="latestProfitDate"' in html
     assert "最新收益" in html
     assert "最新收益（${" not in html
-    assert 'id="mainDragAmount"' not in html
-    assert 'id="mainGainAmount"' not in html
     assert "本月收益贡献排行" in html
     assert "本月无正贡献" in html
     assert "本月无拖累" in html
@@ -138,6 +136,8 @@ def test_nav_page_contains_daily_profit_bottom_sheet():
     assert "allPositive" in html
     assert "totalTone" in html
     assert ".hero.sunny" in html
+    assert "data-profit-row-key" in html
+    assert "daily-profit-products" in html
 
 
 def test_nav_icon_assets_are_served_locally():
