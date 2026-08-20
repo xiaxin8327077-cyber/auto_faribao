@@ -508,3 +508,27 @@ def test_apply_portfolio_profit_views_attaches_products_that_sum_to_each_row(tmp
         assert sum(Decimal(item["amount"]) for item in row["products"]) == Decimal(
             row["amount"]
         )
+
+
+def test_monthly_rankings_use_current_month_products_not_since_august(tmp_path):
+    repository = _period_profit_repository(tmp_path)
+    payload = {"daily_profits": [], "monthly_profits": [], "yearly_profits": []}
+    portfolio = {
+        "summary": {"as_of": "2026-09-02"},
+        "products": [
+            {"id": "a", "name": "产品甲", "code": "P1"},
+            {"id": "b", "name": "产品乙", "code": "P2"},
+            {"id": "c", "name": "产品丙", "code": "P3"},
+        ],
+    }
+
+    _apply_portfolio_profit_views(payload, repository, portfolio)
+
+    assert [item["amount"] for item in payload["monthly_positive_rankings"]] == [
+        "5.00"
+    ]
+    assert [item["code"] for item in payload["monthly_positive_rankings"]] == ["P1"]
+    assert [item["amount"] for item in payload["monthly_negative_rankings"]] == [
+        "-5.0"
+    ]
+    assert [item["code"] for item in payload["monthly_negative_rankings"]] == ["P2"]

@@ -979,45 +979,21 @@ def _apply_portfolio_rankings(payload, repository, portfolio, as_of) -> None:
 
     current_month = as_of.strftime("%Y-%m")
     products = portfolio.get("products", [])
-
-    # 按月汇总每个产品的收益（只算 8 月及之后）
-    product_monthly = {}
-    for product_row in products:
-        pid = product_row.get("id") or product_row.get("product_id")
-        if not pid:
-            continue
-        repo_product = repository.get_product(pid) if repository else None
-        if not repo_product:
-            continue
-        total = Decimal("0")
-        seen_dates = set()
-        for quote in repository.list_quotes(pid, on_or_before=as_of):
-            if quote.quote_date < date(2026, 8, 1):
-                continue
-            if quote.quote_date in seen_dates:
-                continue
-            seen_dates.add(quote.quote_date)
-            pd, profit = calculate_latest_profit(
-                repository,
-                repo_product,
-                quote.quote_date,
-                bundle_non_trading_days=False,
-            )
-            if pd == quote.quote_date and profit is not None:
-                total += profit
-        if total != 0:
-            product_monthly[pid] = {
-                "name": product_row.get("name", ""),
-                "code": product_row.get("code", ""),
-                "provider": product_row.get("provider", ""),
-                "product_type": product_row.get("product_type", ""),
-                "amount": total,
-            }
-
-    # 排序
-    ranked = sorted(product_monthly.values(), key=lambda x: x["amount"], reverse=True)
-    payload["monthly_positive_rankings"] = [p for p in ranked if p["amount"] > 0][:3]
-    payload["monthly_negative_rankings"] = [p for p in reversed(ranked) if p["amount"] < 0][:3]
+    month_row = next(
+        (
+            row
+            for row in payload.get("monthly_profits") or []
+            if row.get("period") == current_month
+        ),
+        None,
+    )
+    month_products = list(month_row.get("products") or []) if month_row else []
+    payload["monthly_positive_rankings"] = [
+        item for item in month_products if Decimal(item["amount"]) > 0
+    ][:3]
+    payload["monthly_negative_rankings"] = [
+        item for item in reversed(month_products) if Decimal(item["amount"]) < 0
+    ][:3]
 
     # 每日排名：使用最新一天的各产品收益
     latest_date_str = str(payload.get("latest_profit_date") or "")
