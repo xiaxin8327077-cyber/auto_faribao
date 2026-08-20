@@ -796,6 +796,33 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
     return payload
 
 
+def _sum_product_amounts(daily_product_profits, days) -> dict:
+    totals = {}
+    for day in days:
+        for product_id, amount in (daily_product_profits.get(day) or {}).items():
+            totals[product_id] = totals.get(product_id, Decimal("0")) + amount
+    return totals
+
+
+def _product_breakdown_rows(amounts_by_id, products_by_id) -> list:
+    rows = []
+    for product_id, amount in amounts_by_id.items():
+        if amount == 0:
+            continue
+        product = products_by_id.get(product_id)
+        if product is None:
+            continue
+        rows.append(
+            {
+                "name": product.name,
+                "code": product.code,
+                "amount": format(amount, "f"),
+            }
+        )
+    rows.sort(key=lambda item: Decimal(item["amount"]), reverse=True)
+    return rows
+
+
 def _portfolio_daily_profit_totals(repository, as_of: date) -> dict:
     """Rebuild per-day profits from ledger quotes / income (all products)."""
     from collections import defaultdict

@@ -355,3 +355,39 @@ def test_manual_refresh_reuses_any_recent_success(monkeypatch, tmp_path):
 
     assert result["accepted"] is False
     assert result["status"] == "cooldown"
+
+
+from types import SimpleNamespace
+from src.nav_dashboard import _product_breakdown_rows, _sum_product_amounts
+
+
+def test_product_breakdown_omits_zero_and_sorts_high_to_low():
+    products = {
+        "a": SimpleNamespace(name="产品甲", code="P1"),
+        "b": SimpleNamespace(name="产品乙", code="P2"),
+        "c": SimpleNamespace(name="产品丙", code="P3"),
+    }
+    rows = _product_breakdown_rows(
+        {
+            "a": Decimal("10"),
+            "b": Decimal("-5"),
+            "c": Decimal("0"),
+        },
+        products,
+    )
+    assert rows == [
+        {"name": "产品甲", "code": "P1", "amount": "10"},
+        {"name": "产品乙", "code": "P2", "amount": "-5"},
+    ]
+
+
+def test_sum_product_amounts_adds_the_same_product_across_days():
+    daily = {
+        "2026-08-03": {"a": Decimal("10"), "b": Decimal("-5")},
+        "2026-08-04": {"a": Decimal("2")},
+        "2026-09-01": {"a": Decimal("5"), "b": Decimal("-5")},
+    }
+    assert _sum_product_amounts(daily, ["2026-08-03", "2026-08-04"]) == {
+        "a": Decimal("12"),
+        "b": Decimal("-5"),
+    }
