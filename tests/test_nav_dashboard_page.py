@@ -404,7 +404,36 @@ def test_trade_form_switches_between_purchase_amount_and_redemption_shares():
     assert "input.step = '0.01';" in page
     assert "input.min = '0.01';" in page
     assert "$('tradeValueTitle').textContent = redemption ? '赎回份额' : '申购金额（元）';" in page
-    assert "$('tradeTimeLabel').firstChild.textContent = redemption ? '赎回时间' : '申购时间';" in page
+    assert "$('tradeTimeTitle').textContent = redemption ? '赎回时间' : '申购时间';" in page
+
+
+def test_trade_dialog_keeps_actions_visible_and_scrolls_only_the_form_body():
+    page = _read_page()
+
+    assert "#tradeDialog { height: min(calc(100dvh - 24px), 680px);" in page
+    assert "#tradeDialog { height: min(calc(100vh - 24px), 680px); max-height: min(calc(100vh - 24px), 680px); overflow: hidden; }" in page
+    assert "#tradeDialog > form { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; width: 100%; }" in page
+    assert "#tradeDialog .dialog-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto;" in page
+    assert "#tradeDialog .form-field { min-width: 0; max-width: 100%; }" in page
+    assert 'class="date-input-shell"' in page
+    assert 'id="tradeTimeTitle">申购时间<' in page
+    assert ".date-input-shell input { width: 100%; min-width: 0; max-width: 100%;" in page
+    assert "-webkit-appearance: none;" in page
+    assert "#tradeDialog .dialog-actions { flex: 0 0 auto; margin: 0;" in page
+    assert '<footer class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="tradeDialog">取消</button><button class="action-button" type="submit">预览</button></footer>' in page
+
+
+def test_trade_dialog_locks_background_scroll_on_touch():
+    page = _read_page()
+    assert "function updatePageScrollLock()" in page
+    assert "body.classList.add('page-locked')" in page
+    assert "html.classList.add('page-locked')" in page
+    assert "html.page-locked, body.page-locked { overflow: hidden; overscroll-behavior: none; }" in page
+    assert "body.page-locked { position: fixed; width: 100%; left: 0; right: 0; }" in page
+    assert "updatePageScrollLock();" in page[page.index("const dialogOpen"): page.index("const dialogOpen") + 280]
+    assert "event.target.closest('.dialog-body, .daily-profit-list, .product-suggestion-panel, .product-history')" in page
+    assert "if (!document.body.classList.contains('page-locked')) return;" in page
+    assert "if (document.body.classList.contains('page-locked'))" in page
 
 
 def test_trade_form_filters_products_and_shows_type_specific_fields():

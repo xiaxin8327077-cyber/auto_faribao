@@ -226,6 +226,8 @@
     .access-error h2 { margin-top: 14px; font-size: 20px; }
     .access-error p { margin: 9px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
     body.sheet-open { overflow: hidden; }
+    html.page-locked, body.page-locked { overflow: hidden; overscroll-behavior: none; }
+    body.page-locked { position: fixed; width: 100%; left: 0; right: 0; }
     .sheet-backdrop {
       position: fixed;
       z-index: 200;
@@ -379,6 +381,14 @@
     .transaction-detail.full { grid-column: 1 / -1; }
     dialog.management-dialog { width: min(calc(100% - 24px), 406px); max-height: min(84vh, 680px); margin: auto; padding: 0; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: var(--panel); box-shadow: 0 24px 70px rgba(13, 29, 50, .32); }
     #tradeDialog, #sipDialog { width: min(calc(100% - 24px), 520px); }
+    #tradeDialog { height: min(calc(100vh - 24px), 680px); max-height: min(calc(100vh - 24px), 680px); overflow: hidden; }
+    #tradeDialog { height: min(calc(100dvh - 24px), 680px); max-height: min(calc(100dvh - 24px), 680px); }
+    #tradeDialog[open] { display: flex; flex-direction: column; }
+    #tradeDialog > form { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; width: 100%; }
+    #tradeDialog .dialog-head { flex: 0 0 auto; }
+    #tradeDialog .dialog-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+    #tradeDialog .dialog-actions { flex: 0 0 auto; margin: 0; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--panel); }
+    #tradeDialog .dialog-actions .action-button { min-height: 44px; }
     dialog.management-dialog::backdrop { background: rgba(13, 29, 50, .44); }
     .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
     .dialog-head h2 { font-size: 19px; }
@@ -388,6 +398,10 @@
     .form-field-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
     .form-field-title small { color: var(--muted); font-size: 11px; font-weight: 500; }
     .form-field input, .form-field select, .form-field textarea { width: 100%; min-height: 39px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--text); font: inherit; font-size: 14px; }
+    #tradeDialog .form-field { min-width: 0; max-width: 100%; }
+    .date-input-shell { display: block; min-width: 0; max-width: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+    .date-input-shell input { width: 100%; min-width: 0; max-width: 100%; height: 39px; min-height: 39px; padding: 8px 10px; border: 0; border-radius: 0; background: transparent; -webkit-appearance: none; appearance: none; }
+    .date-input-shell input::-webkit-date-and-time-value { text-align: left; }
     .form-field textarea { min-height: 72px; resize: vertical; }
     .product-search-status { min-height: 16px; color: var(--muted); font-size: 11px; font-weight: 650; line-height: 1.4; }
     .product-search-status.success { color: #087a4b; }
@@ -623,10 +637,9 @@
       <label class="form-field" id="tradeFeeRateField" hidden>申购费率（%）<input name="fee_rate_percent" id="tradeFeeRateInput" type="number" min="0" max="100" step="0.0001" inputmode="decimal" required disabled></label>
       <label class="form-field" id="tradeSourceField">申购资金来源<select name="source_cash_product_id" id="tradeSource"><option value="">钱包</option></select></label>
       <label class="form-field" id="tradeDestinationField" hidden>赎回到账<select name="destination_cash_product_id" id="tradeDestination" disabled><option value="">钱包</option></select></label>
-      <label class="form-field" id="tradeSettlementField" hidden>预计到账日期<input name="settlement_date" id="tradeSettlementInput" type="date" disabled></label>
-      <label class="form-field" id="tradeTimeLabel">申购时间<input id="tradeTimeInput" name="trade_time" type="datetime-local" required></label>
-      <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="tradeDialog">取消</button><button class="action-button" type="submit">预览</button></div>
-    </div></form>
+      <label class="form-field" id="tradeSettlementField" hidden>预计到账日期<span class="date-input-shell"><input name="settlement_date" id="tradeSettlementInput" type="date" disabled></span></label>
+      <label class="form-field" id="tradeTimeLabel"><span id="tradeTimeTitle">申购时间</span><span class="date-input-shell"><input id="tradeTimeInput" name="trade_time" type="datetime-local" required></span></label>
+    </div><footer class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="tradeDialog">取消</button><button class="action-button" type="submit">预览</button></footer></form>
   </dialog>
 
   <dialog class="management-dialog" id="confirmDialog" aria-labelledby="confirmDialogTitle">
@@ -774,10 +787,12 @@
     const dialogOpen = id => {
       const dialog = $(id);
       if (!dialog.open) dialog.showModal();
+      updatePageScrollLock();
     };
     const closeDialog = id => {
       const dialog = $(id);
       if (dialog.open) dialog.close();
+      updatePageScrollLock();
     };
     const formPayload = form => Object.fromEntries(new FormData(form).entries());
     const newIdempotencyKey = () => window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1651,9 +1666,32 @@
       expandedProfitKey = '';
       renderDailyProfits();
     }
+    function updatePageScrollLock() {
+      const dialogOpenNow = [...document.querySelectorAll('dialog')].some(dialog => dialog.open);
+      const sheetOpen = !$('dailyProfitBackdrop').hidden || !$('sipRecordBackdrop').hidden;
+      const open = dialogOpenNow || sheetOpen;
+      const body = document.body;
+      const html = document.documentElement;
+      if (open) {
+        if (!body.classList.contains('page-locked')) {
+          const scrollY = window.scrollY || html.scrollTop || 0;
+          body.dataset.scrollY = String(scrollY);
+          body.style.top = `-${scrollY}px`;
+          body.classList.add('page-locked');
+          html.classList.add('page-locked');
+        }
+      } else if (body.classList.contains('page-locked')) {
+        const scrollY = Number(body.dataset.scrollY || 0);
+        body.classList.remove('page-locked');
+        html.classList.remove('page-locked');
+        body.style.top = '';
+        delete body.dataset.scrollY;
+        window.scrollTo(0, scrollY);
+      }
+      document.body.classList.toggle('sheet-open', sheetOpen);
+    }
     function updateSheetLock() {
-      const open = !$('dailyProfitBackdrop').hidden || !$('sipRecordBackdrop').hidden;
-      document.body.classList.toggle('sheet-open', open);
+      updatePageScrollLock();
     }
     function openDailyProfits() {
       activeProfitView = 'daily';
@@ -2210,7 +2248,7 @@
       input.step = '0.01';
       input.min = '0.01';
       $('tradeValueTitle').textContent = redemption ? '赎回份额' : '申购金额（元）';
-      $('tradeTimeLabel').firstChild.textContent = redemption ? '赎回时间' : '申购时间';
+      $('tradeTimeTitle').textContent = redemption ? '赎回时间' : '申购时间';
       $('tradeFeeRateField').hidden = !(publicFund && !redemption);
       $('tradeFeeRateInput').disabled = !(publicFund && !redemption);
       $('tradeSourceField').hidden = redemption;
@@ -2534,6 +2572,10 @@
     $('dashboardContent').addEventListener('touchstart', event => {
       const target = event.target;
       const blocked = target.closest('dialog, input, select, textarea, .transaction-filters, .product-suggestion-panel, .daily-profit-list');
+      if (document.body.classList.contains('page-locked')) {
+        managementSwipeStart = null;
+        return;
+      }
       if (event.touches.length !== 1 || blocked || !$('dailyProfitBackdrop').hidden) {
         managementSwipeStart = null;
         return;
@@ -2557,6 +2599,14 @@
       setActiveTab(MANAGEMENT_TABS[nextIndex]);
     }, {passive: true});
     document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => closeDialog(button.dataset.closeDialog)));
+    document.querySelectorAll('dialog.management-dialog').forEach(dialog => {
+      dialog.addEventListener('close', updatePageScrollLock);
+    });
+    document.addEventListener('touchmove', event => {
+      if (!document.body.classList.contains('page-locked')) return;
+      if (event.target.closest('.dialog-body, .daily-profit-list, .product-suggestion-panel, .product-history')) return;
+      event.preventDefault();
+    }, {passive: false});
     document.querySelectorAll('[data-write-action]').forEach(button => button.addEventListener('click', () => {
       if (!state.writeEnabled) {
         updateWriteControls();
