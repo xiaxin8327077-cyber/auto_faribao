@@ -53,11 +53,31 @@ def test_position_group_cards_drop_header_rule_and_space_products():
 def test_page_scrollbar_stops_above_bottom_tabs():
     html = _read_page()
     assert "html, body { height: 100%; overflow: hidden; }" in html
-    assert ".management-tabs { position: static;" in html or (
-        ".management-tabs {" in html
-        and "position: static;" in html[html.index(".management-tabs {"): html.index(".management-tabs {") + 280]
-    )
-    assert ".management-panel:not([hidden]) { order: 2; flex: 1 1 auto; min-height: 0; overflow-y: auto;" in html
+    tabs = html[html.index(".management-tabs {"): html.index(".management-tabs {") + 420]
+    assert "position: absolute;" in tabs
+    assert "bottom: 0;" in tabs
+    assert "backdrop-filter: saturate(180%) blur(18px);" in tabs
+    start = html.index(".management-panel:not([hidden])")
+    block = html[start: start + 420]
+    assert "order: 2;" in block
+    assert "overflow-y: auto;" in block
+    assert "padding-top: calc(12px + 54px + env(safe-area-inset-top, 0px));" in block
+    assert "padding-bottom: calc(16px + 54px + env(safe-area-inset-bottom, 0px));" in block
+
+
+def test_topbar_uses_frosted_glass_overlay():
+    html = _read_page()
+    start = html.index(".topbar {")
+    block = html[start: html.index(".top-actions")]
+    assert "position: absolute;" in block
+    assert "backdrop-filter: saturate(180%) blur(18px);" in block
+    assert "background: rgba(255, 255, 255, 0.66);" in block
+    assert "#dashboardContent" in html and "position: relative;" in html[html.index("#dashboardContent"): html.index("#dashboardContent") + 180]
+    tabs = html[html.index(".management-tabs {"): html.index(".management-tabs {") + 420]
+    assert "position: absolute;" in tabs
+    assert "bottom: 0;" in tabs
+    assert "backdrop-filter: saturate(180%) blur(18px);" in tabs
+    assert "background: rgba(255, 255, 255, 0.66);" in tabs
 
 
 def test_active_management_tab_survives_page_and_data_refresh():
@@ -85,11 +105,15 @@ def test_page_title_uses_quiet_app_bar_style():
     start = html.index(".topbar {")
     block = html[start: html.index(".top-actions")]
     assert "align-items: center;" in block
-    assert "background: var(--panel);" in block
+    assert "position: absolute;" in block
+    assert "background: rgba(255, 255, 255, 0.66);" in block
+    assert "backdrop-filter: saturate(180%) blur(18px);" in block
     assert "min-height: 54px;" in block
-    assert "border-bottom: 1px solid var(--line);" in block
-    assert ".management-tabs" in html and "background: var(--panel);" in html
+    assert "border-bottom: 1px solid rgba(215, 228, 242, 0.55);" in block
+    assert ".management-tabs" in html and "background: rgba(255, 255, 255, 0.66);" in html
     assert ".management-tab" in html and "min-height: 54px;" in html
+    assert "padding-top: calc(12px + 54px + env(safe-area-inset-top, 0px));" in html
+    assert "padding-bottom: calc(16px + 54px + env(safe-area-inset-bottom, 0px));" in html
     title = html[html.index("h1 { margin: 0;"): html.index("h1 { margin: 0;") + 160]
     assert "font-size: 17px;" in title
     assert "font-weight: 700;" in title

@@ -46,6 +46,7 @@
       flex-direction: column;
     }
     #dashboardContent {
+      position: relative;
       display: flex;
       flex: 1 1 auto;
       flex-direction: column;
@@ -54,7 +55,11 @@
     }
     #dashboardContent[hidden] { display: none !important; }
     .topbar {
-      flex: 0 0 auto;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 40;
       margin: 0;
       min-height: 54px;
       padding: calc(8px + env(safe-area-inset-top, 0px)) 14px 6px;
@@ -62,8 +67,11 @@
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      background: var(--panel);
-      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.66);
+      -webkit-backdrop-filter: saturate(180%) blur(18px);
+      backdrop-filter: saturate(180%) blur(18px);
+      border-bottom: 1px solid rgba(215, 228, 242, 0.55);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.45) inset;
     }
     h1 { margin: 0; color: var(--text); font-size: 17px; line-height: 24px; font-weight: 700; }
     .top-actions { display: flex; align-items: center; gap: 8px; }
@@ -80,9 +88,11 @@
       height: 36px;
       display: inline-grid;
       place-items: center;
-      border: 1px solid var(--line);
+      border: 1px solid rgba(215, 228, 242, 0.7);
       border-radius: 50%;
-      background: var(--panel);
+      background: rgba(255, 255, 255, 0.45);
+      -webkit-backdrop-filter: blur(10px);
+      backdrop-filter: blur(10px);
       color: var(--blue);
       cursor: pointer;
       box-shadow: 0 5px 14px rgba(36, 91, 151, .10);
@@ -331,7 +341,20 @@
     .sip-record-amount { color: var(--text); font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
     .sip-record-status { color: var(--muted); font-size: 11px; font-weight: 650; }
     .sip-record-shares { color: var(--muted); font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; }
-    .management-tabs { position: static; order: 3; flex: 0 0 auto; z-index: 100; display: grid; grid-template-columns: repeat(4, 1fr); background: var(--panel); border-top: 1px solid var(--line); }
+    .management-tabs {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 40;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      background: rgba(255, 255, 255, 0.66);
+      -webkit-backdrop-filter: saturate(180%) blur(18px);
+      backdrop-filter: saturate(180%) blur(18px);
+      border-top: 1px solid rgba(215, 228, 242, 0.55);
+      box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.45) inset;
+    }
     .management-tab-indicator { display: none; }
     .management-tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 54px; padding: 8px 0 calc(6px + env(safe-area-inset-bottom)); border: 0; background: transparent; color: var(--muted); font-size: 11px; font-weight: 700; cursor: pointer; transition: color .15s ease; }
     .management-tab svg { width: 20px; height: 20px; stroke-width: 1.8; }
@@ -341,7 +364,16 @@
     .management-tab:focus-visible, .action-button:focus-visible { outline: 3px solid rgba(31, 111, 209, .24); outline-offset: 2px; }
     .management-panel[hidden] { display: none; }
     .management-panel { padding: 12px 14px 16px; }
-    .management-panel:not([hidden]) { order: 2; flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    .management-panel:not([hidden]) {
+      order: 2;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      /* 给上下毛玻璃栏留空，滚动时内容可透出模糊 */
+      padding-top: calc(12px + 54px + env(safe-area-inset-top, 0px));
+      padding-bottom: calc(16px + 54px + env(safe-area-inset-bottom, 0px));
+    }
     .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 2px 14px; }
     .panel-heading h2 { font-size: 16px; font-weight: 700; }
     .metric-sub { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 14px; }
