@@ -19,6 +19,47 @@ def test_page_has_four_management_tabs_and_quick_trade():
         assert f'id="{element_id}"' in html
 
 
+def test_overview_trade_button_sits_beside_asset_summary_title():
+    html = _read_page()
+    overview = html[html.index('id="overviewPanel"'): html.index('id="positionsPanel"')]
+    assert "<h2>组合总览</h2>" not in overview
+    assets = overview[overview.index("资产概况"): overview.index("overview-grid")]
+    assert 'id="quickTradeButton"' in assets
+    assert assets.index("资产概况") < assets.index("quickTradeButton") < assets.index("pendingStatus")
+    assert ".section-head .section-meta { margin-left: auto; }" in html
+
+
+def test_section_trade_buttons_use_compact_action_style():
+    html = _read_page()
+    assert (
+        ".section-head .action-button, .panel-heading .action-button "
+        "{ min-height: 28px; padding: 0 10px; border-radius: 6px; font-size: 12px; font-weight: 700; }"
+    ) in html
+    assert "#tradeDialog .dialog-actions .action-button { min-height: 44px; }" in html
+
+
+def test_position_group_cards_drop_header_rule_and_space_products():
+    html = _read_page()
+    assert ".manage-card > .section-head { border-bottom: none; padding-bottom: 8px; }" in html
+    assert ".manage-card > .manage-list { margin-top: 10px; gap: 12px; }" in html
+    assert (
+        ".manage-card > .manage-list > .manage-card "
+        "{ border: 1px solid var(--line); box-shadow: none; background: var(--panel); }"
+    ) in html
+    assert '<div class="manage-list">${groupRows.map' in html
+    assert "}).join('')}</div></section>`" in html
+
+
+def test_page_scrollbar_stops_above_bottom_tabs():
+    html = _read_page()
+    assert "html, body { height: 100%; overflow: hidden; }" in html
+    assert ".management-tabs { position: static;" in html or (
+        ".management-tabs {" in html
+        and "position: static;" in html[html.index(".management-tabs {"): html.index(".management-tabs {") + 280]
+    )
+    assert ".management-panel:not([hidden]) { order: 2; flex: 1 1 auto; min-height: 0; overflow-y: auto;" in html
+
+
 def test_active_management_tab_survives_page_and_data_refresh():
     html = _read_page()
 
@@ -37,6 +78,46 @@ def test_management_tabs_support_horizontal_swipe_navigation():
     assert "addEventListener('touchend'" in html
     assert "Math.abs(deltaX) < 60" in html
     assert "setActiveTab(MANAGEMENT_TABS[nextIndex]);" in html
+
+
+def test_page_title_uses_quiet_app_bar_style():
+    html = _read_page()
+    start = html.index(".topbar {")
+    block = html[start: html.index(".top-actions")]
+    assert "align-items: center;" in block
+    title = html[html.index("h1 { margin: 0;"): html.index("h1 { margin: 0;") + 160]
+    assert "font-size: 17px;" in title
+    assert "font-weight: 700;" in title
+    assert "h1 { font-size: 25px; }" not in html
+
+
+def test_refresh_countdown_stays_visible_on_narrow_phones():
+    html = _read_page()
+    start = html.index("@media (max-width: 370px)")
+    block = html[start: html.index("</style>", start)]
+    assert ".updated { display: none; }" not in block
+    assert 'id="updatedAt"' in html
+    assert "后可刷新" in html
+
+
+def test_dashboard_uses_fangsong_font_stack():
+    html = _read_page()
+    assert 'href="/nav-assets/fonts/fz-fangsong/font.css"' in html
+    assert 'font-family: "FZFangSong-Z02S"' in html
+
+
+def test_section_head_titles_use_smaller_weight_than_hero():
+    html = _read_page()
+    assert ".section-head h2 { font-size: 16px; font-weight: 700; }" in html
+    assert ".panel-heading h2 { font-size: 16px; font-weight: 700; }" in html
+
+
+def test_hero_cumulative_profit_keeps_amount_and_yuan_on_one_line():
+    html = _read_page()
+    start = html.index(".total {")
+    block = html[start: start + 280]
+    assert "white-space: nowrap;" in block
+    assert 'id="cumulativeProfit">--<span class="unit">元</span>' in html
 
 
 def test_management_tabs_are_sticky_bottom_with_icons():
@@ -571,23 +652,43 @@ def test_overview_does_not_remerge_catalog_products_into_authoritative_products(
     assert "data.products = baseProducts.map" not in page
 
 
-def test_holding_controls_support_delete_and_profit_calibration_without_reversal():
+def test_overview_hides_zero_share_products_after_redemption_settled():
+    page = PAGE_PATH.read_text(encoding="utf-8")
+
+    assert "function isClearedAndSettled(" in page
+    assert "const products = (data.products || []).filter(item => {" in page
+    assert "Number(rowValue(item, 'shares', 'total_shares'))" in page
+    assert "isClearedAndSettled(pid, pfPositions, pfTransactions)" in page
+    assert "赎回待到账" in page or "settleDate > todayStr" in page
+    assert "持有份额为0：仅在有在途申购/赎回或赎回待到账时保留展示" in page
+
+
+def test_holding_card_hides_when_cleared_keeps_stat_grid_and_short_trade_label():
     page = PAGE_PATH.read_text(encoding="utf-8")
 
     assert 'name="profit"' in page
-    assert 'class="manage-name-row"' in page
-    assert 'class="manage-icon-action" type="button" data-write-operation="disable-product"' in page
-    assert 'class="manage-icon-action" type="button" data-write-operation="delete-holding"' in page
-    assert 'class="row-action" type="button" data-write-operation="disable-product"' not in page
-    assert 'class="row-action" type="button" data-write-operation="delete-holding"' not in page
-    assert ".manage-icon-action" in page
-    assert ".manage-name-row { display: block;" in page
-    assert ".manage-name { display: inline;" in page
-    assert ".manage-name-actions { display: inline-flex;" in page
-    assert "vertical-align: middle;" in page
-    assert "width: 26px; height: 26px;" in page
-    assert ".manage-icon-action svg { width: 16px; height: 16px;" in page
+    assert "function isClearedAndSettled(" in page
+    assert "allRows.filter(p => !isClearedAndSettled(" in page
+    assert "当不再持仓并赎回已到账后自动取消" not in page
+    assert "manage-auto-hint" not in page
+    assert 'data-write-operation="disable-product"' not in page
+    assert 'data-write-operation="delete-holding"' not in page
+    assert 'class="manage-icon-action"' not in page
+    assert 'class="manage-name-actions"' not in page
+    assert 'class="manage-grid position-stat-grid"' in page
+    assert "<span>持有份额</span>" in page
+    assert "<span>可用份额</span>" in page
+    assert "<span>在途资金</span>" in page
+    assert (
+        ".manage-card > .manage-list > .manage-card "
+        "{ border: 1px solid var(--line); box-shadow: none; background: var(--panel); }"
+    ) in page
+    assert ".manage-stat { padding: 9px; border-radius: 7px; background: var(--bg); }" in page
+    assert ">申/赎</button>" in page
+    assert ">申购/赎回</button>" not in page
+    assert ".manage-title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }" in page
     assert 'data-write-operation="reverse"' not in page
+
 
 
 def test_transaction_list_hides_internal_ledger_rows():

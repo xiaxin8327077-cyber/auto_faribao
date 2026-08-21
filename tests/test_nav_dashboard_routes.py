@@ -148,3 +148,14 @@ def test_nav_icon_assets_are_served_locally():
 
     assert response.status_code == 200
     assert response.mimetype == "image/svg+xml"
+
+
+def test_fangsong_webfont_is_served_locally():
+    client = create_app(_cfg()).test_client()
+    css = client.get("/nav-assets/fonts/fz-fangsong/font.css")
+    woff = client.get("/nav-assets/fonts/fz-fangsong/L1_4e00_192.woff2")
+
+    assert css.status_code == 200
+    assert "FZFangSong-Z02S" in css.get_data(as_text=True)
+    assert woff.status_code == 200
+    assert woff.mimetype in {"font/woff2", "application/octet-stream", "application/font-woff2"}

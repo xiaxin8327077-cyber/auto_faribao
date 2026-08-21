@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light">
   <title>理财组合看板</title>
+  <link rel="stylesheet" href="/nav-assets/fonts/fz-fangsong/font.css">
   <style>
     :root {
       --bg: #f3f7fc;
@@ -25,28 +26,43 @@
     }
     * { box-sizing: border-box; }
     html { background: var(--bg); }
+    html, body { height: 100%; overflow: hidden; }
     body {
       margin: 0;
       background: var(--bg);
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-family: "FZFangSong-Z02S", "STFangsong", "FangSong", "FangSong_GB2312", serif;
       letter-spacing: 0;
     }
     button { font: inherit; }
     .app {
       width: min(100%, 430px);
-      min-height: 100vh;
+      height: 100%;
+      min-height: 0;
       margin: 0 auto;
-      padding: 22px 14px calc(72px + env(safe-area-inset-bottom));
-    }
-    .topbar {
+      padding: 0;
+      overflow: hidden;
       display: flex;
-      align-items: flex-start;
+      flex-direction: column;
+    }
+    #dashboardContent {
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+    #dashboardContent[hidden] { display: none !important; }
+    .topbar {
+      flex: 0 0 auto;
+      margin: 22px 14px 12px;
+      display: flex;
+      align-items: center;
       justify-content: space-between;
       gap: 12px;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
     }
-    h1 { margin: 0; font-size: 28px; line-height: 1.15; font-weight: 850; }
+    h1 { margin: 0; color: var(--text); font-size: 17px; line-height: 24px; font-weight: 700; }
     .top-actions { display: flex; align-items: center; gap: 8px; }
     .refresh-meta { min-width: 70px; text-align: right; }
     .refresh-state { font-size: 11px; line-height: 1.25; font-weight: 800; }
@@ -126,12 +142,14 @@
     .total {
       position: relative;
       z-index: 1;
+      display: block;
       margin: 14px 0 15px;
       color: var(--blue);
       font-size: 42px;
       line-height: 1;
       font-weight: 900;
       font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
     .total.positive { color: var(--positive); }
     .total.negative { color: var(--negative); }
@@ -185,9 +203,11 @@
     .insight-main { margin-top: 3px; overflow: hidden; color: #1459a5; font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
     .insight-main.positive { color: var(--positive); }
     .section { padding: 18px 14px 8px; }
-    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 2px 14px; border-bottom: 1px solid var(--line); }
+    .section-head { display: flex; align-items: center; gap: 10px; padding: 0 2px 14px; border-bottom: 1px solid var(--line); }
     h2 { margin: 0; font-size: 21px; font-weight: 850; }
+    .section-head h2 { font-size: 16px; font-weight: 700; }
     .section-meta { color: var(--muted); font-size: 12px; }
+    .section-head .section-meta { margin-left: auto; }
     .product-list { min-height: 80px; }
     .product {
       display: grid;
@@ -221,7 +241,7 @@
     .note { padding: 14px 2px 16px; color: var(--muted); font-size: 10px; line-height: 1.6; }
     .status { min-height: 18px; margin: 10px 2px -2px; color: var(--muted); font-size: 11px; text-align: center; }
     .empty { padding: 28px 12px; color: var(--muted); font-size: 13px; text-align: center; }
-    .access-error { display: none; margin-top: 110px; padding: 30px 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); text-align: center; box-shadow: var(--shadow); }
+    .access-error { flex: 1 1 auto; display: none; margin-top: 110px; padding: 30px 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); text-align: center; box-shadow: var(--shadow); }
     .access-error img { width: 30px; height: 30px; opacity: .55; }
     .access-error h2 { margin-top: 14px; font-size: 20px; }
     .access-error p { margin: 9px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
@@ -308,7 +328,7 @@
     .sip-record-amount { color: var(--text); font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
     .sip-record-status { color: var(--muted); font-size: 11px; font-weight: 650; }
     .sip-record-shares { color: var(--muted); font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; }
-    .management-tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; display: grid; grid-template-columns: repeat(4, 1fr); background: var(--panel); border-top: 1px solid var(--line); }
+    .management-tabs { position: static; order: 3; flex: 0 0 auto; z-index: 100; display: grid; grid-template-columns: repeat(4, 1fr); background: var(--panel); border-top: 1px solid var(--line); }
     .management-tab-indicator { display: none; }
     .management-tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 54px; padding: 8px 0 calc(6px + env(safe-area-inset-bottom)); border: 0; background: transparent; color: var(--muted); font-size: 11px; font-weight: 700; cursor: pointer; transition: color .15s ease; }
     .management-tab svg { width: 20px; height: 20px; stroke-width: 1.8; }
@@ -317,30 +337,30 @@
     .management-tab:active { color: var(--blue-soft); }
     .management-tab:focus-visible, .action-button:focus-visible { outline: 3px solid rgba(31, 111, 209, .24); outline-offset: 2px; }
     .management-panel[hidden] { display: none; }
-    .management-panel { padding-bottom: 64px; }
+    .management-panel { padding: 0 14px 16px; }
+    .management-panel:not([hidden]) { order: 2; flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 2px 14px; }
-    .panel-heading h2 { font-size: 20px; }
+    .panel-heading h2 { font-size: 16px; font-weight: 700; }
     .metric-sub { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 14px; }
 .in-transit-hint { margin: -6px 2px 10px; font-size: 12px; color: var(--muted); min-height: 18px; }
 .in-transit-hint:empty { margin: 0; min-height: 0; }
 .product .in-transit-hint { margin: 4px 0 0; font-size: 10px; font-variant-numeric: tabular-nums; min-height: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .action-button { min-height: 36px; padding: 0 12px; border: 1px solid var(--blue); border-radius: 7px; background: var(--blue); color: #fff; font-size: 13px; font-weight: 800; cursor: pointer; }
+    .section-head .action-button, .panel-heading .action-button { min-height: 28px; padding: 0 10px; border-radius: 6px; font-size: 12px; font-weight: 700; }
     .action-button.secondary { border-color: var(--line); background: var(--panel); color: var(--blue); }
     .action-button.danger { border-color: #c73737; background: #c73737; }
     .action-button:disabled, .row-action:disabled { cursor: not-allowed; opacity: .48; }
     .write-notice { margin: 12px 0 2px; padding: 10px 12px; border: 1px solid #f0cd9b; border-radius: 8px; background: #fff8eb; color: #9b6100; font-size: 12px; line-height: 1.45; }
     .manage-list { display: grid; gap: 10px; margin-top: 12px; }
     .manage-card { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); box-shadow: 0 5px 16px rgba(38, 72, 112, .06); }
+    .manage-card > .section-head { border-bottom: none; padding-bottom: 8px; }
+    .manage-card > .manage-list { margin-top: 10px; gap: 12px; }
+    .manage-card > .manage-list > .manage-card { border: 1px solid var(--line); box-shadow: none; background: var(--panel); }
     .manage-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-    .manage-name-row { display: block; min-width: 0; }
-    .manage-name { display: inline; min-width: 0; font-size: 15px; font-weight: 850; line-height: 1.4; }
-    .manage-name-actions { display: inline-flex; flex: 0 0 auto; gap: 1px; margin-left: 3px; vertical-align: middle; }
-    .manage-icon-action { display: inline-grid; width: 26px; height: 26px; padding: 4px; border: 0; border-radius: 50%; background: transparent; color: #9aa7b8; cursor: pointer; place-items: center; }
-    .manage-icon-action:hover { background: var(--bg); color: #68778b; }
-    .manage-icon-action:disabled { cursor: not-allowed; opacity: .42; }
-    .manage-icon-action svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+    .manage-title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .manage-name { min-width: 0; flex: 1; font-size: 14px; font-weight: 850; line-height: 1.4; }
     .manage-code, .manage-meta { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
-    .manage-value { flex: 0 0 auto; color: var(--blue); font-size: 15px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
+    .manage-value { flex: 0 0 auto; color: var(--blue); font-size: 14px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
     .manage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
     .manage-stat { padding: 9px; border-radius: 7px; background: var(--bg); }
     .manage-stat > span { display: block; color: var(--muted); font-size: 10px; }
@@ -468,9 +488,7 @@
     .confirm-status { min-height: 18px; margin-top: 10px; color: var(--muted); font-size: 12px; }
     .dialog-write-notice { margin: 0 0 12px; }
     @media (max-width: 370px) {
-      .app { padding-left: 10px; padding-right: 10px; }
-      h1 { font-size: 25px; }
-      .updated { display: none; }
+      .topbar, .management-panel { padding-left: 10px; padding-right: 10px; }
       .total { font-size: 37px; }
       .weather-icon { right: 10px; font-size: 66px; }
       .product { grid-template-columns: 28px minmax(0, 1fr) 65px 76px; gap: 5px; }
@@ -520,8 +538,6 @@
       </nav>
 
       <section id="overviewPanel" class="management-panel" role="tabpanel" aria-labelledby="overviewTab">
-      <div class="panel-heading"><h2>组合总览</h2><button class="action-button" id="quickTradeButton" type="button" data-write-action="trade">+交易</button></div>
-
       <section class="hero" id="hero" aria-label="组合收益概览">
         <button class="profit-trigger" id="cumulativeProfitTrigger" type="button" aria-controls="dailyProfitSheet" aria-expanded="false">
           <span class="hero-label">累计收益<span class="detail-cue">查看每日明细</span></span>
@@ -534,7 +550,7 @@
       </section>
 
       <section class="card section" aria-label="组合概况">
-        <div class="section-head"><h2>资产概况</h2><span class="section-meta" id="pendingStatus">待处理 0 笔</span></div>
+        <div class="section-head"><h2>资产概况</h2><button class="action-button" id="quickTradeButton" type="button" data-write-action="trade">+交易</button><span class="section-meta" id="pendingStatus">待处理 0 笔</span></div>
         <div class="overview-grid">
           <div class="overview-left">
             <div class="overview-item"><span class="overview-label">总资产</span><span class="overview-value" id="totalAssets">--</span></div>
@@ -1331,7 +1347,7 @@
     function todayDateStr() {
       return new Date().toLocaleDateString('en-CA', {timeZone: 'Asia/Shanghai'});
     }
-    // 判断产品是否应隐藏(已清仓且到账日已过)
+    // 自动从持仓列表隐藏：不再持有份额，且无在途交易、赎回已到账
     // 注意:旧系统产品没有 portfolio 数据,默认不过滤
     function isClearedAndSettled(productId, positions, transactions) {
       const pos = positions.find(p => rowValue(p, 'product_id', 'id', 'code') === productId);
@@ -1395,7 +1411,7 @@
         const groupNavDate = rowValue(groupRows[0], 'nav_date') || rowValue(groupRows[0], 'quote')?.date || '';
         const profitSign = groupLatestProfit > 0 ? '+' : '';
         const profitColor = groupLatestProfit > 0 ? 'style="color:#e5484d"' : groupLatestProfit < 0 ? 'style="color:#30a46c"' : '';
-        return `<section class="manage-card"><div class="section-head"><h2>${esc(positionTypeLabel(group))}</h2><span class="section-meta">${groupRows.length}个产品 最新预估：<span ${profitColor}>${profitSign}${money(groupLatestProfit)}</span>${groupNavDate ? ` 日期 ${shortDate(groupNavDate)}` : ''}</span></div>${groupRows.map(row => {
+        return `<section class="manage-card"><div class="section-head"><h2>${esc(positionTypeLabel(group))}</h2><span class="section-meta">${groupRows.length}个产品 最新预估：<span ${profitColor}>${profitSign}${money(groupLatestProfit)}</span>${groupNavDate ? ` 日期 ${shortDate(groupNavDate)}` : ''}</span></div><div class="manage-list">${groupRows.map(row => {
           const id = row._id || rowValue(row, 'product_id', 'id', 'code');
           const name = rowValue(row, 'name', 'product_name', 'code') || '未命名产品';
           const nav = rowValue(row, 'unit_nav', 'latest_nav', 'nav');
@@ -1418,8 +1434,8 @@
             : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b><small class="manage-subvalue">${esc(shortDate(quoteDate) || '--')} · <span class="change-value ${tone(changePct)}">${changePct === '' ? '--' : esc(signedPercent(changePct))}</span></small></div>`;
           const latestProfitStat = `<div class="manage-stat"><span>最新收益</span><b>${latestProfit === '' ? '--' : signedMoney(latestProfit) + ' 元'}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
-          return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name-row"><div class="manage-name">${esc(name)}</div><div class="manage-name-actions"><button class="manage-icon-action" type="button" data-write-operation="disable-product" data-product-id="${esc(id)}" title="停用产品" aria-label="停用产品"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M6.3 6.3l11.4 11.4"></path></svg></button><button class="manage-icon-action" type="button" data-write-operation="delete-holding" data-product-id="${esc(id)}" title="删除持仓" aria-label="删除持仓"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V5h6v2m2 0-1 12H8L7 7m3 3v6m4-6v6"></path></svg></button></div></div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div></div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${latestProfitStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申购/赎回</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准持仓</button><button class="row-action" type="button" data-write-operation="adjust-latest-profit" data-product-id="${esc(id)}">校准最新收益</button><button class="row-action" type="button" data-view-product="${esc(id)}">详情</button></div></article>`;
-        }).join('')}</section>`;
+          return `<article class="manage-card"><div class="manage-title-row"><div class="manage-name">${esc(name)}</div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${latestProfitStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申/赎</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准持仓</button><button class="row-action" type="button" data-write-operation="adjust-latest-profit" data-product-id="${esc(id)}">校准最新收益</button><button class="row-action" type="button" data-view-product="${esc(id)}">详情</button></div></article>`;
+        }).join('')}</div></section>`;
       }).join('') || '<div class="empty">暂无可展示的分类持仓。</div>';
     }
     function normalStatus(value) {
@@ -1852,7 +1868,17 @@
       const pfTransactions = portfolioRows('transactions', []);
       const products = (data.products || []).filter(item => {
         const pid = rowValue(item, 'product_id', 'id', 'code');
-        return !isClearedAndSettled(pid, pfPositions, pfTransactions);
+        if (isClearedAndSettled(pid, pfPositions, pfTransactions)) return false;
+        const shares = Number(rowValue(item, 'shares', 'total_shares'));
+        if (!Number.isFinite(shares) || shares > 0) return true;
+        // 持有份额为0：仅在有在途申购/赎回或赎回待到账时保留展示
+        return pfTransactions.some(t => {
+          if (String(rowValue(t, 'product_id')) !== String(pid)) return false;
+          if (normalStatus(rowValue(t, 'status')) === 'pending') return true;
+          const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
+          const settleDate = rowValue(t, 'settlement_date');
+          return type.includes('redemption') && normalStatus(rowValue(t, 'status')) === 'confirmed' && settleDate && settleDate > todayStr;
+        });
       });
       $('productTitle').textContent = `产品持仓（${products.length}）`;
       $('productList').innerHTML = products.length ? products.map((item, index) => {
