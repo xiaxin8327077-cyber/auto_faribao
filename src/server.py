@@ -2064,13 +2064,6 @@ def create_app(
                             if parts:
                                 running_services.append(parts[0].replace(".service", ""))
 
-                        # 获取进程内存排序
-                        ps_result = subprocess.run(
-                            ["ps", "aux", "--sort=-rss"],
-                            capture_output=True, text=True, timeout=5
-                        )
-                        process_lines = ps_result.stdout.strip().splitlines()[1:]  # skip header
-
                         def fmt_mem(kb):
                             if kb < 1024: return f"{kb}KB"
                             return f"{kb/1024:.0f}MB"
@@ -2098,43 +2091,87 @@ def create_app(
                             "networkd-dispatcher": "网络调度",
                         }
 
-                        # 构建进程内存映射（按服务分组）
+                        def process_label(cmd: str) -> str:
+                            """未归入 systemd 服务时，用真实进程名展示。"""
+                            if ".cursor-server/" in cmd or "/cursor-server/" in cmd:
+                                return "cursor-server"
+                            token = (cmd.split() or [cmd])[0]
+                            base = token.rsplit("/", 1)[-1] or token
+                            if base.startswith("python") and len(cmd.split()) > 1:
+                                script = cmd.split()[1]
+                                if ".py" in script:
+                                    return script.rsplit("/", 1)[-1]
+                            return base
+
+                        def read_pss_kb(pid: str) -> int:
+                            """按 PSS 计量：共享页按比例分摊，合计更接近 free 已用。"""
+                            try:
+                                with open(f"/proc/{pid}/smaps_rollup", "r", encoding="utf-8", errors="ignore") as fh:
+                                    for line in fh:
+                                        if line.startswith("Pss:"):
+                                            return int(line.split()[1])
+                            except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, OSError):
+                                pass
+                            # 回退 RSS（部分内核无 smaps_rollup）
+                            try:
+                                with open(f"/proc/{pid}/statm", "r", encoding="utf-8", errors="ignore") as fh:
+                                    pages = int(fh.read().split()[1])
+                                return pages * (os.sysconf("SC_PAGE_SIZE") // 1024)
+                            except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, OSError):
+                                return 0
+
+                        def read_cmdline(pid: str) -> str:
+                            try:
+                                with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                                    raw = fh.read().replace(b"\x00", b" ").strip()
+                                if raw:
+                                    return raw.decode("utf-8", errors="replace")
+                            except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+                                pass
+                            try:
+                                with open(f"/proc/{pid}/comm", "r", encoding="utf-8", errors="ignore") as fh:
+                                    return fh.read().strip()
+                            except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+                                return ""
+
+                        # 构建内存映射：PSS ≥1MB；优先归入 systemd 服务，否则按真实进程名汇总
                         service_mem = {}
-                        other_procs = []
-                        for line in process_lines:
-                            cols = line.split(None, 10)
-                            if len(cols) < 11:
+                        for pid in os.listdir("/proc"):
+                            if not pid.isdigit():
                                 continue
-                            rss_kb = int(cols[5])
-                            cmd = cols[10]
-                            if rss_kb < 1000:  # 跳过 <1MB 的进程
+                            pss_kb = read_pss_kb(pid)
+                            if pss_kb < 1000:  # 跳过 <1MB 的进程
                                 continue
-                            matched = False
+                            cmd = read_cmdline(pid)
+                            if not cmd:
+                                continue
+                            key = None
                             for svc in running_services:
                                 if svc in cmd or cmd.startswith(svc):
-                                    service_mem[svc] = service_mem.get(svc, 0) + rss_kb
-                                    matched = True
+                                    key = svc
                                     break
-                            if not matched:
-                                # 尝试匹配特殊进程
-                                if "daily_report/main.py" in cmd:
-                                    service_mem["daily-report"] = service_mem.get("daily-report", 0) + rss_kb
+                            if key is None:
+                                if "daily_report/main.py" in cmd or "/daily_report/main.py" in cmd:
+                                    key = "daily-report"
                                 elif "status_page.py" in cmd:
-                                    service_mem["status-page"] = service_mem.get("status-page", 0) + rss_kb
+                                    key = "status-page"
                                 elif "xray" in cmd:
-                                    service_mem["xray"] = service_mem.get("xray", 0) + rss_kb
+                                    key = "xray"
                                 elif "hysteria" in cmd:
-                                    service_mem["hysteria"] = service_mem.get("hysteria", 0) + rss_kb
+                                    key = "hysteria"
                                 elif "sshd" in cmd:
-                                    service_mem["ssh"] = service_mem.get("ssh", 0) + rss_kb
+                                    key = "ssh"
                                 elif "snapd" in cmd:
-                                    service_mem["snapd"] = service_mem.get("snapd", 0) + rss_kb
+                                    key = "snapd"
                                 elif "chronyd" in cmd or "chrony" in cmd:
-                                    service_mem["chrony"] = service_mem.get("chrony", 0) + rss_kb
+                                    key = "chrony"
                                 elif "packagekit" in cmd:
-                                    service_mem["packagekit"] = service_mem.get("packagekit", 0) + rss_kb
+                                    key = "packagekit"
                                 elif "networkd-dispatcher" in cmd:
-                                    service_mem["networkd-dispatcher"] = service_mem.get("networkd-dispatcher", 0) + rss_kb
+                                    key = "networkd-dispatcher"
+                                else:
+                                    key = process_label(cmd)
+                            service_mem[key] = service_mem.get(key, 0) + pss_kb
 
                         # 排序
                         sorted_services = sorted(service_mem.items(), key=lambda x: x[1], reverse=True)
