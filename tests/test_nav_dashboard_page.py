@@ -85,6 +85,11 @@ def test_page_title_uses_quiet_app_bar_style():
     start = html.index(".topbar {")
     block = html[start: html.index(".top-actions")]
     assert "align-items: center;" in block
+    assert "background: var(--panel);" in block
+    assert "min-height: 54px;" in block
+    assert "border-bottom: 1px solid var(--line);" in block
+    assert ".management-tabs" in html and "background: var(--panel);" in html
+    assert ".management-tab" in html and "min-height: 54px;" in html
     title = html[html.index("h1 { margin: 0;"): html.index("h1 { margin: 0;") + 160]
     assert "font-size: 17px;" in title
     assert "font-weight: 700;" in title
