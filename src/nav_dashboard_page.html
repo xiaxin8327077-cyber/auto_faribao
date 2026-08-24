@@ -836,6 +836,8 @@
     let transientRefreshError = '';
     let transientRefreshErrorUntil = 0;
     let lastRefreshToastKey = '';
+    let refreshStateInitialized = false;
+    let userRefreshInProgress = false;
     const MANAGEMENT_TABS = ['overview', 'positions', 'transactions', 'sip'];
     const ACTIVE_TAB_STORAGE_KEY = 'nav-dashboard-active-tab';
     function readStoredActiveTab() {
@@ -1896,9 +1898,19 @@
       $('refreshState').className = `refresh-state ${stateClass}`;
       $('refreshState').textContent = stateText;
       const refreshToastKey = `${stateClass}:${stateText}`;
-      if (['success', 'partial', 'failed'].includes(stateClass) && lastRefreshToastKey !== refreshToastKey) {
+      // 首次数据加载完成前只同步 key，避免页面刷新时重复弹出"更新成功"
+      if (!refreshStateInitialized) {
         lastRefreshToastKey = refreshToastKey;
-        showToast(stateText);
+      } else if (['success', 'partial', 'failed'].includes(stateClass)) {
+        if (userRefreshInProgress) {
+          // 用户主动刷新后，任何终态都提示（不检查 key 是否变化）
+          userRefreshInProgress = false;
+          lastRefreshToastKey = refreshToastKey;
+          showToast(stateText);
+        } else if (lastRefreshToastKey !== refreshToastKey) {
+          lastRefreshToastKey = refreshToastKey;
+          showToast(stateText);
+        }
       }
       if (refreshRequestPending || refreshIsRunning) {
         $('updatedAt').textContent = '请稍候';
@@ -1919,10 +1931,8 @@
       refreshLastSuccess = data.last_success_at || '';
       refreshLastAttempt = data.last_attempt_at || '';
       refreshLastError = data.last_error || '';
-      const configuredCooldown = parseDashboardTime(data.manual_cooldown_until);
-      const recentSuccessCooldown = parseDashboardTime(refreshLastSuccess) + 5 * 60 * 1000;
-      refreshCooldownUntil = Math.max(refreshCooldownUntil, configuredCooldown, recentSuccessCooldown);
       updateRefreshControls();
+      refreshStateInitialized = true;
       clearTimeout(refreshPollTimer);
       if (refreshIsRunning) refreshPollTimer = setTimeout(loadDashboard, 2000);
     }
@@ -2060,6 +2070,7 @@
     async function refresh() {
       if ($('refreshButton').disabled) return;
       refreshRequestPending = true;
+      userRefreshInProgress = true;
       transientRefreshError = '';
       updateRefreshControls();
       $('statusText').textContent = '正在请求刷新...';
@@ -2067,11 +2078,8 @@
         const response = await api(REFRESH_PATH, {method: 'POST'});
         if (response.status === 403) { setAccessState(false); return; }
         const result = await response.json();
-        if (result.cooldown_until) {
-          refreshCooldownUntil = Math.max(refreshCooldownUntil, parseDashboardTime(result.cooldown_until));
-        }
         if (result.accepted || result.status === 'refreshing') refreshIsRunning = true;
-        const labels = {cooldown: '刷新过于频繁，请等待倒计时结束', enterprise_query_running: '企微查询正在执行，将复用其结果', refreshing: '正在更新官网净值...'};
+        const labels = {enterprise_query_running: '企微查询正在执行，将复用其结果', refreshing: '正在更新官网净值...'};
         $('statusText').textContent = labels[result.status] || '';
         setTimeout(loadDashboard, result.accepted ? 800 : 1600);
       } catch (error) {

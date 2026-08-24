@@ -1128,8 +1128,6 @@ def create_app(
         result = request_manual_refresh(cfg)
         if result.get("accepted"):
             status_code = 202
-        elif result.get("status") == "cooldown":
-            status_code = 429
         else:
             status_code = 200
         return jsonify(result), status_code

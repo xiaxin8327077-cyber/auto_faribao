@@ -19,7 +19,6 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_STATE_PATH = ROOT_DIR / "data" / "nav_dashboard_state.json"
 ACCESS_TOKEN_PATH = ROOT_DIR / "data" / "nav_dashboard_access_token"
 PAGE_PATH = Path(__file__).with_name("nav_dashboard_page.html")
-MANUAL_COOLDOWN_SECONDS = 300
 AUTO_REFRESH_SECONDS = 3600
 
 _STATE_LOCK = threading.RLock()
@@ -41,7 +40,6 @@ def _empty_state() -> dict:
         "last_attempt_at": "",
         "last_success_at": "",
         "last_error": "",
-        "manual_cooldown_until": "",
     }
 
 
@@ -1120,18 +1118,6 @@ def _launch_refresh_thread(cfg, state_path, attempted_at: datetime) -> bool:
 def request_manual_refresh(cfg, now=None, state_path=DEFAULT_STATE_PATH) -> dict:
     now = now or beijing_now().replace(tzinfo=None)
     store = NavDashboardStore(state_path)
-    cooldown_until = _parse_dt(store.state.get("manual_cooldown_until", ""))
-    last_success = _parse_dt(store.state.get("last_success_at", ""))
-    if last_success:
-        recent_success_until = last_success + timedelta(seconds=MANUAL_COOLDOWN_SECONDS)
-        if cooldown_until is None or recent_success_until > cooldown_until:
-            cooldown_until = recent_success_until
-    if cooldown_until and now < cooldown_until:
-        return {
-            "accepted": False,
-            "status": "cooldown",
-            "cooldown_until": _dt_text(cooldown_until),
-        }
 
     from src.nav_monitor import nav_query_in_progress
 
@@ -1140,14 +1126,10 @@ def request_manual_refresh(cfg, now=None, state_path=DEFAULT_STATE_PATH) -> dict
     if _REFRESHING:
         return {"accepted": False, "status": "refreshing"}
 
-    cooldown_until = now + timedelta(seconds=MANUAL_COOLDOWN_SECONDS)
-    store.state["manual_cooldown_until"] = _dt_text(cooldown_until)
-    store.save()
     accepted = _launch_refresh_thread(cfg, Path(state_path), now)
     return {
         "accepted": bool(accepted),
         "status": "refreshing" if accepted else "refreshing",
-        "cooldown_until": _dt_text(cooldown_until),
     }
 
 
