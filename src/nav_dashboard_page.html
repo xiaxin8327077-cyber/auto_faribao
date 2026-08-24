@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <meta name="color-scheme" content="light">
   <title>理财组合看板</title>
   <link rel="stylesheet" href="/nav-assets/fonts/fz-fangsong/font.css">
@@ -533,6 +533,52 @@
       .product { grid-template-columns: 28px minmax(0, 1fr) 65px 76px; gap: 5px; }
       .section { padding-left: 10px; padding-right: 10px; }
     }
+
+    /* 触控按压反馈 */
+    body { touch-action: manipulation; }
+    .action-button, .transaction-filter, .row-action, .icon-button, .management-tab { transition: transform .12s ease; }
+    .action-button:active, .transaction-filter:active, .row-action:active, .icon-button:active, .management-tab:active { transform: scale(.94); }
+
+    /* 弹窗进出场动画：从屏幕底部滑入/滑出 */
+    dialog.management-dialog[open] { animation: dialogIn .3s cubic-bezier(.32, .72, .35, 1) both; }
+    dialog.management-dialog[open]::backdrop { animation: fadeIn .3s ease both; }
+    dialog.management-dialog.is-closing { animation: dialogOut .2s ease both; }
+    dialog.management-dialog.is-closing::backdrop { animation: fadeOut .2s ease both; }
+    @keyframes dialogIn { from { opacity: 0; transform: translateY(100vh); } to { opacity: 1; transform: none; } }
+    @keyframes dialogOut { to { opacity: 0; transform: translateY(100vh); } }
+
+    /* 顶部 Toast 提示 */
+    #toast {
+      position: fixed;
+      left: 50%;
+      top: calc(62px + env(safe-area-inset-top, 0px));
+      z-index: 300;
+      max-width: calc(100vw - 48px);
+      padding: 9px 15px;
+      border-radius: 17px;
+      background: rgba(13, 29, 50, .88);
+      -webkit-backdrop-filter: blur(8px);
+      backdrop-filter: blur(8px);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: center;
+      box-shadow: 0 6px 20px rgba(13, 29, 50, .25);
+      pointer-events: none;
+      animation: toastIn .25s cubic-bezier(.2, .7, .2, 1) both;
+    }
+    #toast.is-leaving { animation: toastOut .2s ease both; }
+    @keyframes toastIn { from { opacity: 0; transform: translate(-50%, -10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+    @keyframes toastOut { to { opacity: 0; transform: translate(-50%, -10px); } }
+
+    /* 尊重系统"减弱动态效果"设置 */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }
+    }
   </style>
 </head>
 <body>
@@ -728,6 +774,8 @@
     <div class="dialog-body"><div class="preview-result" id="productDetailContent"></div><div class="dialog-actions"><button class="action-button" type="button" data-close-dialog="productDetailDialog">关闭</button></div></div>
   </dialog>
 
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+
   <script>
     const API_PATH = '/api/nav-dashboard';
     const REFRESH_PATH = '/api/nav-dashboard/refresh';
@@ -787,6 +835,7 @@
     let refreshPollTimer = null;
     let transientRefreshError = '';
     let transientRefreshErrorUntil = 0;
+    let lastRefreshToastKey = '';
     const MANAGEMENT_TABS = ['overview', 'positions', 'transactions', 'sip'];
     const ACTIVE_TAB_STORAGE_KEY = 'nav-dashboard-active-tab';
     function readStoredActiveTab() {
@@ -842,10 +891,37 @@
       if (!dialog.open) dialog.showModal();
       updatePageScrollLock();
     };
+    let toastTimer = null;
+    function showToast(text) {
+      if (!text) return;
+      const el = $('toast');
+      el.hidden = false;
+      el.classList.remove('is-leaving');
+      el.textContent = text;
+      el.style.animation = 'none';
+      void el.offsetWidth;
+      el.style.animation = '';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        el.classList.add('is-leaving');
+        setTimeout(() => {
+          el.hidden = true;
+          el.classList.remove('is-leaving');
+        }, 200);
+      }, 1800);
+    }
+    // iOS Safari 忽略 user-scalable=no，用手势事件兜底禁止捏合缩放
+    document.addEventListener('gesturestart', event => event.preventDefault());
+    document.addEventListener('gesturechange', event => event.preventDefault());
     const closeDialog = id => {
       const dialog = $(id);
-      if (dialog.open) dialog.close();
-      updatePageScrollLock();
+      if (!dialog.open || dialog.classList.contains('is-closing')) return;
+      dialog.classList.add('is-closing');
+      setTimeout(() => {
+        dialog.classList.remove('is-closing');
+        dialog.close();
+        updatePageScrollLock();
+      }, 200);
     };
     const formPayload = form => Object.fromEntries(new FormData(form).entries());
     const newIdempotencyKey = () => window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1819,6 +1895,11 @@
       }
       $('refreshState').className = `refresh-state ${stateClass}`;
       $('refreshState').textContent = stateText;
+      const refreshToastKey = `${stateClass}:${stateText}`;
+      if (['success', 'partial', 'failed'].includes(stateClass) && lastRefreshToastKey !== refreshToastKey) {
+        lastRefreshToastKey = refreshToastKey;
+        showToast(stateText);
+      }
       if (refreshRequestPending || refreshIsRunning) {
         $('updatedAt').textContent = '请稍候';
       } else if (remaining > 0) {
