@@ -93,15 +93,14 @@ def test_help_default_is_navigation_index_only():
 def test_help_all_is_split_by_groups():
     messages = _build_help_messages("系统指令大全")
 
-    assert len(messages) == 7
+    assert len(messages) == 6
     assert messages[0].startswith("## 📝 日报指令")
     assert messages[1].startswith("## 💹 理财净值指令 · 查询统计")
-    assert messages[2].startswith("## 📈 理财持仓查询")
-    assert messages[3].startswith("## 💹 理财看板说明")
+    assert messages[2].startswith("## 📈 理财收益预估指令")
+    assert messages[3].startswith("## 💹 理财净值指令 · 产品设置")
     assert messages[4].startswith("## ⚙️ 系统配置指令")
     assert messages[5].startswith("## 🖥️ 运维指令")
-    assert messages[6].startswith("## 🤖 AI助手")
-    assert all(len(message) < 4096 for message in messages)
+    assert all(len(message) < 1800 for message in messages)
 
 
 def test_help_group_commands_return_single_detail_message():
@@ -116,16 +115,19 @@ def test_help_group_commands_return_single_detail_message():
     assert nav_messages[0].startswith("## 💹 理财净值指令 · 查询统计")
     assert "最近1个月理财净值" in nav_messages[0]
     assert "<font color=\"info\">滚动周期统计</font>" in nav_messages[0]
-    assert nav_messages[1].startswith("## 📈 理财持仓查询")
-    assert "查看持仓画像" in nav_messages[1]
-    assert "企业微信仅提供理财查询" in nav_messages[1]
-    assert nav_messages[2].startswith("## 💹 理财看板说明")
-    assert "**查看净值配置**" in nav_messages[2]
-    assert "**开启净值监控**" not in nav_messages[2]
+    assert nav_messages[1].startswith("## 📈 理财收益预估指令")
+    assert "用昨天行情预估理财涨跌" in nav_messages[1]
+    assert "更新持仓画像" in nav_messages[1]
+    assert "<font" not in nav_messages[1]
+    assert nav_messages[2].startswith("## 💹 理财净值指令 · 产品设置")
+    assert "**删除净值产品 AF233276B**" in nav_messages[2]
+    assert "**设置净值推送时间 08:00**" not in nav_messages[2]
+    assert "**开启净值监控**" in nav_messages[2]
+    assert "**关闭净值监控**" in nav_messages[2]
     system_message = _build_help_messages("系统指令")[0]
     assert system_message.startswith("## ⚙️ 系统配置指令")
-    assert "**设置净值推送时间 08:00**" not in system_message
-    assert "**设置收益预估时间 17:30**" not in system_message
+    assert "**设置净值推送时间 08:00**" in system_message
+    assert "**设置收益预估时间 17:30**" in system_message
     assert _build_help_messages("运维指令")[0].startswith("## 🖥️ 运维指令")
 
     wealth_messages = _build_help_messages("理财指令")
@@ -162,10 +164,9 @@ def test_schedule_config_includes_nav_estimate_time():
 
     message = _format_schedule_config(cfg)
 
-    assert "6️⃣ 净值晚间补发：23:30（工作日，开启）" in message
+    assert "6️⃣ 净值晚间补发：23:30（工作日，有当日净值才发，开启）" in message
     assert "7️⃣ 理财收益预估：17:30（工作日，开启）" in message
-    assert "理财推送时间和开关请在理财看板网页中维护。" in message
-    assert "设置收益预估时间 17:30" not in message
+    assert "设置收益预估时间 17:30" in message
 
 
 def test_help_navigation_accepts_number_replies():
@@ -173,9 +174,8 @@ def test_help_navigation_accepts_number_replies():
     nav_messages = _build_help_messages("2")
     assert len(nav_messages) == 3
     assert nav_messages[0].startswith("## 💹 理财净值指令 · 查询统计")
-    assert nav_messages[1].startswith("## 📈 理财持仓查询")
-    assert nav_messages[2].startswith("## 💹 理财看板说明")
+    assert nav_messages[1].startswith("## 📈 理财收益预估指令")
+    assert nav_messages[2].startswith("## 💹 理财净值指令 · 产品设置")
     assert _build_help_messages("3")[0].startswith("## ⚙️ 系统配置指令")
     assert _build_help_messages("4")[0].startswith("## 🖥️ 运维指令")
-    assert _build_help_messages("5")[0].startswith("## 🤖 AI助手")
-    assert len(_build_help_messages("0")) == 7
+    assert len(_build_help_messages("0")) == 6
