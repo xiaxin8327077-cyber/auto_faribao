@@ -7,7 +7,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 
 BASE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "portfolio.db"
 
 
@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS sip_plans (
         frequency IN ('daily', 'weekly', 'monthly')
     ),
     schedule_day INTEGER,
+    schedule_effective_date TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     paused_at TEXT
@@ -479,20 +480,26 @@ class PortfolioDatabase:
                 }
                 if versions == {SCHEMA_VERSION}:
                     pass
+                elif versions == {5}:
+                    self._upgrade_v5_to_v6(conn)
                 elif versions == {4}:
                     self._upgrade_v4_to_v5(conn)
+                    self._upgrade_v5_to_v6(conn)
                 elif versions == {3}:
                     self._upgrade_v3_to_v4(conn)
                     self._upgrade_v4_to_v5(conn)
+                    self._upgrade_v5_to_v6(conn)
                 elif versions == {2}:
                     self._upgrade_v2_to_v3(conn)
                     self._upgrade_v3_to_v4(conn)
                     self._upgrade_v4_to_v5(conn)
+                    self._upgrade_v5_to_v6(conn)
                 elif versions == {BASE_SCHEMA_VERSION}:
                     self._upgrade_v1_to_v2(conn)
                     self._upgrade_v2_to_v3(conn)
                     self._upgrade_v3_to_v4(conn)
                     self._upgrade_v4_to_v5(conn)
+                    self._upgrade_v5_to_v6(conn)
                 else:
                     raise ValueError(
                         "unsupported portfolio schema version set: "
@@ -526,8 +533,13 @@ class PortfolioDatabase:
                     "portfolio target changed before v1 upgrade"
                 )
             result = validator(conn)
+            # 就地升级必须跑完整链到当前版本，否则 v4/v5 的列缺失
+            # 却会被标成最新版本。
             self._upgrade_v1_to_v2(conn)
             self._upgrade_v2_to_v3(conn)
+            self._upgrade_v3_to_v4(conn)
+            self._upgrade_v4_to_v5(conn)
+            self._upgrade_v5_to_v6(conn)
         except BaseException:
             conn.rollback()
             raise
@@ -560,9 +572,11 @@ class PortfolioDatabase:
         PortfolioDatabase._ensure_trade_time_column(conn)
         _execute_sql_script(conn, V3_SCHEMA_SQL)
         conn.execute("DELETE FROM schema_migrations")
+        # 只写本段的真实目标版本(3)，不得盖成当前版本，避免中间
+        # 结构（缺 v4/v5 列）被误标为最新。
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES (?)",
-            (SCHEMA_VERSION,),
+            (3,),
         )
 
     @staticmethod
@@ -574,7 +588,7 @@ class PortfolioDatabase:
         conn.execute("DELETE FROM schema_migrations")
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES (?)",
-            (SCHEMA_VERSION,),
+            (4,),
         )
 
     @staticmethod
@@ -595,7 +609,24 @@ class PortfolioDatabase:
         conn.execute("DELETE FROM schema_migrations")
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES (?)",
-            (SCHEMA_VERSION,),
+            (5,),
+        )
+
+    @staticmethod
+    def _upgrade_v5_to_v6(conn) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(sip_plans)")
+        }
+        if "schedule_effective_date" not in columns:
+            conn.execute(
+                "ALTER TABLE sip_plans "
+                "ADD COLUMN schedule_effective_date TEXT"
+            )
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?)",
+            (6,),
         )
 
     @staticmethod

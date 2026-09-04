@@ -277,13 +277,20 @@ def test_monthly_pause_and_resume_do_not_backfill_missed_period(tmp_path):
 
     # 9 月正常扣款。
     sip.backfill_plan(plan.id, date(2026, 9, 15), settle=False)
-    # 暂停期间，日任务逐日 ensure_intent 记录错过的 10-15。
+    # 暂停，暂停起点记为北京 10-01；关键是暂停期间作业一次都不跑。
     sip.pause(plan.id)
-    paused = sip.ensure_intent(plan.id, date(2026, 10, 15), recheck_schedule=True)
-    assert paused.status == "skipped"
-    assert paused.reason == "plan_paused"
-    # 恢复后向前补跑到 11-16（11-15 为周日，顺延到 11-16）。
-    sip.resume(plan.id)
+    with repo.database.transaction() as conn:
+        conn.execute(
+            "UPDATE sip_plans SET paused_at = ? WHERE id = ?",
+            ("2026-09-30 16:00:00", plan.id),
+        )
+    assert all(
+        e.intended_trade_date != date(2026, 10, 15)
+        for e in sip.list_executions(plan.id)
+    )
+    # 恢复(11-01)：由 resume 自身关闭暂停窗口内的 10-15，不依赖作业。
+    sip.resume(plan.id, resume_day=date(2026, 11, 1))
+    # 恢复后作业继续补跑到 11-16（11-15 为周日，顺延到 11-16）。
     sip.backfill_plan(plan.id, date(2026, 11, 16), settle=False)
 
     executions = sip.list_executions(plan.id)
@@ -298,7 +305,7 @@ def test_monthly_pause_and_resume_do_not_backfill_missed_period(tmp_path):
     )
     assert still_paused.status == "skipped"
     assert still_paused.reason == "plan_paused"
-    # 恢复不得追补暂停期间错过的周期：仅 9 月和 11 月产生真实扣款。
+    # 恢复不追补暂停期(10月)，但恢复后到期的 11 月正常执行。
     assert len(_plan_purchases(repo, plan.id)) == 2
 
 

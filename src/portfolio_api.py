@@ -1768,6 +1768,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             preview = sip_preview(body)
             operation = preview.get("operation")
             repo = repository()
+            _repo, _projector, _transactions, sip = services()
             with repo.database.transaction() as conn:
                 cached = replay(action, idem, body, conn=conn)
                 if cached:
@@ -1789,27 +1790,12 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                         )
                         plan = replace(plan, status=SipPlanStatus.ACTIVE)
                     else:
-                        if plan.status is SipPlanStatus.DRAFT:
-                            raise ValueError(
-                                "plan is not active"
-                                if operation == "pause"
-                                else "plan is not paused"
-                            )
-                        if operation == "resume":
-                            require_executable_sip_products(
-                                repo,
-                                plan.product_id,
-                                plan.source_cash_product_id,
-                                conn=conn,
-                            )
-                        plan = replace(
-                            plan,
-                            status=(
-                                SipPlanStatus.PAUSED
-                                if operation == "pause"
-                                else SipPlanStatus.ACTIVE
-                            ),
-                        )
+                        # 暂停/恢复统一走 SipService，保证与专用端点
+                        # 行为一致：resume 会先关闭暂停窗口再切 ACTIVE。
+                        if operation == "pause":
+                            plan = sip.pause(plan.id, conn=conn)
+                        else:
+                            plan = sip.resume(plan.id, conn=conn)
                     status = 200
                 else:
                     existing = (
@@ -1817,6 +1803,23 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                         if preview["sip_id"]
                         else None
                     )
+                    new_frequency = SipFrequency(preview["frequency"])
+                    new_schedule_day = preview["schedule_day"]
+                    if existing is not None and (
+                        existing.frequency is not new_frequency
+                        or existing.schedule_day != new_schedule_day
+                    ):
+                        # 修改周期：新规则只从修改后的下一个自然日起
+                        # 生效，绝不按新周期追补历史。
+                        schedule_effective_date = (
+                            beijing_now().date() + timedelta(days=1)
+                        )
+                    else:
+                        schedule_effective_date = (
+                            existing.schedule_effective_date
+                            if existing is not None
+                            else None
+                        )
                     plan = SipPlan(
                         id=(
                             existing.id
@@ -1848,8 +1851,9 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                         start_date=_parse_date(
                             preview["start_date"], "start_date"
                         ),
-                        frequency=SipFrequency(preview["frequency"]),
-                        schedule_day=preview["schedule_day"],
+                        frequency=new_frequency,
+                        schedule_day=new_schedule_day,
+                        schedule_effective_date=schedule_effective_date,
                     )
                     if plan.status is SipPlanStatus.ACTIVE:
                         require_executable_sip_products(
@@ -1922,35 +1926,16 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             if cached:
                 return cached
             repo = repository()
+            _repo, _projector, _transactions, sip = services()
             with repo.database.transaction() as conn:
                 cached = replay(action, idem, body, conn=conn)
                 if cached:
                     return cached
-                plan = repo.get_plan(plan_id, conn=conn)
-                if plan is None:
-                    raise ValueError("plan not found")
-                if plan.status is SipPlanStatus.DRAFT:
-                    raise ValueError(
-                        "plan is not active"
-                        if operation == "pause"
-                        else "plan is not paused"
-                    )
-                if operation == "resume":
-                    require_executable_sip_products(
-                        repo,
-                        plan.product_id,
-                        plan.source_cash_product_id,
-                        conn=conn,
-                    )
-                plan = replace(
-                    plan,
-                    status=(
-                        SipPlanStatus.PAUSED
-                        if operation == "pause"
-                        else SipPlanStatus.ACTIVE
-                    ),
-                )
-                repo.save_plan(plan, conn=conn)
+                # 与主写接口共用 SipService 实现，避免两套暂停/恢复行为。
+                if operation == "pause":
+                    plan = sip.pause(plan_id, conn=conn)
+                else:
+                    plan = sip.resume(plan_id, conn=conn)
                 payload = {"sip_plan": _json_value(plan)}
                 audit(
                     f"portfolio_sip_{operation}",

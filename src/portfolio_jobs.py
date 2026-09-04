@@ -126,6 +126,7 @@ def build_portfolio_jobs(runtime, strict=False):
     def create_intents(day):
         created = 0
         for plan in repository.list_plans():
+            # 只有活动计划参与每日补跑；暂停期由 resume 自身关闭。
             if plan.status is not SipPlanStatus.ACTIVE:
                 continue
             try:

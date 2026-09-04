@@ -152,3 +152,5 @@ class SipPlan:
     start_date: date
     frequency: SipFrequency = SipFrequency.DAILY
     schedule_day: Optional[int] = None
+    # 周期规则生效下界：修改周期后新规则只从该日起，避免追补历史。
+    schedule_effective_date: Optional[date] = None

@@ -39,24 +39,34 @@ def _roll_forward(day):
     return cursor
 
 
+def _schedule_floor(plan):
+    """周期枚举下界：取"用户配置的生效边界 start_date"与"周期修改
+    生效日"中较晚者，避免下界早于 start_date 而越界生成执行日。"""
+    effective = getattr(plan, "schedule_effective_date", None)
+    if effective:
+        return max(plan.start_date, effective)
+    return plan.start_date
+
+
 def iter_sip_trade_dates(plan, through_date):
     frequency, schedule_day = normalize_sip_schedule(
         plan.frequency,
         plan.schedule_day,
     )
-    if through_date < plan.start_date:
+    floor = _schedule_floor(plan)
+    if through_date < floor:
         return
 
     effective_dates = set()
     if frequency is SipFrequency.DAILY:
-        cursor = plan.start_date
+        cursor = floor
         while cursor <= through_date:
             if is_trading_day(cursor):
                 effective_dates.add(cursor)
             cursor += timedelta(days=1)
     elif frequency is SipFrequency.WEEKLY:
-        cursor = plan.start_date + timedelta(
-            days=(schedule_day - plan.start_date.isoweekday()) % 7
+        cursor = floor + timedelta(
+            days=(schedule_day - floor.isoweekday()) % 7
         )
         while cursor <= through_date:
             effective = _roll_forward(cursor)
@@ -64,10 +74,10 @@ def iter_sip_trade_dates(plan, through_date):
                 effective_dates.add(effective)
             cursor += timedelta(days=7)
     else:
-        year = plan.start_date.year
-        month = plan.start_date.month
+        year = floor.year
+        month = floor.month
         while True:
-            month_start = plan.start_date.replace(
+            month_start = floor.replace(
                 year=year,
                 month=month,
                 day=1,
@@ -77,7 +87,7 @@ def iter_sip_trade_dates(plan, through_date):
             planned = month_start.replace(
                 day=min(schedule_day, monthrange(year, month)[1])
             )
-            if planned >= plan.start_date:
+            if planned >= floor:
                 effective = _roll_forward(planned)
                 if effective <= through_date:
                     effective_dates.add(effective)

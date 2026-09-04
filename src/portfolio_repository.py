@@ -40,7 +40,7 @@ _QUOTE_COLUMNS = """
 """
 _PLAN_COLUMNS = """
     id, product_id, daily_amount, purchase_fee_rate, source_cash_product_id,
-    status, start_date, frequency, schedule_day
+    status, start_date, frequency, schedule_day, schedule_effective_date
 """
 _PLAN_EXECUTION_COLUMNS = """
     id, plan_id, intended_trade_date, status, reason, transaction_id
@@ -453,8 +453,8 @@ class PortfolioRepository:
             """INSERT INTO sip_plans
                (id, product_id, daily_amount, purchase_fee_rate,
                 source_cash_product_id, status, start_date, frequency,
-                schedule_day)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                schedule_day, schedule_effective_date)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    product_id = excluded.product_id,
                    daily_amount = excluded.daily_amount,
@@ -464,6 +464,7 @@ class PortfolioRepository:
                    start_date = excluded.start_date,
                    frequency = excluded.frequency,
                    schedule_day = excluded.schedule_day,
+                   schedule_effective_date = excluded.schedule_effective_date,
                    updated_at = CURRENT_TIMESTAMP,
                    paused_at = CASE
                        WHEN excluded.status = 'paused'
@@ -483,9 +484,27 @@ class PortfolioRepository:
                 plan.start_date.isoformat(),
                 plan.frequency.value,
                 plan.schedule_day,
+                (
+                    plan.schedule_effective_date.isoformat()
+                    if plan.schedule_effective_date
+                    else None
+                ),
             ),
         )
         return plan
+
+    def get_plan_paused_at(
+        self,
+        plan_id: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> str | None:
+        query = "SELECT paused_at FROM sip_plans WHERE id = ?"
+        if conn is None:
+            with self.database.connection() as owned:
+                row = owned.execute(query, (plan_id,)).fetchone()
+        else:
+            row = conn.execute(query, (plan_id,)).fetchone()
+        return row["paused_at"] if row else None
 
     def get_plan(
         self,
@@ -821,6 +840,11 @@ class PortfolioRepository:
             start_date=date.fromisoformat(row["start_date"]),
             frequency=SipFrequency(row["frequency"]),
             schedule_day=row["schedule_day"],
+            schedule_effective_date=(
+                date.fromisoformat(row["schedule_effective_date"])
+                if row["schedule_effective_date"]
+                else None
+            ),
         )
 
     @staticmethod

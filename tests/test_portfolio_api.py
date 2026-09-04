@@ -1146,6 +1146,244 @@ def test_sip_api_treats_omitted_frequency_as_legacy_daily(api_setup):
     assert plan.schedule_day is None
 
 
+def _sip_purchase_count(repository, plan_id):
+    return len([
+        t for t in repository.list_transactions()
+        if t.plan_id == plan_id
+        and t.transaction_type is TransactionType.SIP_PURCHASE
+    ])
+
+
+def _activate_monthly(api_setup, monkeypatch, clock, idem):
+    client, runtime, repository, _ = api_setup
+    monkeypatch.setattr(
+        "src.portfolio_api.beijing_now",
+        lambda: datetime.combine(clock, datetime.min.time()),
+    )
+    monkeypatch.setattr("src.portfolio_sip.beijing_today", lambda: clock)
+    resp = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem=idem),
+        json={
+            "product_id": "fund",
+            "daily_amount": "100",
+            "purchase_fee_rate": "0",
+            "source_cash_product_id": "cash",
+            "start_date": "2026-09-01",
+            "frequency": "monthly",
+            "schedule_day": 15,
+            "activate": True,
+        },
+    )
+    assert resp.status_code in (200, 201), resp.get_json()
+    return client, runtime, repository, resp.get_json()["sip_plan"]["id"]
+
+
+def test_active_plan_schedule_change_does_not_replay_history(
+    api_setup, monkeypatch
+):
+    """活动计划改周期：不得按新规则追补历史，只从修改后次个执行日生效。"""
+    from src.portfolio_positions import PositionProjector
+    from src.portfolio_sip import SipService
+    from src.portfolio_transactions import PortfolioTransactionService
+
+    client, runtime, repository, _ = api_setup
+
+    def set_clock(day):
+        monkeypatch.setattr(
+            "src.portfolio_api.beijing_now",
+            lambda: datetime.combine(day, datetime.min.time()),
+        )
+        monkeypatch.setattr("src.portfolio_sip.beijing_today", lambda: day)
+
+    set_clock(date(2026, 10, 1))
+    created = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="sch-create"),
+        json={
+            "product_id": "fund", "daily_amount": "100",
+            "purchase_fee_rate": "0", "source_cash_product_id": "cash",
+            "start_date": "2026-09-01", "frequency": "monthly",
+            "schedule_day": 15, "activate": True,
+        },
+    )
+    assert created.status_code in (200, 201)
+    plan_id = created.get_json()["sip_plan"]["id"]
+    # 激活补跑：每月15日 → 9-15 一次。
+    assert _sip_purchase_count(repository, plan_id) == 1
+
+    # 修改为每月20日（同日 10-01 保存）。
+    modified = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="sch-modify"),
+        json={
+            "sip_id": plan_id,
+            "product_id": "fund", "daily_amount": "100",
+            "purchase_fee_rate": "0", "source_cash_product_id": "cash",
+            "start_date": "2026-09-01", "frequency": "monthly",
+            "schedule_day": 20,
+        },
+    )
+    assert modified.status_code == 200
+    # 关键：不得按新规则追补历史（旧 bug 会补扣 9/21）。
+    assert _sip_purchase_count(repository, plan_id) == 1
+    plan = repository.get_plan(plan_id)
+    from datetime import timedelta
+    assert plan.schedule_effective_date == date(2026, 10, 1) + timedelta(days=1)
+
+    # 新规则从"修改后的下一个执行日"起生效：作业推进到 10-21 时，
+    # 应产生 10-20（而非更早的 9/20）。
+    sip = SipService(
+        repository, PositionProjector(repository),
+        PortfolioTransactionService(
+            repository, PositionProjector(repository)
+        ),
+    )
+    sip.backfill_plan(plan_id, date(2026, 10, 21), settle=False)
+    executed = [
+        e.intended_trade_date for e in repository.list_plan_executions(plan_id)
+        if e.status != "skipped"
+    ]
+    assert date(2026, 9, 15) in executed
+    assert date(2026, 10, 20) in executed
+    assert date(2026, 9, 20) not in executed  # 未追补
+
+
+def test_schedule_change_with_future_start_executes_nothing_before_start(
+    api_setup, monkeypatch
+):
+    """活动计划改周期且开始日期在未来时，开始日前不得产生执行。"""
+    from src.portfolio_positions import PositionProjector
+    from src.portfolio_sip import SipService
+    from src.portfolio_transactions import PortfolioTransactionService
+
+    client, runtime, repository, _ = api_setup
+    monkeypatch.setattr(
+        "src.portfolio_api.beijing_now",
+        lambda: datetime.combine(date(2026, 11, 1), datetime.min.time()),
+    )
+    monkeypatch.setattr("src.portfolio_sip.beijing_today", lambda: date(2026, 11, 1))
+
+    created = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="fut-create"),
+        json={
+            "product_id": "fund", "daily_amount": "100",
+            "purchase_fee_rate": "0", "source_cash_product_id": "cash",
+            "start_date": "2026-12-01", "frequency": "weekly",
+            "schedule_day": 1, "activate": True,
+        },
+    )
+    assert created.status_code in (200, 201)
+    plan_id = created.get_json()["sip_plan"]["id"]
+    # 改成每周三 → schedule_effective=11-02，但仍早于 start_date 12-01。
+    client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="fut-modify"),
+        json={
+            "sip_id": plan_id,
+            "product_id": "fund", "daily_amount": "100",
+            "purchase_fee_rate": "0", "source_cash_product_id": "cash",
+            "start_date": "2026-12-01", "frequency": "weekly",
+            "schedule_day": 3,
+        },
+    )
+    plan = repository.get_plan(plan_id)
+    assert plan.start_date == date(2026, 12, 1)
+    assert plan.schedule_effective_date == date(2026, 11, 2)
+
+    # 作业推进到 11-30（仍在 start_date 之前）→ 不得产生任何执行。
+    sip = SipService(
+        repository, PositionProjector(repository),
+        PortfolioTransactionService(repository, PositionProjector(repository)),
+    )
+    executions = sip.backfill_plan(plan_id, date(2026, 11, 30), settle=False)
+    assert executions == []
+    assert _sip_purchase_count(repository, plan_id) == 0
+
+
+def test_main_write_resume_does_not_catch_up_pause_window(
+    api_setup, monkeypatch
+):
+    client, runtime, repository, plan_id = _activate_monthly(
+        api_setup, monkeypatch, date(2026, 9, 16), "mw-resume-create"
+    )
+    # 激活时补跑已产生 9-15 一次扣款。
+    assert _sip_purchase_count(repository, plan_id) == 1
+
+    # 暂停，并把暂停起点设到北京时间 10-01；暂停期间作业一次都没跑。
+    client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="mw-resume-pause"),
+        json={"operation": "pause", "sip_id": plan_id},
+    )
+    with runtime.repository.database.transaction() as conn:
+        conn.execute(
+            "UPDATE sip_plans SET paused_at = ? WHERE id = ?",
+            ("2026-09-30 16:00:00", plan_id),
+        )
+
+    # 时钟前进到 11-01 后，通过主写接口恢复。
+    monkeypatch.setattr(
+        "src.portfolio_api.beijing_now",
+        lambda: datetime.combine(
+            date(2026, 11, 1), datetime.min.time()
+        ),
+    )
+    monkeypatch.setattr("src.portfolio_sip.beijing_today", lambda: date(2026, 11, 1))
+    resp = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="mw-resume-do"),
+        json={"operation": "resume", "sip_id": plan_id},
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["sip_plan"]["status"] == "active"
+
+    # 10-15 被 resume 关闭为 plan_paused，且不补扣。
+    assert _sip_purchase_count(repository, plan_id) == 1
+    exec_by_date = {
+        e.intended_trade_date: e
+        for e in repository.list_plan_executions(plan_id)
+    }
+    assert exec_by_date[date(2026, 10, 15)].status == "skipped"
+    assert exec_by_date[date(2026, 10, 15)].reason == "plan_paused"
+
+
+def test_dedicated_resume_endpoint_does_not_catch_up_pause_window(
+    api_setup, monkeypatch
+):
+    client, runtime, repository, plan_id = _activate_monthly(
+        api_setup, monkeypatch, date(2026, 9, 16), "ep-resume-create"
+    )
+    assert _sip_purchase_count(repository, plan_id) == 1
+
+    client.post(
+        f"/api/portfolio/sip-plans/{plan_id}/pause",
+        headers=write_headers(idem="ep-resume-pause"),
+        json={},
+    )
+    with runtime.repository.database.transaction() as conn:
+        conn.execute(
+            "UPDATE sip_plans SET paused_at = ? WHERE id = ?",
+            ("2026-09-30 16:00:00", plan_id),
+        )
+
+    monkeypatch.setattr("src.portfolio_sip.beijing_today", lambda: date(2026, 11, 1))
+    resp = client.post(
+        f"/api/portfolio/sip-plans/{plan_id}/resume",
+        headers=write_headers(idem="ep-resume-do"),
+        json={},
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["sip_plan"]["status"] == "active"
+    assert _sip_purchase_count(repository, plan_id) == 1
+    exec_by_date = {
+        e.intended_trade_date: e
+        for e in repository.list_plan_executions(plan_id)
+    }
+    assert exec_by_date[date(2026, 10, 15)].reason == "plan_paused"
+
+
 @pytest.mark.parametrize(
     "schedule",
     [

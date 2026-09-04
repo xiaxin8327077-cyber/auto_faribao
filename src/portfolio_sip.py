@@ -1,7 +1,9 @@
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import NAMESPACE_URL, uuid4, uuid5
+
+from src.beijing_time import TZ_CN, today as beijing_today
 
 from src.portfolio_models import (
     ProductStatus,
@@ -26,6 +28,20 @@ from src.portfolio_sip_schedule import (
 
 
 ZERO = Decimal("0")
+
+
+def _utc_timestamp_to_beijing_date(value):
+    """把 SQLite ``CURRENT_TIMESTAMP``（UTC 无时区串）转成北京自然日。"""
+    if not value:
+        return None
+    text = str(value).strip().replace("T", " ")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(TZ_CN).date()
 ONE = Decimal("1")
 
 
@@ -115,28 +131,74 @@ class SipService:
                 conn,
             )
 
-    def pause(self, plan_id) -> SipPlan:
-        with self.repository.database.transaction() as conn:
-            plan = self._require_plan(plan_id, conn)
+    def pause(self, plan_id, conn=None) -> SipPlan:
+        def _apply(active_conn):
+            plan = self._require_plan(plan_id, active_conn)
             if plan.status is SipPlanStatus.DRAFT:
                 raise ValueError("plan is not active")
             if plan.status is SipPlanStatus.PAUSED:
                 return plan
             return self.repository.save_plan(
                 replace(plan, status=SipPlanStatus.PAUSED),
-                conn,
+                active_conn,
             )
 
-    def resume(self, plan_id) -> SipPlan:
-        with self.repository.database.transaction() as conn:
-            plan = self._require_plan(plan_id, conn)
+        if conn is not None:
+            return _apply(conn)
+        with self.repository.database.transaction() as owned:
+            return _apply(owned)
+
+    def resume(self, plan_id, conn=None, resume_day=None) -> SipPlan:
+        """恢复定投：在切换为 ACTIVE 之前，先把暂停区间内已到期
+        的真实执行日幂等记录为 ``plan_paused`` 终态跳过，确保即使暂停
+        期间定时任务一次都没运行，恢复后也不会补扣，且恢复当天不扣。
+        """
+        target_day = resume_day or beijing_today()
+
+        def _apply(active_conn):
+            plan = self._require_plan(plan_id, active_conn)
             if plan.status is SipPlanStatus.DRAFT:
                 raise ValueError("plan is not paused")
             if plan.status is SipPlanStatus.ACTIVE:
                 return plan
-            self._require_active_plan_products(plan, conn)
+            self._require_active_plan_products(plan, active_conn)
+            # paused_at 会在切换 ACTIVE 时被清空，必须在此之前读取。
+            paused_at = self.repository.get_plan_paused_at(
+                plan.id, conn=active_conn
+            )
+            window_start = _utc_timestamp_to_beijing_date(paused_at)
+            if window_start is None:
+                # 无法确定暂停边界时拒绝恢复，保持 PAUSED，
+                # 既不关闭任何历史，也不沿用可能补扣的旧行为。
+                raise ValueError(
+                    "暂停起始时间缺失，无法安全恢复；计划保持暂停，"
+                    "请检查 paused_at 后重试"
+                )
+            self._close_pause_window(plan, window_start, target_day, active_conn)
             return self.repository.save_plan(
                 replace(plan, status=SipPlanStatus.ACTIVE),
+                active_conn,
+            )
+
+        if conn is not None:
+            return _apply(conn)
+        with self.repository.database.transaction() as owned:
+            return _apply(owned)
+
+    def _close_pause_window(self, plan, window_start, resume_day, conn):
+        for intended_date in iter_sip_trade_dates(plan, resume_day):
+            if intended_date > resume_day:
+                break
+            if intended_date < window_start:
+                continue
+            if self.repository.get_plan_execution(
+                plan.id, intended_date, conn=conn
+            ) is not None:
+                continue
+            self.repository.save_plan_execution(
+                self._new_execution(
+                    plan.id, intended_date, "skipped", "plan_paused"
+                ),
                 conn,
             )
 
@@ -146,11 +208,14 @@ class SipService:
         intended_date,
         *,
         recheck_schedule=False,
+        _scheduled_dates=None,
     ) -> PlanExecution:
         should_notify = False
         with self.repository.database.transaction() as conn:
             plan = self._require_plan(plan_id, conn)
-            reason = self._skip_reason(plan, intended_date)
+            reason = self._skip_reason(
+                plan, intended_date, _scheduled_dates
+            )
             existing = self.repository.get_plan_execution(
                 plan_id, intended_date, conn=conn
             )
@@ -245,11 +310,15 @@ class SipService:
         if plan.status is not SipPlanStatus.ACTIVE:
             return self.list_executions(plan.id, through_date)
 
-        for intended_date in iter_sip_trade_dates(plan, through_date):
+        # 一次性算出周期内全部真实执行日，避免每个日期再从头枚举，
+        # 使补跑复杂度从 O(n^2) 降到 O(n)。
+        scheduled = set(iter_sip_trade_dates(plan, through_date))
+        for intended_date in sorted(scheduled):
             self.ensure_intent(
                 plan.id,
                 intended_date,
                 recheck_schedule=True,
+                _scheduled_dates=scheduled,
             )
         if settle:
             self.settle_pending(through_date)
@@ -525,12 +594,15 @@ class SipService:
             conn,
         )
 
-    def _skip_reason(self, plan, intended_date):
+    def _skip_reason(self, plan, intended_date, _scheduled_dates=None):
         if intended_date < plan.start_date:
             return "before_start_date"
         try:
             trading_day = is_trading_day(intended_date)
-            scheduled_day = is_sip_trade_date(plan, intended_date)
+            if _scheduled_dates is None:
+                scheduled_day = is_sip_trade_date(plan, intended_date)
+            else:
+                scheduled_day = intended_date in _scheduled_dates
         except MissingTradingCalendarError:
             return "calendar_unavailable"
         if not trading_day:

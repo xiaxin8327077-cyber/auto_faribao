@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 import sqlite3
 import threading
 
@@ -144,7 +145,94 @@ def test_v4_upgrade_adds_default_daily_sip_schedule(tmp_path):
             "SELECT version FROM schema_migrations"
         ).fetchone()[0]
     assert tuple(row) == ("daily", None)
-    assert version == SCHEMA_VERSION == 5
+    assert version == SCHEMA_VERSION == 6
+
+
+V1_FIXTURE_SQL = (
+    Path(__file__).resolve().parent / "fixtures" / "portfolio_v1_schema.sql"
+).read_text(encoding="utf-8")
+
+
+def create_real_v1_database(db):
+    """用历史 v1 DDL 建一个真实旧库（含一条遗留计划），版本记为 1。"""
+    with db.connection() as conn:
+        conn.executescript(V1_FIXTURE_SQL)
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (1)"
+        )
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('fund','test','000001','基金','public_fund','active')"""
+        )
+        conn.execute(
+            """INSERT INTO sip_plans
+               (id, product_id, daily_amount, purchase_fee_rate, status,
+                start_date)
+               VALUES ('legacy','fund','100','0','draft','2026-09-01')"""
+        )
+
+
+def _table_columns(db, table):
+    with db.connection() as conn:
+        return {
+            row["name"] for row in conn.execute(
+                f"PRAGMA table_info({table})"
+            )
+        }
+
+
+def test_v1_inplace_upgrade_from_real_v1_structure(tmp_path):
+    """真实历史 v1 库就地升级：必须补齐 v4/v5/v6 全部列并标到最新版本。"""
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    create_real_v1_database(db)
+    # 真实 v1 结构确实缺这些后置列（非仅改版本号）。
+    assert "settlement_date" not in _table_columns(db, "transactions")
+    assert "trade_time" not in _table_columns(db, "transactions")
+    early_sip = _table_columns(db, "sip_plans")
+    assert not {"frequency", "schedule_day", "schedule_effective_date"} & early_sip
+
+    db.upgrade_v1_validated(lambda conn: "validated")
+    # 迁移后运行时还会 initialize()（补齐 deleted_at 等）。
+    db.initialize()
+
+    assert "settlement_date" in _table_columns(db, "transactions")
+    assert "trade_time" in _table_columns(db, "transactions")
+    sip_cols = _table_columns(db, "sip_plans")
+    assert {
+        "frequency", "schedule_day", "schedule_effective_date",
+    } <= sip_cols
+    with db.connection() as conn:
+        version = conn.execute(
+            "SELECT version FROM schema_migrations"
+        ).fetchone()[0]
+    assert version == SCHEMA_VERSION == 6
+
+    # 遗留计划升级后可被仓储正确读取，默认每日。
+    repository = PortfolioRepository(db)
+    plan = repository.get_plan("legacy")
+    assert plan.frequency.value == "daily"
+    assert plan.schedule_day is None
+    assert plan.schedule_effective_date is None
+
+
+def test_each_inplace_upgrade_step_writes_real_target_version(tmp_path):
+    """每段迁移只写自己的真实目标版本，避免中间结构被标成当前版本。"""
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+    steps = [
+        (PortfolioDatabase._upgrade_v2_to_v3, 3),
+        (PortfolioDatabase._upgrade_v3_to_v4, 4),
+        (PortfolioDatabase._upgrade_v4_to_v5, 5),
+        (PortfolioDatabase._upgrade_v5_to_v6, 6),
+    ]
+    for step, expected in steps:
+        with db.connection() as conn:
+            step(conn)
+            version = conn.execute(
+                "SELECT version FROM schema_migrations"
+            ).fetchone()[0]
+        assert version == expected, step.__name__
 
 
 def test_initialize_corrects_known_015736_sip_fee_rate_and_confirmed_trade(

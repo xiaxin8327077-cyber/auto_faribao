@@ -122,6 +122,23 @@ def plan_transactions(repository, plan_id):
     ]
 
 
+def sip_purchases(repository, plan_id):
+    return [
+        transaction
+        for transaction in repository.list_transactions()
+        if transaction.plan_id == plan_id
+        and transaction.transaction_type is TransactionType.SIP_PURCHASE
+    ]
+
+
+def set_paused_at(repository, plan_id, value):
+    with repository.database.transaction() as conn:
+        conn.execute(
+            "UPDATE sip_plans SET paused_at = ? WHERE id = ?",
+            (value, plan_id),
+        )
+
+
 @pytest.mark.parametrize(
     ("frequency", "schedule_day"),
     [
@@ -528,6 +545,192 @@ def test_pause_does_not_cancel_pending_and_resume_does_not_backfill(sip_services
     sip.resume(plan.id)
     assert sip.list_executions(plan.id, date(2026, 7, 31))[-1] == paused
     assert sip.ensure_intent(plan.id, date(2026, 7, 31)) == paused
+
+
+def test_resume_closes_pause_window_when_scheduler_never_ran(sip_services):
+    """暂停期间作业一次都没跑，恢复也必须把已到期的暂停日关闭、不补扣。"""
+    repo, sip, _projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(
+        sip, "fund", "cash", "100", "0",
+        start_date=date(2026, 9, 1),
+        frequency=SipFrequency.MONTHLY, schedule_day=15,
+    )
+    # 9-15 在暂停前正常执行。
+    sip.backfill_plan(plan.id, date(2026, 9, 15), settle=False)
+    assert len(sip_purchases(repo, plan.id)) == 1
+
+    sip.pause(plan.id)
+    set_paused_at(repo, plan.id, "2026-09-30 16:00:00")  # 北京 10-01
+    # 前提：暂停期间没有任何作业运行，10-15 尚无执行记录。
+    assert all(
+        e.intended_trade_date != date(2026, 10, 15)
+        for e in sip.list_executions(plan.id)
+    )
+
+    # 恢复(恢复日 11-20) 后作业再补跑到 11-20。
+    sip.resume(plan.id, resume_day=date(2026, 11, 20))
+    sip.backfill_plan(plan.id, date(2026, 11, 20), settle=False)
+
+    # 只有暂停前的 9 月那一次真实扣款；10-15、11-16 被终态关闭。
+    assert len(sip_purchases(repo, plan.id)) == 1
+    by_date = {e.intended_trade_date: e for e in sip.list_executions(plan.id)}
+    for missed in (date(2026, 10, 15), date(2026, 11, 16)):
+        assert by_date[missed].status == "skipped"
+        assert by_date[missed].reason == "plan_paused"
+
+
+def test_resume_does_not_charge_on_resume_day(sip_services):
+    repo, sip, _projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(
+        sip, "fund", "cash", "100", "0",
+        start_date=date(2026, 9, 1),
+        frequency=SipFrequency.WEEKLY, schedule_day=3,
+    )
+    sip.pause(plan.id)
+    set_paused_at(repo, plan.id, "2026-09-01 00:00:00")  # 北京 09-01
+
+    # 恢复日 09-09 恰好是每周三(暂停期内到期) → 不补扣。
+    sip.resume(plan.id, resume_day=date(2026, 9, 9))
+
+    by_date = {e.intended_trade_date: e for e in sip.list_executions(plan.id)}
+    assert by_date[date(2026, 9, 9)].status == "skipped"
+    assert by_date[date(2026, 9, 9)].reason == "plan_paused"
+    assert len(sip_purchases(repo, plan.id)) == 0
+
+
+def test_resume_closes_holiday_rolled_execution_date(sip_services):
+    """暂停窗口关闭的是顺延后的真实执行日，而不是名义日。"""
+    repo, sip, _projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(
+        sip, "fund", "cash", "100", "0",
+        start_date=date(2026, 2, 1),
+        frequency=SipFrequency.MONTHLY, schedule_day=30,
+    )
+    sip.pause(plan.id)
+    set_paused_at(repo, plan.id, "2026-02-01 00:00:00")
+
+    # 2 月无 30 日 → 取月末 02-28 → 顺延到 03-02。恢复日 03-02 覆盖它。
+    sip.resume(plan.id, resume_day=date(2026, 3, 2))
+
+    by_date = {e.intended_trade_date: e for e in sip.list_executions(plan.id)}
+    assert date(2026, 3, 2) in by_date
+    assert by_date[date(2026, 3, 2)].status == "skipped"
+    assert by_date[date(2026, 3, 2)].reason == "plan_paused"
+    assert len(sip_purchases(repo, plan.id)) == 0
+
+
+def test_repeated_pause_resume_only_closes_pause_windows(sip_services):
+    repo, sip, _projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(
+        sip, "fund", "cash", "100", "0",
+        start_date=date(2026, 9, 1),
+        frequency=SipFrequency.MONTHLY, schedule_day=15,
+    )
+    # 第一段暂停：09-05~09-06，9-15 尚未到期，恢复后正常执行 9-15。
+    sip.pause(plan.id)
+    set_paused_at(repo, plan.id, "2026-09-05 00:00:00")
+    sip.resume(plan.id, resume_day=date(2026, 9, 6))
+    sip.backfill_plan(plan.id, date(2026, 9, 15), settle=False)
+    assert len(sip_purchases(repo, plan.id)) == 1
+
+    # 第二段暂停：10-01~11-01，跨 10-15 → 关闭不补扣。
+    sip.pause(plan.id)
+    set_paused_at(repo, plan.id, "2026-10-01 00:00:00")
+    sip.resume(plan.id, resume_day=date(2026, 11, 1))
+    sip.backfill_plan(plan.id, date(2026, 11, 1), settle=False)
+
+    assert len(sip_purchases(repo, plan.id)) == 1
+    by_date = {e.intended_trade_date: e for e in sip.list_executions(plan.id)}
+    assert by_date[date(2026, 10, 15)].reason == "plan_paused"
+
+
+def test_resume_rejects_when_paused_at_missing(sip_services):
+    """paused_at 缺失时拒绝恢复、保持 PAUSED，且不关闭任何历史。"""
+    repo, sip, _projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(
+        sip, "fund", "cash", "100", "0",
+        start_date=date(2026, 9, 1),
+        frequency=SipFrequency.MONTHLY, schedule_day=15,
+    )
+    sip.backfill_plan(plan.id, date(2026, 9, 15), settle=False)
+    sip.pause(plan.id)
+    with repo.database.transaction() as conn:
+        conn.execute(
+            "UPDATE sip_plans SET paused_at = NULL WHERE id = ?",
+            (plan.id,),
+        )
+
+    with pytest.raises(ValueError, match="暂停起始时间缺失"):
+        sip.resume(plan.id, resume_day=date(2026, 11, 1))
+
+    assert repo.get_plan(plan.id).status is SipPlanStatus.PAUSED
+    # 未新增任何执行记录（10-15 不被写、也不被扣）。
+    assert all(
+        e.intended_trade_date != date(2026, 10, 15)
+        for e in sip.list_executions(plan.id)
+    )
+    assert len(sip_purchases(repo, plan.id)) == 1
+
+
+def test_schedule_floor_never_before_start_date():
+    """周期生效下界不得早于用户配置的 start_date。"""
+    from src.portfolio_models import SipPlan, SipPlanStatus
+    from src.portfolio_sip_schedule import iter_sip_trade_dates
+
+    plan = SipPlan(
+        id="p", product_id="f",
+        daily_amount=Decimal("100"), purchase_fee_rate=Decimal("0"),
+        source_cash_product_id="c", status=SipPlanStatus.ACTIVE,
+        start_date=date(2026, 12, 1),
+        frequency=SipFrequency.WEEKLY, schedule_day=1,
+        schedule_effective_date=date(2026, 9, 7),  # 早于 start_date
+    )
+    dates = list(iter_sip_trade_dates(plan, date(2026, 12, 31)))
+    assert dates  # 12 月有周一
+    assert min(dates) >= date(2026, 12, 1)
+    assert all(d >= date(2026, 12, 1) for d in dates)
+
+
+def test_backfill_calendar_checks_scale_linearly_with_history(sip_services, monkeypatch):
+    """补跑的日历检查次数应随历史线性增长，而非平方级。"""
+    import src.portfolio_sip as ps
+    import src.portfolio_sip_schedule as pss
+
+    repo, sip, _projector = sip_services
+    seed_cash(repo, "cash", "1000000", trade_date=date(2015, 1, 1))
+    seed_fund(repo, "fund", "003103")
+
+    calendar_checks = {"n": 0}
+
+    def fake_is_trading_day(day):
+        calendar_checks["n"] += 1
+        return day.weekday() < 5  # 周一~周五为交易日
+
+    monkeypatch.setattr(ps, "is_trading_day", fake_is_trading_day)
+    monkeypatch.setattr(pss, "is_trading_day", fake_is_trading_day)
+
+    start = date(2016, 1, 4)  # 周一
+    plan = active_plan(sip, "fund", "cash", "1", "0", start_date=start)
+    calendar_checks["n"] = 0  # 只统计补跑本身的日历调用
+
+    executions = sip.backfill_plan(plan.id, date(2017, 1, 3), settle=False)
+
+    # 结果正确：约一年、每个交易日一次。
+    assert 240 < len(executions) < 270
+    assert all(e.status == "pending_quote" for e in executions)
+    # 线性量级：新实现约 600 次；若退回"每日从头枚举"的平方级
+    # 实现，此数会达到约 3 万次以上。
+    assert calendar_checks["n"] < 2500, calendar_checks["n"]
 
 
 def test_pending_stays_pending_until_exact_or_later_quote(sip_services):
