@@ -884,3 +884,100 @@ def test_profit_sheet_clears_expanded_row_on_tab_change_and_close():
     set_idx = html.index("function setProfitView(view)")
     assert "expandedProfitKey = '';" in html[set_idx:set_idx + 220]
     assert "expandedProfitKey = '';" in html[close_idx:close_idx + 420]
+
+
+def test_sip_dialog_has_frequency_and_schedule_controls():
+    html = _read_page()
+    assert 'name="frequency" id="sipFrequency"' in html
+    assert '<option value="daily">每日</option>' in html
+    assert '<option value="weekly">每周</option>' in html
+    assert '<option value="monthly">每月</option>' in html
+    assert 'id="sipWeeklyDayField"' in html
+    assert 'id="sipWeeklyDay"' in html
+    assert 'id="sipMonthlyDayField"' in html
+    assert 'id="sipMonthlyDay"' in html
+
+
+def test_sip_weekly_options_are_weekdays_only():
+    html = _read_page()
+    for value, label in (
+        ("1", "周一"), ("2", "周二"), ("3", "周三"), ("4", "周四"), ("5", "周五"),
+    ):
+        assert f'<option value="{value}">{label}</option>' in html
+    # 周六、周日不得出现在每周扣款日控件中。
+    assert 'value="6">周六' not in html
+    assert 'value="7">周日' not in html
+
+
+def test_sip_monthly_options_span_one_to_thirty_one():
+    html = _read_page()
+    monthly = html[html.index('id="sipMonthlyDay"'):]
+    monthly = monthly[:monthly.index("</select>")]
+    assert '<option value="1">1 日</option>' in monthly
+    assert '<option value="29">29 日</option>' in monthly
+    assert '<option value="30">30 日</option>' in monthly
+    assert '<option value="31">31 日</option>' in monthly
+    assert '<option value="32"' not in monthly
+
+
+def test_sip_schedule_conditional_sync_wired():
+    html = _read_page()
+    assert "function syncSipScheduleFields()" in html
+    assert "$('sipFrequency').addEventListener('change', syncSipScheduleFields);" in html
+    sync = html[html.index("function syncSipScheduleFields()"):]
+    sync = sync[:sync.index("\n    }")]
+    assert "$('sipWeeklyDayField').hidden = !weekly;" in sync
+    assert "$('sipWeeklyDay').disabled = !weekly;" in sync
+    assert "$('sipMonthlyDayField').hidden = !monthly;" in sync
+    assert "$('sipMonthlyDay').disabled = !monthly;" in sync
+
+
+def test_sip_edit_refills_schedule_and_syncs():
+    html = _read_page()
+    open_sip = html[html.index("function openSip("):]
+    open_sip = open_sip[:open_sip.index("\n    }")]
+    assert "form.frequency.value = String(rowValue(existing, 'frequency') || 'daily');" in open_sip
+    assert "$('sipWeeklyDay').value = String(" in open_sip
+    assert "$('sipMonthlyDay').value = String(" in open_sip
+    assert "syncSipScheduleFields();" in open_sip
+
+
+def test_sip_submit_sends_frequency_and_schedule_day():
+    html = _read_page()
+    submit = html[html.index("$('sipForm').addEventListener('submit'"):]
+    submit = submit[:submit.index("});", submit.index("previewAction"))]
+    assert "payload.frequency = frequency;" in submit
+    assert "payload.schedule_day = Number(" in submit
+    assert "payload.schedule_day = null;" in submit
+
+
+def test_sip_start_date_label_is_begin_date_not_first_deduction():
+    html = _read_page()
+    assert "首次扣款日" not in html
+    assert "开始日期" in html
+    # 卡片与表单都改用“开始日期”。
+    assert "<span>开始日期</span>" in html
+    assert ">开始日期<input name=\"start_date\"" in html
+
+
+def test_sip_card_shows_schedule_summary():
+    html = _read_page()
+    assert "function sipScheduleLabel(row)" in html
+    label = html[html.index("function sipScheduleLabel(row)"):]
+    label = label[:label.index("\n    }")]
+    assert "return '每日';" in label
+    assert "'每周'" in label
+    assert "'每月 '" in label
+    # 卡片正文调用摘要函数。
+    assert "${esc(sipScheduleLabel(row))}" in html
+
+
+def test_sip_preview_uses_chinese_schedule_field_names():
+    html = _read_page()
+    assert "'frequency': '定投周期'" in html
+    assert "'schedule_day': '扣款日'" in html
+    assert "'start_date': '开始日期'" in html
+    # 预览值中文化。
+    assert "daily: '每日'" in html
+    assert "weekly: '每周'" in html
+    assert "monthly: '每月'" in html

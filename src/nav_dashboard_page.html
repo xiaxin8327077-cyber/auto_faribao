@@ -750,7 +750,7 @@
 
   <dialog class="management-dialog" id="sipDialog" aria-labelledby="sipDialogTitle">
     <form id="sipForm" method="dialog"><header class="dialog-head"><h2 id="sipDialogTitle">定投计划</h2><button class="icon-button" type="button" data-close-dialog="sipDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <div class="form-field"><label for="sipProductQuery">搜索并选择公募基金</label><div class="product-search-control"><input id="sipProductQuery" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="sipProductSuggestions" placeholder="输入基金代码或中文名称" autocomplete="off" required><div class="product-suggestion-panel" id="sipProductSuggestions" role="listbox" hidden></div></div><input name="product_id" id="sipProduct" type="hidden"><input name="new_fund_code" id="sipFundCode" type="hidden"><span class="product-search-status" id="sipProductSearchStatus" aria-live="polite"></span></div><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">首次扣款日<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
+      <div class="form-field"><label for="sipProductQuery">搜索并选择公募基金</label><div class="product-search-control"><input id="sipProductQuery" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="sipProductSuggestions" placeholder="输入基金代码或中文名称" autocomplete="off" required><div class="product-suggestion-panel" id="sipProductSuggestions" role="listbox" hidden></div></div><input name="product_id" id="sipProduct" type="hidden"><input name="new_fund_code" id="sipFundCode" type="hidden"><span class="product-search-status" id="sipProductSearchStatus" aria-live="polite"></span></div><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">定投周期<select name="frequency" id="sipFrequency"><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label><label class="form-field" id="sipWeeklyDayField" hidden>每周扣款日<select id="sipWeeklyDay" disabled><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option></select></label><label class="form-field" id="sipMonthlyDayField" hidden>每月扣款日<select id="sipMonthlyDay" disabled><option value="1">1 日</option><option value="2">2 日</option><option value="3">3 日</option><option value="4">4 日</option><option value="5">5 日</option><option value="6">6 日</option><option value="7">7 日</option><option value="8">8 日</option><option value="9">9 日</option><option value="10">10 日</option><option value="11">11 日</option><option value="12">12 日</option><option value="13">13 日</option><option value="14">14 日</option><option value="15">15 日</option><option value="16">16 日</option><option value="17">17 日</option><option value="18">18 日</option><option value="19">19 日</option><option value="20">20 日</option><option value="21">21 日</option><option value="22">22 日</option><option value="23">23 日</option><option value="24">24 日</option><option value="25">25 日</option><option value="26">26 日</option><option value="27">27 日</option><option value="28">28 日</option><option value="29">29 日</option><option value="30">30 日</option><option value="31">31 日</option></select></label><label class="form-field">开始日期<input name="start_date" type="date" required></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存计划</button></div>
     </div></form>
   </dialog>
@@ -1704,7 +1704,7 @@
         const statusLabel = ({draft: '草稿', active: '执行中', paused: '已暂停'})[status] || status;
         const deductionCount = number(rowValue(row, 'deduction_count'));
         const deductionAmount = rowValue(row, 'deduction_amount') || 0;
-        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${money(rowValue(row, 'amount', 'daily_amount') || 0)} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>首次扣款日</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'purchase_fee_rate_percent') || '--')}%</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div><div class="manage-stat"><span>${esc(`已扣款 ${deductionCount} 次`)}</span><b>${esc(`${money(deductionAmount)} 元`)}</b></div></div><div class="row-actions">${edit}${controls}${remove}${records}</div></article>`;
+        return `<article class="manage-card"><div class="manage-card-head"><div><div class="manage-name">${esc(rowValue(row, 'product_name', 'name', 'product_id') || '定投计划')}</div><div class="manage-meta">${esc(statusLabel)} · ${esc(sipScheduleLabel(row))} · 扣款来源：${esc(rowValue(row, 'source', 'fund_source') || '--')}</div></div><div class="manage-value">${money(rowValue(row, 'amount', 'daily_amount') || 0)} 元</div></div><div class="manage-grid"><div class="manage-stat"><span>开始日期</span><b>${esc(rowValue(row, 'start_date') || '--')}</b></div><div class="manage-stat"><span>申购费率</span><b>${esc(rowValue(row, 'purchase_fee_rate_percent') || '--')}%</b></div><div class="manage-stat"><span>最近执行</span><b>${esc(rowValue(row, 'last_execution_at', 'last_execution') || '--')}</b></div><div class="manage-stat"><span>${esc(`已扣款 ${deductionCount} 次`)}</span><b>${esc(`${money(deductionAmount)} 元`)}</b></div></div><div class="row-actions">${edit}${controls}${remove}${records}</div></article>`;
       }).join('') : '<div class="empty">暂无定投计划。</div>';
       updateWriteControls();
     }
@@ -2141,7 +2141,9 @@
         'purchase_fee_rate': '申购费率',
         'purchase_fee_rate_percent': '申购费率（%）',
         'source_cash_product_id': '扣款产品',
-        'start_date': '首次扣款日',
+        'start_date': '开始日期',
+        'frequency': '定投周期',
+        'schedule_day': '扣款日',
         'activate': '保存后启用',
         'actual_shares': '校准后份额',
         'current_shares': '当前份额',
@@ -2195,6 +2197,7 @@
         confirmed: '立即确认', pending_quote: '等待交易日净值后自动确认',
         pending_confirmation: '待确认', cancelled: '已取消', reversed: '已冲正',
         wealth_nav: '净值型理财', cash_management: '现金管理', public_fund: '公募基金',
+        daily: '每日', weekly: '每周', monthly: '每月',
         changsheng_fund: '长盛基金', nanyin_wealth: '南银理财', citic_wealth: '信银理财',
         'The trade will remain pending until a quote arrives.': '当前尚无交易日净值，系统获取净值后会自动确认。',
         'This operation changes immutable ledger state.': '此操作会保留原始流水，并新增取消或冲正记录。',
@@ -2432,6 +2435,24 @@
       select.innerHTML = '<option value="">请选择持仓产品</option>' + options.join('');
       if ([...select.options].some(option => option.value === preferredId)) select.value = preferredId;
     }
+    function syncSipScheduleFields() {
+      const frequency = $('sipFrequency').value;
+      const weekly = frequency === 'weekly';
+      const monthly = frequency === 'monthly';
+      $('sipWeeklyDayField').hidden = !weekly;
+      $('sipWeeklyDay').disabled = !weekly;
+      $('sipMonthlyDayField').hidden = !monthly;
+      $('sipMonthlyDay').disabled = !monthly;
+    }
+    function sipScheduleLabel(row) {
+      const frequency = String(rowValue(row, 'frequency') || 'daily');
+      const day = number(rowValue(row, 'schedule_day'));
+      if (frequency === 'weekly') {
+        return '每周' + (['', '一', '二', '三', '四', '五'][day] || '--');
+      }
+      if (frequency === 'monthly') return '每月 ' + day + ' 日';
+      return '每日';
+    }
     function openSip(sipId = '') {
       if (!state.writeEnabled) return;
       const existing = portfolioRows('sip_plans', portfolioRows('sips', [])).find(row => String(rowValue(row, 'id', 'sip_id')) === String(sipId));
@@ -2456,11 +2477,16 @@
           'purchase_fee_rate_percent',
           'fee_rate'
         ) || number(rowValue(existing, 'purchase_fee_rate')) * 100;
+        form.frequency.value = String(rowValue(existing, 'frequency') || 'daily');
+        const scheduleDay = String(rowValue(existing, 'schedule_day') || '');
+        $('sipWeeklyDay').value = String(scheduleDay || '1');
+        $('sipMonthlyDay').value = String(scheduleDay || '1');
         form.dataset.sipId = sipId;
       } else {
         delete form.dataset.sipId;
         form.start_date.value = new Date().toLocaleDateString('en-CA');
       }
+      syncSipScheduleFields();
       dialogOpen('sipDialog');
     }
     async function openProductDetail(productId) {
@@ -2685,6 +2711,7 @@
       scheduleProductCandidateSearch('sip', 0);
       schedulePublicFundSearch('sip', 0);
     });
+    $('sipFrequency').addEventListener('change', syncSipScheduleFields);
     for (const scope of ['trade', 'sip']) {
       const controls = PRODUCT_SEARCH_CONTROLS[scope];
       const input = $(controls.query);
@@ -2849,10 +2876,15 @@
       const form = event.currentTarget;
       try {
         syncProductSearch('sip', 'public_fund', true);
+        const frequency = $('sipFrequency').value || 'daily';
         const payload = await ensureInlineFund(
           form,
           {...formPayload(form), activate: true, sip_id: form.dataset.sipId || undefined}
         );
+        payload.frequency = frequency;
+        if (frequency === 'weekly') payload.schedule_day = Number($('sipWeeklyDay').value);
+        else if (frequency === 'monthly') payload.schedule_day = Number($('sipMonthlyDay').value);
+        else payload.schedule_day = null;
         previewAction({
           previewPath: '/api/portfolio/sip-plans/preview', submitPath: '/api/portfolio/sip-plans',
           payload, originDialog: 'sipDialog',
