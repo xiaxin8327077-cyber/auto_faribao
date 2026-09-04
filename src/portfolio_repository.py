@@ -10,6 +10,7 @@ from src.portfolio_models import (
     Product,
     ProductStatus,
     ProductType,
+    SipFrequency,
     SipPlan,
     SipPlanStatus,
     Transaction,
@@ -39,7 +40,7 @@ _QUOTE_COLUMNS = """
 """
 _PLAN_COLUMNS = """
     id, product_id, daily_amount, purchase_fee_rate, source_cash_product_id,
-    status, start_date
+    status, start_date, frequency, schedule_day
 """
 _PLAN_EXECUTION_COLUMNS = """
     id, plan_id, intended_trade_date, status, reason, transaction_id
@@ -451,8 +452,9 @@ class PortfolioRepository:
         conn.execute(
             """INSERT INTO sip_plans
                (id, product_id, daily_amount, purchase_fee_rate,
-                source_cash_product_id, status, start_date)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+                source_cash_product_id, status, start_date, frequency,
+                schedule_day)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    product_id = excluded.product_id,
                    daily_amount = excluded.daily_amount,
@@ -460,6 +462,8 @@ class PortfolioRepository:
                    source_cash_product_id = excluded.source_cash_product_id,
                    status = excluded.status,
                    start_date = excluded.start_date,
+                   frequency = excluded.frequency,
+                   schedule_day = excluded.schedule_day,
                    updated_at = CURRENT_TIMESTAMP,
                    paused_at = CASE
                        WHEN excluded.status = 'paused'
@@ -477,6 +481,8 @@ class PortfolioRepository:
                 plan.source_cash_product_id or None,
                 plan.status.value,
                 plan.start_date.isoformat(),
+                plan.frequency.value,
+                plan.schedule_day,
             ),
         )
         return plan
@@ -813,6 +819,8 @@ class PortfolioRepository:
             source_cash_product_id=row["source_cash_product_id"] or "",
             status=SipPlanStatus(row["status"]),
             start_date=date.fromisoformat(row["start_date"]),
+            frequency=SipFrequency(row["frequency"]),
+            schedule_day=row["schedule_day"],
         )
 
     @staticmethod

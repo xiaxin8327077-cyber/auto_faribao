@@ -9,6 +9,9 @@ from src.portfolio_models import (
     Product,
     ProductStatus,
     ProductType,
+    SipFrequency,
+    SipPlan,
+    SipPlanStatus,
     Transaction,
     TransactionStatus,
     TransactionType,
@@ -47,6 +50,33 @@ def test_product_round_trip_and_active_listing(repo):
     assert repo.get_product("missing") is None
     assert repo.list_products() == [active, inactive]
     assert repo.list_products(active_only=True) == [active]
+
+
+def test_repository_round_trips_weekly_sip_schedule(repo):
+    repo.add_product(
+        Product(
+            "fund",
+            "test",
+            "000001",
+            "基金",
+            ProductType.PUBLIC_FUND,
+        )
+    )
+    plan = SipPlan(
+        id="weekly",
+        product_id="fund",
+        daily_amount=Decimal("100"),
+        purchase_fee_rate=Decimal("0"),
+        source_cash_product_id="",
+        status=SipPlanStatus.DRAFT,
+        start_date=date(2026, 9, 1),
+        frequency=SipFrequency.WEEKLY,
+        schedule_day=5,
+    )
+
+    repo.save_plan(plan)
+
+    assert repo.get_plan(plan.id) == plan
 
 
 def test_duplicate_idempotency_key_returns_original_transaction(repo):

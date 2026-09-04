@@ -47,6 +47,12 @@ class SipPlanStatus(str, Enum):
     PAUSED = "paused"
 
 
+class SipFrequency(str, Enum):
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+
+
 def decimal_text(value) -> str:
     try:
         number = Decimal(str(value))
@@ -144,3 +150,5 @@ class SipPlan:
     source_cash_product_id: str
     status: SipPlanStatus
     start_date: date
+    frequency: SipFrequency = SipFrequency.DAILY
+    schedule_day: Optional[int] = None

@@ -106,6 +106,47 @@ def test_current_database_adds_missing_sip_soft_delete_column(tmp_path):
     assert "deleted_at" in columns
 
 
+def test_v4_upgrade_adds_default_daily_sip_schedule(tmp_path):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    db.initialize()
+    with db.connection() as conn:
+        conn.execute(
+            """INSERT INTO products
+               (id, provider, code, name, product_type, status)
+               VALUES ('fund', 'test', '000001', '基金',
+                       'public_fund', 'active')"""
+        )
+        conn.execute(
+            """INSERT INTO sip_plans
+               (id, product_id, daily_amount, purchase_fee_rate, status,
+                start_date)
+               VALUES ('legacy', 'fund', '100', '0', 'draft',
+                       '2026-09-01')"""
+        )
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(sip_plans)")
+        }
+        if "schedule_day" in columns:
+            conn.execute("ALTER TABLE sip_plans DROP COLUMN schedule_day")
+        if "frequency" in columns:
+            conn.execute("ALTER TABLE sip_plans DROP COLUMN frequency")
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute("INSERT INTO schema_migrations(version) VALUES (4)")
+
+    db.initialize()
+
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT frequency, schedule_day FROM sip_plans WHERE id = 'legacy'"
+        ).fetchone()
+        version = conn.execute(
+            "SELECT version FROM schema_migrations"
+        ).fetchone()[0]
+    assert tuple(row) == ("daily", None)
+    assert version == SCHEMA_VERSION == 5
+
+
 def test_initialize_corrects_known_015736_sip_fee_rate_and_confirmed_trade(
     tmp_path,
 ):

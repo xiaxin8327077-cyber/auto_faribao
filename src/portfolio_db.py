@@ -7,7 +7,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 
 BASE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "portfolio.db"
 
 
@@ -110,6 +110,10 @@ CREATE TABLE IF NOT EXISTS sip_plans (
     source_cash_product_id TEXT REFERENCES products(id),
     status TEXT NOT NULL CHECK (status IN ('draft', 'active', 'paused')),
     start_date TEXT NOT NULL,
+    frequency TEXT NOT NULL DEFAULT 'daily' CHECK (
+        frequency IN ('daily', 'weekly', 'monthly')
+    ),
+    schedule_day INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     paused_at TEXT
@@ -475,15 +479,20 @@ class PortfolioDatabase:
                 }
                 if versions == {SCHEMA_VERSION}:
                     pass
+                elif versions == {4}:
+                    self._upgrade_v4_to_v5(conn)
                 elif versions == {3}:
                     self._upgrade_v3_to_v4(conn)
+                    self._upgrade_v4_to_v5(conn)
                 elif versions == {2}:
                     self._upgrade_v2_to_v3(conn)
                     self._upgrade_v3_to_v4(conn)
+                    self._upgrade_v4_to_v5(conn)
                 elif versions == {BASE_SCHEMA_VERSION}:
                     self._upgrade_v1_to_v2(conn)
                     self._upgrade_v2_to_v3(conn)
                     self._upgrade_v3_to_v4(conn)
+                    self._upgrade_v4_to_v5(conn)
                 else:
                     raise ValueError(
                         "unsupported portfolio schema version set: "
@@ -562,6 +571,27 @@ class PortfolioDatabase:
             conn.execute("ALTER TABLE transactions ADD COLUMN settlement_date TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?)",
+            (SCHEMA_VERSION,),
+        )
+
+    @staticmethod
+    def _upgrade_v4_to_v5(conn) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(sip_plans)")
+        }
+        if "frequency" not in columns:
+            conn.execute(
+                "ALTER TABLE sip_plans "
+                "ADD COLUMN frequency TEXT NOT NULL DEFAULT 'daily'"
+            )
+        if "schedule_day" not in columns:
+            conn.execute(
+                "ALTER TABLE sip_plans ADD COLUMN schedule_day INTEGER"
+            )
         conn.execute("DELETE FROM schema_migrations")
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES (?)",
