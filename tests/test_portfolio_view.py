@@ -9,6 +9,7 @@ from src.portfolio_models import (
     MarketQuote,
     Product,
     ProductType,
+    SipFrequency,
     SipPlan,
     SipPlanStatus,
     Transaction,
@@ -865,6 +866,39 @@ def test_sip_view_exposes_fee_rate_in_percent_units(tmp_path):
 
     assert plan["purchase_fee_rate"] == "0.00006"
     assert plan["purchase_fee_rate_percent"] == "0.006"
+
+
+def test_sip_view_exposes_normalized_schedule_fields(tmp_path):
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    repository.add_product(
+        Product(
+            "fund",
+            "changsheng_fund",
+            "003103",
+            "基金C",
+            ProductType.PUBLIC_FUND,
+        )
+    )
+    repository.save_plan(
+        SipPlan(
+            id="weekly-plan",
+            product_id="fund",
+            daily_amount=Decimal("100"),
+            purchase_fee_rate=Decimal("0"),
+            source_cash_product_id="",
+            status=SipPlanStatus.DRAFT,
+            start_date=date(2026, 9, 1),
+            frequency=SipFrequency.WEEKLY,
+            schedule_day=5,
+        )
+    )
+
+    plan = build_portfolio_payload(repository)["sip_plans"][0]
+
+    assert plan["frequency"] == "weekly"
+    assert plan["schedule_day"] == 5
 
 
 def test_sip_view_does_not_treat_non_trading_day_skip_as_last_execution(

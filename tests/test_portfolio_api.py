@@ -14,6 +14,7 @@ from src.portfolio_models import (
     MarketQuote,
     Product,
     ProductType,
+    SipFrequency,
     Transaction,
     TransactionStatus,
     TransactionType,
@@ -1074,6 +1075,71 @@ def test_sip_create_defaults_to_draft_and_edits_existing_plan_in_place(api_setup
     assert paused_edit.status_code == 200
     assert paused_edit.get_json()["sip_plan"]["status"] == "paused"
     assert repository.get_plan(active_id).daily_amount == Decimal("40")
+
+
+def test_sip_api_round_trips_weekly_schedule(api_setup):
+    client, _, repository, _ = api_setup
+    body = {
+        "product_id": "fund",
+        "daily_amount": "100",
+        "purchase_fee_rate": "0",
+        "source_cash_product_id": "cash",
+        "start_date": "2026-09-01",
+        "frequency": "weekly",
+        "schedule_day": 5,
+    }
+
+    preview = client.post(
+        "/api/portfolio/sip-plans/preview",
+        headers=write_headers(idem="weekly-preview"),
+        json=body,
+    )
+    created = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="weekly-create"),
+        json=body,
+    )
+
+    assert preview.status_code == 200
+    assert preview.get_json()["preview"]["frequency"] == "weekly"
+    assert preview.get_json()["preview"]["schedule_day"] == 5
+    assert created.status_code == 201
+    payload = created.get_json()["sip_plan"]
+    assert payload["frequency"] == "weekly"
+    assert payload["schedule_day"] == 5
+    plan = repository.get_plan(payload["id"])
+    assert plan.frequency is SipFrequency.WEEKLY
+    assert plan.schedule_day == 5
+
+
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        {"frequency": "weekly", "schedule_day": 6},
+        {"frequency": "monthly", "schedule_day": 32},
+        {"frequency": "daily", "schedule_day": 1},
+    ],
+)
+def test_sip_api_rejects_invalid_schedule(api_setup, schedule):
+    client, _, _repository, _ = api_setup
+    response = client.post(
+        "/api/portfolio/sip-plans/preview",
+        headers=write_headers(
+            idem=f"invalid-{schedule['frequency']}-{schedule['schedule_day']}"
+        ),
+        json={
+            "product_id": "fund",
+            "daily_amount": "100",
+            "purchase_fee_rate": "0",
+            "source_cash_product_id": "cash",
+            "start_date": "2026-09-01",
+            **schedule,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "validation_error"
+    assert response.get_json()["message"] == "invalid SIP schedule"
 
 
 def test_sip_web_fee_rate_is_a_percentage_not_a_decimal_fraction(

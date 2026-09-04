@@ -607,6 +607,8 @@ def _sip_plan_row(repository, plan, products_by_id):
         ),
         "status": plan.status.value,
         "start_date": plan.start_date.isoformat(),
+        "frequency": plan.frequency.value,
+        "schedule_day": plan.schedule_day,
         "last_execution": (
             last_execution.intended_trade_date.isoformat()
             if last_execution else ""

@@ -26,6 +26,7 @@ from src.portfolio_models import (
     Product,
     ProductStatus,
     ProductType,
+    SipFrequency,
     SipPlan,
     SipPlanStatus,
     TransactionType,
@@ -34,6 +35,7 @@ from src.portfolio_models import (
 from src.portfolio_positions import PositionProjector
 from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
 from src.portfolio_sip import SipService
+from src.portfolio_sip_schedule import normalize_sip_schedule
 from src.portfolio_transactions import PortfolioTransactionService
 from src.portfolio_wallet import is_wallet_plus_product
 
@@ -953,6 +955,10 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         start_date = _parse_date(
             body.get("start_date"), "start_date", date.today()
         )
+        frequency, schedule_day = normalize_sip_schedule(
+            body.get("frequency", "daily"),
+            body.get("schedule_day"),
+        )
         if "activate" in body and not isinstance(body["activate"], bool):
             raise ValueError("activate must be a boolean")
         activate = body.get("activate") is True
@@ -987,6 +993,8 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             ),
             "source_cash_product_id": source_id,
             "start_date": start_date.isoformat(),
+            "frequency": frequency.value,
+            "schedule_day": schedule_day,
             "activate": activate,
             "message": (
                 "SIP plan will be updated"
@@ -1840,6 +1848,8 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                         start_date=_parse_date(
                             preview["start_date"], "start_date"
                         ),
+                        frequency=SipFrequency(preview["frequency"]),
+                        schedule_day=preview["schedule_day"],
                     )
                     if plan.status is SipPlanStatus.ACTIVE:
                         require_executable_sip_products(
