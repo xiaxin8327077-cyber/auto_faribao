@@ -1,11 +1,12 @@
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from src.portfolio_models import (
     ProductStatus,
     ProductType,
+    SipFrequency,
     SipPlan,
     SipPlanStatus,
     Transaction,
@@ -16,6 +17,11 @@ from src.portfolio_confirmation import (
     MissingTradingCalendarError,
     confirmation_schedule,
     is_trading_day,
+)
+from src.portfolio_sip_schedule import (
+    is_sip_trade_date,
+    iter_sip_trade_dates,
+    normalize_sip_schedule,
 )
 
 
@@ -53,6 +59,8 @@ class SipService:
         purchase_fee_rate,
         source_cash_product_id="",
         start_date=None,
+        frequency=SipFrequency.DAILY,
+        schedule_day=None,
     ) -> SipPlan:
         daily_amount = self._decimal(daily_amount, "daily_amount")
         if daily_amount <= ZERO:
@@ -64,6 +72,10 @@ class SipService:
             raise ValueError("purchase_fee_rate must be between 0 and 1")
         if not isinstance(start_date, date):
             raise ValueError("start_date is required")
+        frequency, schedule_day = normalize_sip_schedule(
+            frequency,
+            schedule_day,
+        )
 
         with self.repository.database.transaction() as conn:
             product = self.repository.require_product(product_id, conn=conn)
@@ -83,6 +95,8 @@ class SipService:
                 source_cash_product_id=source_cash_product_id or "",
                 status=SipPlanStatus.DRAFT,
                 start_date=start_date,
+                frequency=frequency,
+                schedule_day=schedule_day,
             )
             return self.repository.save_plan(plan, conn)
 
@@ -231,14 +245,12 @@ class SipService:
         if plan.status is not SipPlanStatus.ACTIVE:
             return self.list_executions(plan.id, through_date)
 
-        intended_date = plan.start_date
-        while intended_date <= through_date:
+        for intended_date in iter_sip_trade_dates(plan, through_date):
             self.ensure_intent(
                 plan.id,
                 intended_date,
                 recheck_schedule=True,
             )
-            intended_date += timedelta(days=1)
         if settle:
             self.settle_pending(through_date)
         return self.list_executions(plan.id, through_date)
@@ -518,10 +530,13 @@ class SipService:
             return "before_start_date"
         try:
             trading_day = is_trading_day(intended_date)
+            scheduled_day = is_sip_trade_date(plan, intended_date)
         except MissingTradingCalendarError:
             return "calendar_unavailable"
         if not trading_day:
             return "non_trading_day"
+        if not scheduled_day:
+            return "not_scheduled_day"
         if plan.status is SipPlanStatus.PAUSED:
             return "plan_paused"
         if plan.status is not SipPlanStatus.ACTIVE:

@@ -11,6 +11,7 @@ from src.portfolio_models import (
     Product,
     ProductStatus,
     ProductType,
+    SipFrequency,
     SipPlanStatus,
     Transaction,
     TransactionStatus,
@@ -47,7 +48,12 @@ def seed_product(repository, product_id, product_type, code=None):
     return product
 
 
-def seed_cash(repository, product_id, shares):
+def seed_cash(
+    repository,
+    product_id,
+    shares,
+    trade_date=date(2026, 7, 1),
+):
     seed_product(repository, product_id, ProductType.CASH_MANAGEMENT)
     repository.create_transaction(
         Transaction(
@@ -55,12 +61,12 @@ def seed_cash(repository, product_id, shares):
             product_id=product_id,
             transaction_type=TransactionType.OPENING_POSITION,
             status=TransactionStatus.CONFIRMED,
-            trade_date=date(2026, 7, 1),
+            trade_date=trade_date,
             idempotency_key=f"opening:{product_id}",
             amount=Decimal(shares),
             shares=Decimal(shares),
             confirmation_nav=Decimal("1"),
-            confirmation_date=date(2026, 7, 1),
+            confirmation_date=trade_date,
         )
     )
 
@@ -93,6 +99,8 @@ def active_plan(
     amount,
     fee_rate,
     start_date=date(2026, 7, 1),
+    frequency=SipFrequency.DAILY,
+    schedule_day=None,
 ):
     plan = sip.save_plan(
         product_id=product_id,
@@ -100,6 +108,8 @@ def active_plan(
         purchase_fee_rate=Decimal(fee_rate),
         source_cash_product_id=source_cash_product_id,
         start_date=start_date,
+        frequency=frequency,
+        schedule_day=schedule_day,
     )
     return sip.activate(plan.id)
 
@@ -110,6 +120,142 @@ def plan_transactions(repository, plan_id):
         for transaction in repository.list_transactions()
         if transaction.plan_id == plan_id
     ]
+
+
+@pytest.mark.parametrize(
+    ("frequency", "schedule_day"),
+    [
+        (SipFrequency.DAILY, 1),
+        (SipFrequency.WEEKLY, None),
+        (SipFrequency.WEEKLY, 0),
+        (SipFrequency.WEEKLY, 6),
+        (SipFrequency.MONTHLY, 0),
+        (SipFrequency.MONTHLY, 32),
+    ],
+)
+def test_sip_rejects_invalid_frequency_day_combinations(
+    sip_services,
+    frequency,
+    schedule_day,
+):
+    repo, sip, _projector = sip_services
+    seed_fund(repo, "fund", "003103")
+
+    with pytest.raises(ValueError, match="^invalid SIP schedule$"):
+        sip.save_plan(
+            product_id="fund",
+            daily_amount="100",
+            purchase_fee_rate="0",
+            start_date=date(2026, 9, 1),
+            frequency=frequency,
+            schedule_day=schedule_day,
+        )
+
+
+def test_weekly_sip_runs_only_on_selected_weekday(sip_services):
+    repo, sip, _projector = sip_services
+    seed_cash(repo, "cash", "1000", trade_date=date(2026, 1, 1))
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(
+        sip,
+        "fund",
+        "cash",
+        "100",
+        "0",
+        start_date=date(2026, 9, 1),
+        frequency=SipFrequency.WEEKLY,
+        schedule_day=3,
+    )
+
+    executions = sip.backfill_plan(
+        plan.id,
+        date(2026, 9, 10),
+        settle=False,
+    )
+
+    assert [row.intended_trade_date for row in executions] == [
+        date(2026, 9, 2),
+        date(2026, 9, 9),
+    ]
+
+
+def test_weekly_holiday_rolls_to_next_trading_day(sip_services):
+    repo, sip, _projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(
+        sip,
+        "fund",
+        "cash",
+        "100",
+        "0",
+        start_date=date(2026, 9, 28),
+        frequency=SipFrequency.WEEKLY,
+        schedule_day=5,
+    )
+
+    executions = sip.backfill_plan(
+        plan.id,
+        date(2026, 10, 8),
+        settle=False,
+    )
+
+    assert [row.intended_trade_date for row in executions] == [
+        date(2026, 10, 8),
+    ]
+
+
+@pytest.mark.parametrize("schedule_day", [29, 30, 31])
+def test_monthly_missing_day_uses_month_end_then_rolls_forward(
+    sip_services,
+    schedule_day,
+):
+    repo, sip, _projector = sip_services
+    seed_cash(repo, "cash", "1000", trade_date=date(2026, 1, 1))
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(
+        sip,
+        "fund",
+        "cash",
+        "100",
+        "0",
+        start_date=date(2026, 2, 1),
+        frequency=SipFrequency.MONTHLY,
+        schedule_day=schedule_day,
+    )
+
+    executions = sip.backfill_plan(
+        plan.id,
+        date(2026, 3, 2),
+        settle=False,
+    )
+
+    assert [row.intended_trade_date for row in executions] == [
+        date(2026, 3, 2),
+    ]
+
+
+def test_direct_intent_on_non_scheduled_day_never_deducts_cash(sip_services):
+    repo, sip, projector = sip_services
+    seed_cash(repo, "cash", "1000")
+    seed_fund(repo, "fund", "003103")
+    plan = active_plan(
+        sip,
+        "fund",
+        "cash",
+        "100",
+        "0",
+        start_date=date(2026, 9, 1),
+        frequency=SipFrequency.WEEKLY,
+        schedule_day=3,
+    )
+
+    execution = sip.ensure_intent(plan.id, date(2026, 9, 3))
+
+    assert execution.status == "skipped"
+    assert execution.reason == "not_scheduled_day"
+    assert plan_transactions(repo, plan.id) == []
+    assert projector.calculate("cash").total_shares == Decimal("1000")
 
 
 def test_015736_exact_quote_confirms_fee_adjusted_shares(sip_services):
