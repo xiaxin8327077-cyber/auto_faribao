@@ -1112,6 +1112,40 @@ def test_sip_api_round_trips_weekly_schedule(api_setup):
     assert plan.schedule_day == 5
 
 
+def test_sip_api_treats_omitted_frequency_as_legacy_daily(api_setup):
+    """旧客户端不发送 frequency/schedule_day 时按每日定投处理。"""
+    client, _, repository, _ = api_setup
+    body = {
+        "product_id": "fund",
+        "daily_amount": "100",
+        "purchase_fee_rate": "0",
+        "source_cash_product_id": "cash",
+        "start_date": "2026-09-01",
+    }
+
+    preview = client.post(
+        "/api/portfolio/sip-plans/preview",
+        headers=write_headers(idem="legacy-preview"),
+        json=body,
+    )
+    created = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="legacy-create"),
+        json=body,
+    )
+
+    assert preview.status_code == 200
+    assert preview.get_json()["preview"]["frequency"] == "daily"
+    assert preview.get_json()["preview"]["schedule_day"] is None
+    assert created.status_code == 201
+    payload = created.get_json()["sip_plan"]
+    assert payload["frequency"] == "daily"
+    assert payload["schedule_day"] is None
+    plan = repository.get_plan(payload["id"])
+    assert plan.frequency is SipFrequency.DAILY
+    assert plan.schedule_day is None
+
+
 @pytest.mark.parametrize(
     "schedule",
     [
