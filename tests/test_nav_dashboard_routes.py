@@ -61,15 +61,11 @@ def test_manual_refresh_api_returns_immediately(monkeypatch):
     assert response.get_json()["status"] == "refreshing"
 
 
-def test_manual_refresh_api_uses_too_many_requests_for_cooldown(monkeypatch):
+def test_manual_refresh_api_returns_ok_while_refresh_is_already_running(monkeypatch):
     monkeypatch.setattr("src.nav_dashboard.get_access_token", lambda: "secret-key")
     monkeypatch.setattr(
         "src.nav_dashboard.request_manual_refresh",
-        lambda _cfg: {
-            "accepted": False,
-            "status": "cooldown",
-            "cooldown_until": "2026-07-10T14:23:00",
-        },
+        lambda _cfg: {"accepted": False, "status": "refreshing"},
     )
     client = create_app(_cfg()).test_client()
 
@@ -78,7 +74,8 @@ def test_manual_refresh_api_uses_too_many_requests_for_cooldown(monkeypatch):
         headers={"X-Nav-Dashboard-Key": "secret-key"},
     )
 
-    assert response.status_code == 429
+    assert response.status_code == 200
+    assert response.get_json() == {"accepted": False, "status": "refreshing"}
 
 
 def test_scheduler_does_not_expose_hourly_dashboard_refresh_hook():

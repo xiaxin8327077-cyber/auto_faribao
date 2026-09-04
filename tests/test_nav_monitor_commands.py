@@ -1,5 +1,4 @@
 from datetime import date
-from decimal import Decimal
 
 from src.nav_monitor import parse_nav_command
 
@@ -21,23 +20,11 @@ def test_parse_nav_config_commands():
     assert parse_nav_command("查看净值配置").action == "view_config"
     assert parse_nav_command("看下净值的配置").action == "view_config"
     assert parse_nav_command("看看理财净值配置").action == "view_config"
-    assert parse_nav_command("开启净值监控").action == "enable"
-    assert parse_nav_command("关闭净值监控").action == "disable"
-
-    set_time = parse_nav_command("设置净值推送时间 08:30")
-    assert set_time.action == "set_time"
-    assert set_time.hour == 8
-    assert set_time.minute == 30
-
-    set_estimate_time = parse_nav_command("设置收益预估时间 17:30")
-    assert set_estimate_time.action == "set_estimate_time"
-    assert set_estimate_time.hour == 17
-    assert set_estimate_time.minute == 30
-
-    natural_estimate_time = parse_nav_command("把理财预估时间改到 18:05")
-    assert natural_estimate_time.action == "set_estimate_time"
-    assert natural_estimate_time.hour == 18
-    assert natural_estimate_time.minute == 5
+    assert parse_nav_command("开启净值监控") is None
+    assert parse_nav_command("关闭净值监控") is None
+    assert parse_nav_command("设置净值推送时间 08:30") is None
+    assert parse_nav_command("设置收益预估时间 17:30") is None
+    assert parse_nav_command("把理财预估时间改到 18:05") is None
 
 
 def test_parse_nav_holdings_and_estimate_commands():
@@ -49,11 +36,9 @@ def test_parse_nav_holdings_and_estimate_commands():
     view_one = parse_nav_command("查看 AF233276B 持仓画像")
     status = parse_nav_command("查看画像状态")
 
-    assert estimate.action == "estimate_holdings"
-    assert estimate.target_date is None
-    assert yesterday_estimate.action == "estimate_holdings"
-    assert yesterday_estimate.target_date == date(2026, 7, 8)
-    assert update.action == "update_holdings"
+    assert estimate is None
+    assert yesterday_estimate is None
+    assert update is None
     assert view_all.action == "view_holdings"
     assert view_all.code == ""
     assert view_one.action == "view_holdings"
@@ -67,14 +52,10 @@ def test_parse_nav_product_commands():
     confirm = parse_nav_command("确认添加净值产品 1")
     cancel = parse_nav_command("取消添加净值产品")
 
-    assert add.action == "add_product"
-    assert add.provider == "citic_wealth"
-    assert add.query == "AF233276B"
-    assert delete.action == "delete_product"
-    assert delete.code == "AF233276B"
-    assert confirm.action == "confirm_add"
-    assert confirm.index == 1
-    assert cancel.action == "cancel_add"
+    assert add is None
+    assert delete is None
+    assert confirm is None
+    assert cancel is None
 
 
 def test_parse_nav_product_add_alias_and_usage():
@@ -82,13 +63,9 @@ def test_parse_nav_product_add_alias_and_usage():
     stuck = parse_nav_command("添加净值产品 信银理财AF233276B")
     usage = parse_nav_command("添加产品")
 
-    assert alias.action == "add_product"
-    assert alias.provider == "citic_wealth"
-    assert alias.query == "AF233276B"
-    assert stuck.action == "add_product"
-    assert stuck.provider == "citic_wealth"
-    assert stuck.query == "AF233276B"
-    assert usage.action == "add_product_usage"
+    assert alias is None
+    assert stuck is None
+    assert usage is None
 
 
 def test_parse_nav_period_and_shares_commands():
@@ -123,9 +100,7 @@ def test_parse_nav_period_and_shares_commands():
     assert rolling_2y_num.period == "rolling_2y"
     assert rolling_3y.period == "rolling_3y"
     assert rolling_3y_num.period == "rolling_3y"
-    assert shares.action == "set_shares"
-    assert shares.code == "AF233276B"
-    assert str(shares.shares) == "10000.50"
+    assert shares is None
 
 
 def test_parse_batch_nav_shares_command():
@@ -135,12 +110,7 @@ def test_parse_batch_nav_shares_command():
         "AF233262B 20000"
     )
 
-    assert command.action == "set_shares_batch"
-    assert command.share_updates == (
-        ("AF233276B", Decimal("10000.50")),
-        ("AF233262B", Decimal("20000")),
-    )
-    assert command.share_errors == ()
+    assert command is None
 
 
 def test_parse_nav_natural_language_query_commands():
@@ -202,14 +172,9 @@ def test_parse_nav_natural_language_product_and_shares_commands():
     shares = parse_nav_command("把 AF233276B 份额改成 401133.95")
     delete = parse_nav_command("删除一下 AF233276B 产品")
 
-    assert add.action == "add_product"
-    assert add.provider == "citic_wealth"
-    assert add.query == "AF233276B"
-    assert shares.action == "set_shares"
-    assert shares.code == "AF233276B"
-    assert str(shares.shares) == "401133.95"
-    assert delete.action == "delete_product"
-    assert delete.code == "AF233276B"
+    assert add is None
+    assert shares is None
+    assert delete is None
 
 
 def test_daily_report_commands_are_not_nav_commands():

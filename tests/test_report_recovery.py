@@ -3,6 +3,8 @@ import threading
 
 import pytest
 
+from src.config import Config
+
 
 def test_qr_background_completion_reports_success(monkeypatch):
     import src.qr_login_renewer as qr
@@ -53,7 +55,17 @@ def test_manual_qr_completion_releases_command_state_when_logging_fails(monkeypa
 
 
 def _cfg():
-    return SimpleNamespace(wechat=SimpleNamespace(to_user="user-1"))
+    return Config(
+        {
+            "wechat": {
+                "to_user": "user-1",
+                "corpid": "corp",
+                "corpsecret": "secret",
+                "agentid": 1,
+            },
+            "source": {"doc_id": "doc", "person_names": ["tester"]},
+        }
+    )
 
 
 def test_auto_submit_checks_cookies_then_submits(monkeypatch):
@@ -123,8 +135,9 @@ def test_expired_cookie_resumes_once_with_reloaded_config(monkeypatch):
         worker.join()
     callback["fn"](True, "duplicate")
 
-    assert builds == [fresh_cfg]
-    assert submits == [("正文", fresh_cfg)]
+    assert builds == [old_cfg]
+    assert old_cfg.source is fresh_cfg.source
+    assert submits == [("正文", old_cfg)]
 
 
 def test_expired_cookie_failure_does_not_build_or_submit(monkeypatch):

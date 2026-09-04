@@ -325,26 +325,32 @@ def test_auto_refresh_runs_after_one_hour_away_from_enterprise_push():
     assert should_auto_refresh(state, _dt("2026-07-10 10:30"), _cfg()) is True
 
 
-def test_manual_refresh_has_global_five_minute_cooldown(monkeypatch, tmp_path):
+def test_manual_refresh_can_run_again_without_cooldown(monkeypatch, tmp_path):
     state_path = tmp_path / "state.json"
-    monkeypatch.setattr("src.nav_dashboard._launch_refresh_thread", lambda *_args, **_kwargs: True)
+    launches = []
+    monkeypatch.setattr(
+        "src.nav_dashboard._launch_refresh_thread",
+        lambda *_args, **_kwargs: launches.append(True) or True,
+    )
 
     first = request_manual_refresh(_cfg(), now=_dt("2026-07-10 10:00"), state_path=state_path)
     second = request_manual_refresh(_cfg(), now=_dt("2026-07-10 10:01"), state_path=state_path)
 
     assert first["accepted"] is True
-    assert second["accepted"] is False
-    assert second["status"] == "cooldown"
+    assert second["accepted"] is True
+    assert launches == [True, True]
+    assert "cooldown_until" not in second
 
 
-def test_manual_refresh_reuses_any_recent_success(monkeypatch, tmp_path):
+def test_manual_refresh_does_not_reuse_recent_success(monkeypatch, tmp_path):
     state_path = tmp_path / "state.json"
     store = NavDashboardStore(state_path)
     store.state["last_success_at"] = "2026-07-10T09:58:00"
     store.save()
+    launches = []
     monkeypatch.setattr(
         "src.nav_dashboard._launch_refresh_thread",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not launch")),
+        lambda *_args, **_kwargs: launches.append(True) or True,
     )
 
     result = request_manual_refresh(
@@ -353,8 +359,8 @@ def test_manual_refresh_reuses_any_recent_success(monkeypatch, tmp_path):
         state_path=state_path,
     )
 
-    assert result["accepted"] is False
-    assert result["status"] == "cooldown"
+    assert result == {"accepted": True, "status": "refreshing"}
+    assert launches == [True]
 
 
 from types import SimpleNamespace
