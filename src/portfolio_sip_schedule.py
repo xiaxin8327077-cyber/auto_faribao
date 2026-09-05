@@ -39,6 +39,26 @@ def _roll_forward(day):
     return cursor
 
 
+def first_sip_schedule_date(floor, frequency, schedule_day):
+    """First nominal date, using month-end when the selected day is absent."""
+    frequency, schedule_day = normalize_sip_schedule(frequency, schedule_day)
+    if frequency is SipFrequency.WEEKLY:
+        planned = floor + timedelta(days=(schedule_day - floor.isoweekday()) % 7)
+    elif frequency is SipFrequency.MONTHLY:
+        planned = floor.replace(day=min(schedule_day, monthrange(floor.year, floor.month)[1]))
+        if planned < floor:
+            next_month = (floor.replace(day=28) + timedelta(days=4)).replace(day=1)
+            planned = next_month.replace(day=min(schedule_day, monthrange(next_month.year, next_month.month)[1]))
+    else:
+        planned = floor
+    return planned
+
+
+def first_sip_trade_date(floor, frequency, schedule_day):
+    """Return the first scheduled deduction on or after the supplied boundary."""
+    return _roll_forward(first_sip_schedule_date(floor, frequency, schedule_day))
+
+
 def _schedule_floor(plan):
     """周期枚举下界：取"用户配置的生效边界 start_date"与"周期修改
     生效日"中较晚者，避免下界早于 start_date 而越界生成执行日。"""
@@ -58,6 +78,16 @@ def iter_sip_trade_dates(plan, through_date):
         return
 
     effective_dates = set()
+    # An automatically calculated start may be rolled past its nominal schedule
+    # day. Keep that first deduction, including month-end rolls into next month.
+    anchor = getattr(plan, "schedule_effective_date", None)
+    if (
+        frequency is not SipFrequency.DAILY
+        and anchor is not None
+        and anchor < plan.start_date
+        and first_sip_trade_date(anchor, frequency, schedule_day) == plan.start_date
+    ):
+        effective_dates.add(plan.start_date)
     if frequency is SipFrequency.DAILY:
         cursor = floor
         while cursor <= through_date:

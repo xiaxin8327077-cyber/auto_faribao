@@ -1112,6 +1112,107 @@ def test_sip_api_round_trips_weekly_schedule(api_setup):
     assert plan.schedule_day == 5
 
 
+@pytest.mark.parametrize("setting_date,frequency,day,expected", [
+    ("2026-09-04", "weekly", 5, "2026-09-11"),
+    ("2026-09-04", "weekly", 1, "2026-09-07"),
+    ("2026-09-04", "monthly", 4, "2026-10-08"),
+    ("2026-09-04", "monthly", 31, "2026-09-30"),
+    ("2026-01-30", "monthly", 31, "2026-02-02"),
+    ("2026-02-01", "monthly", 31, "2026-03-02"),
+])
+def test_sip_auto_start_is_first_deduction_after_setting(
+    api_setup, monkeypatch, setting_date, frequency, day, expected,
+):
+    client, _, repository, _ = api_setup
+    monkeypatch.setattr("src.portfolio_api.beijing_now", lambda: datetime.fromisoformat(setting_date))
+    response = client.get(
+        f"/api/portfolio/sip-plans/start-date?frequency={frequency}&schedule_day={day}",
+        headers=write_headers(),
+    )
+    assert response.status_code == 200
+    assert response.get_json()["start_date"] == expected
+    body = {
+        "product_id": "fund", "daily_amount": "100", "source": "cash",
+        "frequency": frequency, "schedule_day": day,
+        "start_date": "2026-09-04", "auto_start_date": True,
+    }
+    preview = client.post("/api/portfolio/sip-plans/preview", headers=write_headers(), json=body)
+    assert preview.get_json()["preview"]["start_date"] == expected
+    saved = client.post("/api/portfolio/sip-plans", headers=write_headers(), json=body)
+    assert saved.status_code == 201
+    plan = repository.get_plan(saved.get_json()["sip_plan"]["id"])
+    assert plan.start_date.isoformat() == expected
+    from src.portfolio_sip_schedule import iter_sip_trade_dates
+    assert list(iter_sip_trade_dates(plan, plan.start_date)) == [plan.start_date]
+
+
+@pytest.mark.parametrize("today,expected", [
+    ("2026-09-05", "2026-09-07"),
+    ("2026-09-07", "2026-09-07"),
+    ("2026-10-01", "2026-10-08"),
+])
+def test_daily_sip_auto_start_skips_non_trading_days(api_setup, monkeypatch, today, expected):
+    client, _, _, _ = api_setup
+    monkeypatch.setattr("src.portfolio_api.beijing_now", lambda: datetime.fromisoformat(today))
+    response = client.get("/api/portfolio/sip-plans/start-date?frequency=daily", headers=write_headers())
+    assert response.get_json()["start_date"] == expected
+    saved = client.post("/api/portfolio/sip-plans", headers=write_headers(), json={
+        "product_id": "fund", "daily_amount": "100", "source": "cash",
+        "frequency": "daily", "auto_start_date": True, "start_date": "2099-01-01",
+    })
+    assert saved.status_code == 201
+    assert saved.get_json()["sip_plan"]["start_date"] == expected
+
+
+def test_auto_start_recalculates_existing_date_when_editing(api_setup, monkeypatch):
+    client, _, _, _ = api_setup
+    monkeypatch.setattr("src.portfolio_api.beijing_now", lambda: datetime(2026, 9, 5))
+    body = {"product_id": "fund", "daily_amount": "100", "source": "cash",
+            "frequency": "monthly", "schedule_day": 30, "auto_start_date": True}
+    saved = client.post("/api/portfolio/sip-plans", headers=write_headers(), json=body)
+    plan = saved.get_json()["sip_plan"]
+    monkeypatch.setattr("src.portfolio_api.beijing_now", lambda: datetime(2026, 10, 5))
+    updated = client.post("/api/portfolio/sip-plans", headers=write_headers(idem="edit"), json={
+        **body, "sip_id": plan["id"], "daily_amount": "200", "start_date": "2099-01-01",
+    })
+    assert updated.status_code == 200
+    assert updated.get_json()["sip_plan"]["start_date"] == "2026-10-30"
+    preview = client.get(
+        f"/api/portfolio/sip-plans/start-date?frequency=monthly&schedule_day=30&sip_id={plan['id']}",
+        headers=write_headers(),
+    )
+    assert preview.get_json()["start_date"] == "2026-10-30"
+
+
+@pytest.mark.parametrize("frequency,day,expected", [
+    ("weekly", 1, "2026-09-07"),
+    ("monthly", 2, "2026-10-08"),
+    ("daily", None, "2026-09-07"),
+])
+def test_legacy_sip_edit_recalculates_date_in_lookup_preview_and_save(
+    api_setup, monkeypatch, frequency, day, expected,
+):
+    client, _, repository, _ = api_setup
+    monkeypatch.setattr("src.portfolio_api.beijing_now", lambda: datetime(2026, 9, 5))
+    body = {"product_id": "fund", "daily_amount": "0.01", "source": "cash",
+            "frequency": frequency, "schedule_day": day, "start_date": "2026-09-04"}
+    created = client.post("/api/portfolio/sip-plans", headers=write_headers(idem="legacy-create"), json=body)
+    plan_id = created.get_json()["sip_plan"]["id"]
+    query = f"frequency={frequency}&sip_id={plan_id}"
+    if day is not None:
+        query += f"&schedule_day={day}"
+    lookup = client.get("/api/portfolio/sip-plans/start-date?" + query, headers=write_headers())
+    assert lookup.get_json()["start_date"] == expected
+    edit = {**body, "sip_id": plan_id, "auto_start_date": True}
+    preview = client.post("/api/portfolio/sip-plans/preview", headers=write_headers(idem="edit-preview"), json=edit)
+    assert preview.get_json()["preview"]["start_date"] == expected
+    assert repository.get_plan(plan_id).start_date == date(2026, 9, 4)
+    saved = client.post("/api/portfolio/sip-plans", headers=write_headers(idem="legacy-edit"), json=edit)
+    assert saved.status_code == 200
+    assert saved.get_json()["sip_plan"]["start_date"] == expected
+    assert repository.get_plan(plan_id).start_date.isoformat() == expected
+
+
 def test_sip_api_treats_omitted_frequency_as_legacy_daily(api_setup):
     """旧客户端不发送 frequency/schedule_day 时按每日定投处理。"""
     client, _, repository, _ = api_setup
