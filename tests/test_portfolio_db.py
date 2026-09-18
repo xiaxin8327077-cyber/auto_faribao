@@ -145,7 +145,7 @@ def test_v4_upgrade_adds_default_daily_sip_schedule(tmp_path):
             "SELECT version FROM schema_migrations"
         ).fetchone()[0]
     assert tuple(row) == ("daily", None)
-    assert version == SCHEMA_VERSION == 6
+    assert version == SCHEMA_VERSION == 7
 
 
 V1_FIXTURE_SQL = (
@@ -183,7 +183,7 @@ def _table_columns(db, table):
 
 
 def test_v1_inplace_upgrade_from_real_v1_structure(tmp_path):
-    """真实历史 v1 库就地升级：必须补齐 v4/v5/v6 全部列并标到最新版本。"""
+    """真实历史 v1 库就地升级：必须补齐 v4-v7 全部列并标到最新版本。"""
     db = PortfolioDatabase(tmp_path / "portfolio.db")
     create_real_v1_database(db)
     # 真实 v1 结构确实缺这些后置列（非仅改版本号）。
@@ -206,7 +206,7 @@ def test_v1_inplace_upgrade_from_real_v1_structure(tmp_path):
         version = conn.execute(
             "SELECT version FROM schema_migrations"
         ).fetchone()[0]
-    assert version == SCHEMA_VERSION == 6
+    assert version == SCHEMA_VERSION == 7
 
     # 遗留计划升级后可被仓储正确读取，默认每日。
     repository = PortfolioRepository(db)
@@ -225,6 +225,7 @@ def test_each_inplace_upgrade_step_writes_real_target_version(tmp_path):
         (PortfolioDatabase._upgrade_v3_to_v4, 4),
         (PortfolioDatabase._upgrade_v4_to_v5, 5),
         (PortfolioDatabase._upgrade_v5_to_v6, 6),
+        (PortfolioDatabase._upgrade_v6_to_v7, 7),
     ]
     for step, expected in steps:
         with db.connection() as conn:
@@ -233,6 +234,92 @@ def test_each_inplace_upgrade_step_writes_real_target_version(tmp_path):
                 "SELECT version FROM schema_migrations"
             ).fetchone()[0]
         assert version == expected, step.__name__
+
+
+def test_v6_upgrade_adds_redemption_settlement_columns_and_backfills(tmp_path):
+    db = PortfolioDatabase(tmp_path / "portfolio.db")
+    with sqlite3.connect(db.path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+            CREATE TABLE products (id TEXT PRIMARY KEY);
+            CREATE TABLE transactions (
+                id TEXT PRIMARY KEY,
+                product_id TEXT NOT NULL,
+                transaction_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                confirmation_date TEXT,
+                amount TEXT,
+                shares TEXT,
+                fee_amount TEXT,
+                fee_rate TEXT,
+                confirmation_nav TEXT,
+                linked_transaction_id TEXT,
+                plan_id TEXT,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                note TEXT NOT NULL DEFAULT '',
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                confirmed_at TEXT,
+                reversed_at TEXT,
+                trade_time TEXT NOT NULL DEFAULT '',
+                settlement_date TEXT
+            );
+            INSERT INTO schema_migrations(version) VALUES (6);
+            INSERT INTO products(id) VALUES ('wealth'), ('wallet-plus');
+            INSERT INTO transactions
+                (id, product_id, transaction_type, status, trade_date,
+                 confirmation_date, amount, shares, confirmation_nav,
+                 linked_transaction_id, idempotency_key, created_by,
+                 created_at, confirmed_at, settlement_date)
+            VALUES
+                ('external', 'wealth', 'manual_redemption', 'confirmed',
+                 '2026-09-16', '2026-09-17', '108000', '100000', '1.08',
+                 NULL, 'external', 'web', '2026-09-15 19:09:54',
+                 '2026-09-16 16:00:35', '2026-09-18'),
+                ('linked', 'wealth', 'manual_redemption', 'confirmed',
+                 '2026-09-17', '2026-09-18', '54015', '50000', '1.0803',
+                 'leg', 'linked', 'web', '2026-09-16 15:13:59',
+                 '2026-09-17 16:00:28', '2026-09-20'),
+                ('leg', 'wallet-plus', 'cash_transfer_in', 'confirmed',
+                 '2026-09-17', '2026-09-18', '54015', '54015', '1',
+                 'linked', 'leg', 'web', '2026-09-16 15:13:59',
+                 '2026-09-17 16:00:28', NULL);
+            """
+        )
+        PortfolioDatabase._upgrade_v6_to_v7(conn)
+
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(transactions)")
+        }
+        rows = {
+            row["id"]: row
+            for row in conn.execute(
+                """SELECT id, destination_cash_product_id,
+                          settlement_status, status_updated_at
+                   FROM transactions
+                   WHERE id IN ('external', 'linked')"""
+            )
+        }
+        version = conn.execute(
+            "SELECT version FROM schema_migrations"
+        ).fetchone()[0]
+
+    assert {
+        "destination_cash_product_id",
+        "origin_transaction_id",
+        "settlement_status",
+        "settled_at",
+        "status_updated_at",
+    } <= columns
+    assert rows["external"]["status_updated_at"] == "2026-09-16 16:00:35"
+    assert rows["external"]["settlement_status"] == "pending"
+    assert rows["linked"]["destination_cash_product_id"] == "wallet-plus"
+    assert rows["linked"]["settlement_status"] == "pending"
+    assert version == 7
 
 
 def test_initialize_corrects_known_015736_sip_fee_rate_and_confirmed_trade(

@@ -10,6 +10,7 @@ from src.portfolio_models import (
     Product,
     ProductStatus,
     ProductType,
+    RedemptionSettlementStatus,
     SipFrequency,
     SipPlan,
     SipPlanStatus,
@@ -28,7 +29,9 @@ _TRANSACTION_COLUMNS = """
     id, product_id, transaction_type, status, trade_date, confirmation_date,
     amount, shares, fee_amount, fee_rate, confirmation_nav,
     linked_transaction_id, plan_id, idempotency_key, note, created_by,
-    trade_time, confirmed_at, settlement_date
+    trade_time, confirmed_at, settlement_date, destination_cash_product_id,
+    origin_transaction_id, settlement_status, settled_at, created_at,
+    status_updated_at
 """
 _POSITION_COLUMNS = """
     product_id, available_shares, locked_shares, total_shares, cost_basis
@@ -160,8 +163,12 @@ class PortfolioRepository:
                (id, product_id, transaction_type, status, trade_date,
                 trade_time, confirmation_date, amount, shares, fee_amount, fee_rate,
                 confirmation_nav, linked_transaction_id, plan_id,
-                idempotency_key, note, created_by, settlement_date)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                idempotency_key, note, created_by, settlement_date,
+                destination_cash_product_id, origin_transaction_id,
+                settlement_status, settled_at, created_at, status_updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP),
+                       COALESCE(?, CURRENT_TIMESTAMP))""",
             (
                 tx.id,
                 tx.product_id,
@@ -181,6 +188,16 @@ class PortfolioRepository:
                 tx.note,
                 tx.created_by,
                 tx.settlement_date.isoformat() if tx.settlement_date else None,
+                tx.destination_cash_product_id or None,
+                tx.origin_transaction_id or None,
+                (
+                    tx.settlement_status.value
+                    if tx.settlement_status is not None
+                    else None
+                ),
+                tx.settled_at,
+                tx.created_at,
+                tx.status_updated_at,
             ),
         )
         return self.get_transaction_by_id(tx.id, conn=conn)
@@ -236,10 +253,13 @@ class PortfolioRepository:
         conn.execute(
             """UPDATE transactions
                SET product_id = ?, transaction_type = ?, status = ?,
-                   trade_date = ?, confirmation_date = ?, amount = ?,
+                   trade_date = ?, trade_time = ?, confirmation_date = ?, amount = ?,
                    shares = ?, fee_amount = ?, fee_rate = ?,
                    confirmation_nav = ?, linked_transaction_id = ?,
                    plan_id = ?, idempotency_key = ?, note = ?, created_by = ?,
+                   settlement_date = ?, destination_cash_product_id = ?,
+                   origin_transaction_id = ?, settlement_status = ?,
+                   settled_at = ?, status_updated_at = CURRENT_TIMESTAMP,
                    confirmed_at = CASE
                        WHEN ? = 'confirmed' THEN CURRENT_TIMESTAMP
                        ELSE confirmed_at
@@ -250,6 +270,7 @@ class PortfolioRepository:
                 tx.transaction_type.value,
                 tx.status.value,
                 tx.trade_date.isoformat(),
+                tx.trade_time,
                 tx.confirmation_date.isoformat() if tx.confirmation_date else None,
                 optional_decimal_text(tx.amount),
                 optional_decimal_text(tx.shares),
@@ -261,11 +282,84 @@ class PortfolioRepository:
                 tx.idempotency_key,
                 tx.note,
                 tx.created_by,
+                tx.settlement_date.isoformat() if tx.settlement_date else None,
+                tx.destination_cash_product_id or None,
+                tx.origin_transaction_id or None,
+                (
+                    tx.settlement_status.value
+                    if tx.settlement_status is not None
+                    else None
+                ),
+                tx.settled_at,
                 tx.status.value,
                 tx.id,
             ),
         )
         return self.get_transaction_by_id(tx.id, conn=conn)
+
+    def find_purchase_by_origin(
+        self,
+        origin_transaction_id: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> Transaction | None:
+        query = (
+            f"SELECT {_TRANSACTION_COLUMNS} FROM transactions "
+            "WHERE origin_transaction_id = ? "
+            "AND transaction_type = 'manual_purchase' ORDER BY id"
+        )
+        if conn is None:
+            with self.database.connection() as owned:
+                rows = owned.execute(
+                    query, (origin_transaction_id,)
+                ).fetchall()
+        else:
+            rows = conn.execute(query, (origin_transaction_id,)).fetchall()
+        if len(rows) > 1:
+            raise ValueError("duplicate redemption purchase")
+        return self._transaction_from_row(rows[0]) if rows else None
+
+    def update_redemption_settlement(
+        self,
+        transaction_id: str,
+        settlement_status: RedemptionSettlementStatus,
+        *,
+        settled_at: bool = False,
+        conn: sqlite3.Connection | None = None,
+    ) -> Transaction:
+        if conn is None:
+            with self.database.transaction() as owned:
+                return self.update_redemption_settlement(
+                    transaction_id,
+                    settlement_status,
+                    settled_at=settled_at,
+                    conn=owned,
+                )
+        status_value = settlement_status.value
+        cursor = conn.execute(
+            """UPDATE transactions
+               SET settlement_status = ?,
+                   settled_at = CASE
+                       WHEN ? THEN COALESCE(settled_at, CURRENT_TIMESTAMP)
+                       ELSE settled_at
+                   END,
+                   status_updated_at = CASE
+                       WHEN COALESCE(settlement_status, '') != ?
+                           THEN CURRENT_TIMESTAMP
+                       ELSE status_updated_at
+                   END
+               WHERE id = ?
+                 AND transaction_type = 'manual_redemption'
+                 AND status = 'confirmed'""",
+            (
+                status_value,
+                int(settled_at),
+                status_value,
+                transaction_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("confirmed redemption not found")
+        return self.get_transaction_by_id(transaction_id, conn=conn)
 
     def list_transactions(
         self,
@@ -816,6 +910,18 @@ class PortfolioRepository:
                 if row["settlement_date"]
                 else None
             ),
+            destination_cash_product_id=(
+                row["destination_cash_product_id"] or ""
+            ),
+            origin_transaction_id=row["origin_transaction_id"] or "",
+            settlement_status=(
+                RedemptionSettlementStatus(row["settlement_status"])
+                if row["settlement_status"]
+                else None
+            ),
+            settled_at=row["settled_at"] or None,
+            created_at=row["created_at"] or None,
+            status_updated_at=row["status_updated_at"] or None,
         )
 
     @staticmethod

@@ -1437,7 +1437,9 @@ class PortfolioTransactionService:
     def _mark_reversed(transaction_id, conn):
         conn.execute(
             """UPDATE transactions
-               SET status = 'reversed', reversed_at = CURRENT_TIMESTAMP
+               SET status = 'reversed',
+                   reversed_at = CURRENT_TIMESTAMP,
+                   status_updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",
             (transaction_id,),
         )

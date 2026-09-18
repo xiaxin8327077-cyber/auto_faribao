@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from enum import Enum
@@ -39,6 +39,11 @@ class TransactionStatus(str, Enum):
     CANCELLED = "cancelled"
     REVERSED = "reversed"
     FAILED = "failed"
+
+
+class RedemptionSettlementStatus(str, Enum):
+    PENDING = "pending"
+    SETTLED = "settled"
 
 
 class SipPlanStatus(str, Enum):
@@ -130,6 +135,12 @@ class Transaction:
     created_by: str = "system"
     confirmed_at: Optional[str] = None
     settlement_date: Optional[date] = None
+    destination_cash_product_id: str = ""
+    origin_transaction_id: str = ""
+    settlement_status: Optional[RedemptionSettlementStatus] = None
+    settled_at: Optional[str] = None
+    created_at: Optional[str] = field(default=None, compare=False)
+    status_updated_at: Optional[str] = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)

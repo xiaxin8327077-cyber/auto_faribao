@@ -7,7 +7,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 
 BASE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "portfolio.db"
 
 
@@ -100,7 +100,15 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     confirmed_at TEXT,
     reversed_at TEXT,
-    settlement_date TEXT
+    settlement_date TEXT,
+    destination_cash_product_id TEXT REFERENCES products(id),
+    origin_transaction_id TEXT REFERENCES transactions(id),
+    settlement_status TEXT CHECK (
+        settlement_status IS NULL
+        OR settlement_status IN ('pending', 'settled')
+    ),
+    settled_at TEXT,
+    status_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS sip_plans (
     id TEXT PRIMARY KEY,
@@ -428,6 +436,148 @@ END;
 """
 
 
+V7_SCHEMA_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_purchase_per_redemption
+    ON transactions(origin_transaction_id)
+    WHERE origin_transaction_id IS NOT NULL
+      AND transaction_type = 'manual_purchase';
+DROP TRIGGER IF EXISTS prevent_confirmed_transaction_mutation;
+DROP TRIGGER IF EXISTS prevent_reversed_transaction_mutation;
+DROP TRIGGER IF EXISTS require_transaction_status_updated_at_on_insert;
+DROP TRIGGER IF EXISTS require_transaction_status_updated_at_on_update;
+CREATE TRIGGER require_transaction_status_updated_at_on_insert
+BEFORE INSERT ON transactions
+WHEN NEW.status_updated_at IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'transaction status_updated_at is required');
+END;
+CREATE TRIGGER require_transaction_status_updated_at_on_update
+BEFORE UPDATE ON transactions
+WHEN NEW.status_updated_at IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'transaction status_updated_at is required');
+END;
+CREATE TRIGGER prevent_confirmed_transaction_mutation
+BEFORE UPDATE ON transactions
+WHEN OLD.status = 'confirmed' AND NOT (
+    (
+        NEW.status = 'reversed'
+        AND OLD.reversed_at IS NULL
+        AND NEW.reversed_at IS NOT NULL
+        AND NEW.id IS OLD.id
+        AND NEW.product_id IS OLD.product_id
+        AND NEW.transaction_type IS OLD.transaction_type
+        AND NEW.trade_date IS OLD.trade_date
+        AND NEW.trade_time IS OLD.trade_time
+        AND NEW.confirmation_date IS OLD.confirmation_date
+        AND NEW.amount IS OLD.amount
+        AND NEW.shares IS OLD.shares
+        AND NEW.fee_amount IS OLD.fee_amount
+        AND NEW.fee_rate IS OLD.fee_rate
+        AND NEW.confirmation_nav IS OLD.confirmation_nav
+        AND NEW.linked_transaction_id IS OLD.linked_transaction_id
+        AND NEW.plan_id IS OLD.plan_id
+        AND NEW.idempotency_key IS OLD.idempotency_key
+        AND NEW.note IS OLD.note
+        AND NEW.created_by IS OLD.created_by
+        AND NEW.created_at IS OLD.created_at
+        AND NEW.confirmed_at IS OLD.confirmed_at
+        AND NEW.settlement_date IS OLD.settlement_date
+        AND NEW.destination_cash_product_id
+            IS OLD.destination_cash_product_id
+        AND NEW.origin_transaction_id IS OLD.origin_transaction_id
+        AND NEW.settlement_status IS OLD.settlement_status
+        AND NEW.settled_at IS OLD.settled_at
+        AND NEW.status_updated_at IS NOT NULL
+    )
+    OR
+    (
+        OLD.transaction_type = 'manual_redemption'
+        AND NEW.status = 'confirmed'
+        AND NEW.id IS OLD.id
+        AND NEW.product_id IS OLD.product_id
+        AND NEW.transaction_type IS OLD.transaction_type
+        AND NEW.trade_date IS OLD.trade_date
+        AND NEW.trade_time IS OLD.trade_time
+        AND NEW.confirmation_date IS OLD.confirmation_date
+        AND NEW.amount IS OLD.amount
+        AND NEW.shares IS OLD.shares
+        AND NEW.fee_amount IS OLD.fee_amount
+        AND NEW.fee_rate IS OLD.fee_rate
+        AND NEW.confirmation_nav IS OLD.confirmation_nav
+        AND NEW.plan_id IS OLD.plan_id
+        AND NEW.idempotency_key IS OLD.idempotency_key
+        AND NEW.note IS OLD.note
+        AND NEW.created_by IS OLD.created_by
+        AND NEW.created_at IS OLD.created_at
+        AND NEW.confirmed_at IS OLD.confirmed_at
+        AND NEW.reversed_at IS OLD.reversed_at
+        AND NEW.settlement_date IS OLD.settlement_date
+        AND NEW.origin_transaction_id IS OLD.origin_transaction_id
+        AND NEW.status_updated_at IS NOT NULL
+        AND (
+            (
+                OLD.settlement_status = 'pending'
+                AND NEW.settlement_status = 'settled'
+                AND OLD.settled_at IS NULL
+                AND NEW.settled_at IS NOT NULL
+                AND NEW.destination_cash_product_id
+                    IS OLD.destination_cash_product_id
+                AND NEW.linked_transaction_id
+                    IS OLD.linked_transaction_id
+            )
+            OR
+            (
+                (OLD.settlement_status IS NULL
+                 OR OLD.settlement_status = 'pending')
+                AND NEW.settlement_status = 'pending'
+                AND NEW.settled_at IS OLD.settled_at
+                AND (
+                    NEW.destination_cash_product_id
+                        IS OLD.destination_cash_product_id
+                    OR (
+                        (OLD.destination_cash_product_id IS NULL
+                         OR OLD.destination_cash_product_id = '')
+                        AND NEW.destination_cash_product_id IS NOT NULL
+                        AND NEW.destination_cash_product_id != ''
+                    )
+                )
+                AND (
+                    NEW.linked_transaction_id
+                        IS OLD.linked_transaction_id
+                    OR (
+                        OLD.linked_transaction_id IS NOT NULL
+                        AND NEW.linked_transaction_id IS NULL
+                        AND EXISTS (
+                            SELECT 1
+                            FROM transactions AS legacy_leg
+                            WHERE legacy_leg.id =
+                                OLD.linked_transaction_id
+                              AND legacy_leg.transaction_type =
+                                  'cash_transfer_in'
+                              AND legacy_leg.status = 'reversed'
+                        )
+                    )
+                )
+            )
+        )
+    )
+)
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'confirmed transaction is immutable except for lifecycle changes'
+    );
+END;
+CREATE TRIGGER prevent_reversed_transaction_mutation
+BEFORE UPDATE ON transactions
+WHEN OLD.status = 'reversed'
+BEGIN
+    SELECT RAISE(ABORT, 'reversed transaction is immutable');
+END;
+"""
+
+
 def _execute_sql_script(conn: sqlite3.Connection, script: str) -> None:
     statement = ""
     for line in script.splitlines(keepends=True):
@@ -480,26 +630,33 @@ class PortfolioDatabase:
                 }
                 if versions == {SCHEMA_VERSION}:
                     pass
+                elif versions == {6}:
+                    self._upgrade_v6_to_v7(conn)
                 elif versions == {5}:
                     self._upgrade_v5_to_v6(conn)
+                    self._upgrade_v6_to_v7(conn)
                 elif versions == {4}:
                     self._upgrade_v4_to_v5(conn)
                     self._upgrade_v5_to_v6(conn)
+                    self._upgrade_v6_to_v7(conn)
                 elif versions == {3}:
                     self._upgrade_v3_to_v4(conn)
                     self._upgrade_v4_to_v5(conn)
                     self._upgrade_v5_to_v6(conn)
+                    self._upgrade_v6_to_v7(conn)
                 elif versions == {2}:
                     self._upgrade_v2_to_v3(conn)
                     self._upgrade_v3_to_v4(conn)
                     self._upgrade_v4_to_v5(conn)
                     self._upgrade_v5_to_v6(conn)
+                    self._upgrade_v6_to_v7(conn)
                 elif versions == {BASE_SCHEMA_VERSION}:
                     self._upgrade_v1_to_v2(conn)
                     self._upgrade_v2_to_v3(conn)
                     self._upgrade_v3_to_v4(conn)
                     self._upgrade_v4_to_v5(conn)
                     self._upgrade_v5_to_v6(conn)
+                    self._upgrade_v6_to_v7(conn)
                 else:
                     raise ValueError(
                         "unsupported portfolio schema version set: "
@@ -540,6 +697,7 @@ class PortfolioDatabase:
             self._upgrade_v3_to_v4(conn)
             self._upgrade_v4_to_v5(conn)
             self._upgrade_v5_to_v6(conn)
+            self._upgrade_v6_to_v7(conn)
         except BaseException:
             conn.rollback()
             raise
@@ -562,6 +720,7 @@ class PortfolioDatabase:
         _execute_sql_script(conn, V2_SCHEMA_SQL)
         PortfolioDatabase._ensure_trade_time_column(conn)
         _execute_sql_script(conn, V3_SCHEMA_SQL)
+        _execute_sql_script(conn, V7_SCHEMA_SQL)
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES (?)",
             (SCHEMA_VERSION,),
@@ -627,6 +786,66 @@ class PortfolioDatabase:
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES (?)",
             (6,),
+        )
+
+    @staticmethod
+    def _upgrade_v6_to_v7(conn) -> None:
+        conn.execute(
+            "DROP TRIGGER IF EXISTS prevent_confirmed_transaction_mutation"
+        )
+        conn.execute(
+            "DROP TRIGGER IF EXISTS prevent_reversed_transaction_mutation"
+        )
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(transactions)")
+        }
+        additions = {
+            "destination_cash_product_id": "TEXT REFERENCES products(id)",
+            "origin_transaction_id": "TEXT REFERENCES transactions(id)",
+            "settlement_status": (
+                "TEXT CHECK (settlement_status IS NULL OR "
+                "settlement_status IN ('pending', 'settled'))"
+            ),
+            "settled_at": "TEXT",
+            "status_updated_at": "TEXT",
+        }
+        for name, ddl in additions.items():
+            if name not in columns:
+                conn.execute(
+                    f"ALTER TABLE transactions ADD COLUMN {name} {ddl}"
+                )
+        conn.execute(
+            """UPDATE transactions
+               SET status_updated_at =
+                   COALESCE(reversed_at, confirmed_at, created_at)
+               WHERE status_updated_at IS NULL"""
+        )
+        conn.execute(
+            """UPDATE transactions AS redemption
+               SET destination_cash_product_id = (
+                   SELECT linked.product_id
+                   FROM transactions AS linked
+                   WHERE linked.id = redemption.linked_transaction_id
+                     AND linked.transaction_type = 'cash_transfer_in'
+               )
+               WHERE redemption.transaction_type = 'manual_redemption'
+                 AND redemption.destination_cash_product_id IS NULL
+                 AND redemption.linked_transaction_id IS NOT NULL"""
+        )
+        conn.execute(
+            """UPDATE transactions
+               SET settlement_status = 'pending'
+               WHERE transaction_type = 'manual_redemption'
+                 AND status = 'confirmed'
+                 AND settlement_date IS NOT NULL
+                 AND settlement_status IS NULL"""
+        )
+        _execute_sql_script(conn, V7_SCHEMA_SQL)
+        conn.execute("DELETE FROM schema_migrations")
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?)",
+            (7,),
         )
 
     @staticmethod
@@ -754,6 +973,7 @@ class PortfolioDatabase:
             )
         if confirmed:
             _execute_sql_script(conn, V3_SCHEMA_SQL)
+            _execute_sql_script(conn, V7_SCHEMA_SQL)
 
     def _upgrade_v1_to_v2(self, conn) -> None:
         self._preflight_v2(conn)

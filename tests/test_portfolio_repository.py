@@ -3,6 +3,8 @@ from decimal import Decimal
 
 import pytest
 
+import src.portfolio_models as portfolio_models
+
 from src.portfolio_db import PortfolioDatabase
 from src.portfolio_models import (
     Position,
@@ -122,6 +124,48 @@ def test_create_transaction_uses_the_supplied_transaction_connection(repo):
     with repo.database.transaction() as conn:
         repo.create_transaction(tx, conn)
         assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+
+
+def test_transaction_round_trips_redemption_lifecycle_fields(repo):
+    repo.add_product(
+        Product(
+            "wealth",
+            "test",
+            "W001",
+            "理财",
+            ProductType.WEALTH_NAV,
+        )
+    )
+    repo.add_product(
+        Product(
+            "wallet-plus",
+            "test",
+            "WALLETPLUS",
+            "钱包Plus",
+            ProductType.CASH_MANAGEMENT,
+        )
+    )
+    settlement_status = portfolio_models.RedemptionSettlementStatus.PENDING
+    tx = Transaction(
+        id="r1",
+        product_id="wealth",
+        transaction_type=TransactionType.MANUAL_REDEMPTION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 9, 17),
+        idempotency_key="r1",
+        amount=Decimal("54015"),
+        shares=Decimal("50000"),
+        destination_cash_product_id="wallet-plus",
+        settlement_date=date(2026, 9, 20),
+        settlement_status=settlement_status,
+    )
+
+    stored = repo.create_transaction(tx)
+
+    assert stored.destination_cash_product_id == "wallet-plus"
+    assert stored.settlement_status is settlement_status
+    assert stored.created_at
+    assert stored.status_updated_at
 
 
 def test_replace_position_round_trips_decimals_and_missing_position_is_zero(repo):
