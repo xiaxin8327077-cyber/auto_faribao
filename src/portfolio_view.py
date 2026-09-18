@@ -57,6 +57,8 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
             transaction.status_updated_at
             or transaction.created_at
             or "",
+            transaction.trade_time
+            or f"{transaction.trade_date.isoformat()}T00:00:00",
             transaction.id,
         ),
         reverse=True,
