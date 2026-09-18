@@ -35,7 +35,7 @@ from src.portfolio_models import (
 from src.portfolio_positions import PositionProjector
 from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
 from src.portfolio_sip import SipService
-from src.portfolio_sip_schedule import normalize_sip_schedule
+from src.portfolio_sip_schedule import first_sip_trade_date, normalize_sip_schedule
 from src.portfolio_transactions import PortfolioTransactionService
 from src.portfolio_wallet import is_wallet_plus_product
 
@@ -959,6 +959,10 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             body.get("frequency", "daily"),
             body.get("schedule_day"),
         )
+        if "auto_start_date" in body and not isinstance(body["auto_start_date"], bool):
+            raise ValueError("auto_start_date must be a boolean")
+        automatic_start = body.get("auto_start_date") is True
+        schedule_anchor = None
         if "activate" in body and not isinstance(body["activate"], bool):
             raise ValueError("activate must be a boolean")
         activate = body.get("activate") is True
@@ -968,6 +972,12 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             existing = repo.get_plan(sip_id)
             if existing is None:
                 raise ValueError("plan not found")
+        if automatic_start:
+            daily = frequency is SipFrequency.DAILY
+            schedule_anchor = beijing_now().date() + timedelta(days=0 if daily else 1)
+            start_date = first_sip_trade_date(
+                schedule_anchor, frequency, schedule_day,
+            )
         resulting_status = (
             existing.status
             if existing is not None
@@ -993,6 +1003,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             ),
             "source_cash_product_id": source_id,
             "start_date": start_date.isoformat(),
+            **({"schedule_effective_date": schedule_anchor.isoformat()} if automatic_start else {}),
             "frequency": frequency.value,
             "schedule_day": schedule_day,
             "activate": activate,
@@ -1726,6 +1737,25 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 500,
             )
 
+    @blueprint.get("/api/portfolio/sip-plans/start-date")
+    def sip_start_date():
+        guard = read_guard()
+        if guard:
+            return guard
+        try:
+            frequency, schedule_day = normalize_sip_schedule(
+                request.args.get("frequency"),
+                request.args.get("schedule_day"),
+            )
+            daily = frequency is SipFrequency.DAILY
+            start = first_sip_trade_date(
+                beijing_now().date() + timedelta(days=0 if daily else 1),
+                frequency, schedule_day,
+            )
+            return jsonify({"start_date": start.isoformat()})
+        except ValueError as exc:
+            return _error("portfolio_sip_schedule", str(exc), 400)
+
     @blueprint.post("/api/portfolio/sip-plans/preview")
     def preview_sip_plan():
         idem, guard = write_guard()
@@ -1819,6 +1849,10 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                             existing.schedule_effective_date
                             if existing is not None
                             else None
+                        )
+                    if "schedule_effective_date" in preview:
+                        schedule_effective_date = _parse_date(
+                            preview["schedule_effective_date"], "schedule_effective_date"
                         )
                     plan = SipPlan(
                         id=(

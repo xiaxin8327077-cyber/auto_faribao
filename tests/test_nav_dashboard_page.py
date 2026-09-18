@@ -1,5 +1,9 @@
 import math
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 PAGE_PATH = Path(__file__).resolve().parents[1] / "src" / "nav_dashboard_page.html"
 
@@ -227,7 +231,8 @@ def test_sip_save_is_draft_and_activation_is_an_explicit_operation():
     assert "if (existingStatus !== 'draft')" not in html
     assert "sip_id: form.dataset.sipId || undefined" in html
     assert 'name="start_date"' in html
-    assert "form.start_date.value = rowValue(existing, 'start_date')" in html
+    assert "form.start_date.value = rowValue(existing, 'start_date')" not in html
+    assert "syncSipScheduleFields();\n      syncSipStartDate();\n      dialogOpen('sipDialog');" in html
 
 
 def test_sip_plan_can_be_deleted_after_preview():
@@ -958,14 +963,78 @@ def test_sip_monthly_options_span_one_to_thirty_one():
 
 def test_sip_schedule_conditional_sync_wired():
     html = _read_page()
-    assert "function syncSipScheduleFields()" in html
+    assert "function syncSipScheduleFields(event)" in html
     assert "$('sipFrequency').addEventListener('change', syncSipScheduleFields);" in html
-    sync = html[html.index("function syncSipScheduleFields()"):]
+    sync = html[html.index("function syncSipScheduleFields(event)"):]
     sync = sync[:sync.index("\n    }")]
     assert "$('sipWeeklyDayField').hidden = !weekly;" in sync
     assert "$('sipWeeklyDay').disabled = !weekly;" in sync
     assert "$('sipMonthlyDayField').hidden = !monthly;" in sync
     assert "$('sipMonthlyDay').disabled = !monthly;" in sync
+
+
+def test_sip_start_date_updates_on_schedule_changes():
+    html = _read_page()
+    assert "$('sipWeeklyDay').addEventListener('change', syncSipStartDate);" in html
+    assert "$('sipMonthlyDay').addEventListener('change', syncSipStartDate);" in html
+    assert "/api/portfolio/sip-plans/start-date?" in html
+    assert '<input name="start_date" type="text" readonly required' in html
+    assert "payload.auto_start_date = true;" in html
+
+
+def test_sip_start_date_browser_logic_handles_changes_and_stale_responses():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for JavaScript behavior checks")
+    html = _read_page()
+    logic = html[html.index("let sipStartDateRequestId = 0;"):html.index("function sipScheduleLabel(row)")]
+    script = r"""
+const assert = require('assert');
+const controls = {
+  sipForm: {dataset: {}, start_date: {value: '', setCustomValidity(value) {this.error = value;}}},
+  sipFrequency: {value: 'weekly'}, sipWeeklyDay: {value: '1'}, sipMonthlyDay: {value: '31'},
+  sipWeeklyDayField: {}, sipMonthlyDayField: {}
+};
+const $ = id => controls[id];
+const requests = [];
+const api = path => new Promise(resolve => requests.push({path, resolve}));
+const errors = [];
+const showFormError = (form, error) => errors.push(error.message);
+""" + logic + r"""
+(async () => {
+  const form = $('sipForm');
+  syncSipScheduleFields();
+  assert.strictEqual(form.start_date.readOnly, true);
+  assert.strictEqual(requests.length, 0);
+  const weekly = syncSipStartDate();
+  assert(requests[0].path.includes('frequency=weekly&schedule_day=1'));
+  $('sipFrequency').value = 'monthly';
+  const monthly = syncSipStartDate();
+  requests[1].resolve({ok: true, json: async () => ({start_date: '2026-09-30'})});
+  await monthly;
+  requests[0].resolve({ok: true, json: async () => ({start_date: '2026-09-07'})});
+  await weekly;
+  assert.strictEqual(form.start_date.value, '2026-09-30');
+  const failed = syncSipStartDate();
+  requests[2].resolve({ok: false, json: async () => ({message: 'calendar unavailable'})});
+  await failed;
+  assert.strictEqual(form.start_date.value, '');
+  assert(form.start_date.error);
+  assert.deepStrictEqual(errors, ['calendar unavailable']);
+  $('sipFrequency').value = 'daily';
+  syncSipScheduleFields();
+  assert.strictEqual(form.start_date.readOnly, true);
+  const daily = syncSipStartDate();
+  assert(requests[3].path.endsWith('frequency=daily'));
+  requests[3].resolve({ok: true, json: async () => ({start_date: '2026-09-07'})});
+  await daily;
+  assert.strictEqual(form.start_date.value, '2026-09-07');
+  assert.strictEqual(form.start_date.error, '');
+  assert.strictEqual(form.dataset.autoStartDate, 'true');
+})().catch(error => {console.error(error); process.exit(1);});
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_sip_edit_refills_schedule_and_syncs():
@@ -993,7 +1062,8 @@ def test_sip_start_date_label_is_begin_date_not_first_deduction():
     assert "开始日期" in html
     # 卡片与表单都改用“开始日期”。
     assert "<span>开始日期</span>" in html
-    assert ">开始日期<input name=\"start_date\"" in html
+    assert '>开始日期<input name="start_date" type="text" readonly required' in html
+    assert "#sipDialog .form-field { min-width: 0; max-width: 100%; }" in html
 
 
 def test_sip_card_shows_schedule_summary():
