@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 import json
@@ -11,6 +12,7 @@ from src.portfolio_models import (
     MarketQuote,
     Product,
     ProductType,
+    RedemptionSettlementStatus,
     Transaction,
     TransactionStatus,
     TransactionType,
@@ -87,6 +89,253 @@ def seed_quote(repository, product, quote_date, unit_nav):
 def linked_leg(repository, transaction):
     rows = repository.list_transactions()
     return next(row for row in rows if row.id == transaction.linked_transaction_id)
+
+
+def test_redemption_waits_for_settlement_then_creates_t1_wallet_purchase(
+    services,
+):
+    repository, transactions, projector = services
+    wealth = seed_product(
+        repository,
+        "wealth",
+        ProductType.WEALTH_NAV,
+        "W001",
+    )
+    seed_opening_position(repository, wealth.id, "100000", "100000")
+    seed_cash(repository, "wallet-plus", "1000")
+
+    redemption = transactions.record_redemption(
+        wealth.id,
+        Decimal("50000"),
+        date(2026, 9, 17),
+        "web:redemption-settlement",
+        destination_cash_product_id="wallet-plus",
+        trade_time="2026-09-16T23:13:00",
+        settlement_date=date(2026, 9, 20),
+    )
+    quote = seed_quote(
+        repository,
+        wealth,
+        date(2026, 9, 17),
+        Decimal("1.0803"),
+    )
+    confirmed = transactions.confirm_pending(
+        redemption.id,
+        quote,
+        as_of_date=date(2026, 9, 18),
+    )
+
+    assert confirmed.status is TransactionStatus.CONFIRMED
+    assert (
+        confirmed.settlement_status
+        is RedemptionSettlementStatus.PENDING
+    )
+    assert confirmed.linked_transaction_id == ""
+    assert projector.calculate(wealth.id).total_shares == Decimal("50000")
+    assert projector.calculate("wallet-plus").total_shares == Decimal("1000")
+    assert transactions.settle_redemptions(date(2026, 9, 19)) == []
+
+    settled = transactions.settle_redemptions(date(2026, 9, 20))
+    purchase = repository.find_purchase_by_origin(redemption.id)
+    assert len(settled) == 1
+    assert (
+        settled[0].settlement_status
+        is RedemptionSettlementStatus.SETTLED
+    )
+    assert purchase.transaction_type is TransactionType.MANUAL_PURCHASE
+    assert purchase.status is TransactionStatus.PENDING_CONFIRMATION
+    assert purchase.amount == Decimal("54015")
+    assert purchase.trade_date == date(2026, 9, 21)
+    assert purchase.confirmation_date is None
+    assert projector.calculate("wallet-plus").total_shares == Decimal("1000")
+    assert transactions.settle_redemptions(date(2026, 9, 20)) == []
+    assert len([
+        transaction
+        for transaction in repository.list_transactions()
+        if transaction.origin_transaction_id == redemption.id
+    ]) == 1
+
+    transactions.settle_pending(date(2026, 9, 22))
+
+    assert projector.calculate("wallet-plus").total_shares == Decimal("55015")
+
+
+def _create_settled_wallet_redemption(services):
+    repository, transactions, projector = services
+    wealth = seed_product(
+        repository,
+        "wealth",
+        ProductType.WEALTH_NAV,
+        "W001",
+    )
+    seed_opening_position(repository, wealth.id, "100000", "100000")
+    seed_cash(repository, "wallet-plus", "1000")
+    redemption = transactions.record_redemption(
+        wealth.id,
+        Decimal("50000"),
+        date(2026, 9, 17),
+        "web:redemption-for-reversal",
+        destination_cash_product_id="wallet-plus",
+        trade_time="2026-09-16T23:13:00",
+        settlement_date=date(2026, 9, 20),
+    )
+    quote = seed_quote(
+        repository,
+        wealth,
+        date(2026, 9, 17),
+        Decimal("1.0803"),
+    )
+    transactions.confirm_pending(
+        redemption.id,
+        quote,
+        as_of_date=date(2026, 9, 18),
+    )
+    transactions.settle_redemptions(date(2026, 9, 20))
+    return (
+        repository,
+        transactions,
+        projector,
+        repository.get_transaction_by_id(redemption.id),
+        repository.find_purchase_by_origin(redemption.id),
+    )
+
+
+def test_reversing_settled_redemption_cancels_pending_wallet_purchase(
+    services,
+):
+    repository, transactions, projector, redemption, purchase = (
+        _create_settled_wallet_redemption(services)
+    )
+
+    transactions.reverse_confirmed(
+        redemption.id,
+        "录入错误",
+        "reverse:settled-pending-wallet",
+    )
+
+    assert (
+        repository.get_transaction_by_id(redemption.id).status
+        is TransactionStatus.REVERSED
+    )
+    assert (
+        repository.get_transaction_by_id(purchase.id).status
+        is TransactionStatus.CANCELLED
+    )
+    assert projector.calculate("wealth").total_shares == Decimal("100000")
+    assert projector.calculate("wallet-plus").total_shares == Decimal("1000")
+
+
+def test_reversing_settled_redemption_reverses_confirmed_wallet_purchase(
+    services,
+):
+    repository, transactions, projector, redemption, purchase = (
+        _create_settled_wallet_redemption(services)
+    )
+    transactions.settle_pending(date(2026, 9, 22))
+
+    transactions.reverse_confirmed(
+        redemption.id,
+        "录入错误",
+        "reverse:settled-confirmed-wallet",
+    )
+
+    assert (
+        repository.get_transaction_by_id(redemption.id).status
+        is TransactionStatus.REVERSED
+    )
+    assert (
+        repository.get_transaction_by_id(purchase.id).status
+        is TransactionStatus.REVERSED
+    )
+    assert projector.calculate("wealth").total_shares == Decimal("100000")
+    assert projector.calculate("wallet-plus").total_shares == Decimal("1000")
+
+
+def test_external_redemption_settles_without_creating_wallet_purchase(
+    services,
+):
+    repository, transactions, _projector = services
+    wealth = seed_product(
+        repository,
+        "wealth",
+        ProductType.WEALTH_NAV,
+        "W001",
+    )
+    seed_opening_position(repository, wealth.id, "100000", "100000")
+    redemption = transactions.record_redemption(
+        wealth.id,
+        Decimal("50000"),
+        date(2026, 9, 17),
+        "web:external-redemption-settlement",
+        trade_time="2026-09-16T23:13:00",
+        settlement_date=date(2026, 9, 20),
+    )
+    quote = seed_quote(
+        repository,
+        wealth,
+        date(2026, 9, 17),
+        Decimal("1.0803"),
+    )
+    transactions.confirm_pending(
+        redemption.id,
+        quote,
+        as_of_date=date(2026, 9, 18),
+    )
+
+    settled = transactions.settle_redemptions(date(2026, 9, 20))
+
+    assert len(settled) == 1
+    assert (
+        settled[0].settlement_status
+        is RedemptionSettlementStatus.SETTLED
+    )
+    assert repository.find_purchase_by_origin(redemption.id) is None
+
+
+def test_due_legacy_linked_redemption_is_skipped_until_repaired(
+    services,
+    caplog,
+):
+    repository, transactions, _projector = services
+    seed_product(repository, "wealth", ProductType.WEALTH_NAV, "W001")
+    seed_cash(repository, "wallet-plus", "0")
+    source = repository.create_transaction(Transaction(
+        id="legacy-redemption",
+        product_id="wealth",
+        transaction_type=TransactionType.MANUAL_REDEMPTION,
+        status=TransactionStatus.PENDING_CONFIRMATION,
+        trade_date=date(2026, 9, 17),
+        idempotency_key="legacy-redemption",
+        amount=Decimal("54015"),
+        shares=Decimal("50000"),
+        confirmation_nav=Decimal("1.0803"),
+        confirmation_date=date(2026, 9, 18),
+        destination_cash_product_id="wallet-plus",
+        settlement_date=date(2026, 9, 20),
+        settlement_status=RedemptionSettlementStatus.PENDING,
+    ))
+    repository.create_transaction(Transaction(
+        id="legacy-cash-leg",
+        product_id="wallet-plus",
+        transaction_type=TransactionType.CASH_TRANSFER_IN,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 9, 17),
+        idempotency_key="legacy-cash-leg",
+        amount=Decimal("54015"),
+        shares=Decimal("54015"),
+        confirmation_nav=Decimal("1"),
+        confirmation_date=date(2026, 9, 18),
+        linked_transaction_id=source.id,
+    ))
+    repository.update_pending_transaction(replace(
+        source,
+        status=TransactionStatus.CONFIRMED,
+        linked_transaction_id="legacy-cash-leg",
+    ))
+
+    assert transactions.settle_redemptions(date(2026, 9, 20)) == []
+    assert repository.find_purchase_by_origin(source.id) is None
+    assert "skip legacy linked redemption until repair" in caplog.text
 
 
 def reversal_children(repository, transaction_id):
@@ -2314,7 +2563,9 @@ def test_redemption_retry_is_idempotent_and_does_not_lock_twice(services):
     )
 
     assert retry == original
-    assert len(repository.list_transactions()) == 4
+    assert len(repository.list_transactions()) == 3
+    assert retry.linked_transaction_id == ""
+    assert retry.destination_cash_product_id == "cash"
     assert projector.calculate("fund").locked_shares == Decimal("25")
 
 
@@ -2860,7 +3111,9 @@ def test_confirmed_transaction_rejects_conflicting_confirmation_quote(
     assert projector.calculate("fund").total_shares == Decimal("297")
 
 
-def test_confirm_pending_redemption_updates_destination_amount(services):
+def test_confirm_pending_redemption_does_not_credit_destination_before_settlement(
+    services,
+):
     repository, transactions, projector = services
     fund = seed_product(repository, "fund", ProductType.WEALTH_NAV, "W001")
     seed_opening_position(repository, "fund", "100", "80")
@@ -2880,34 +3133,29 @@ def test_confirm_pending_redemption_updates_destination_amount(services):
 
     assert confirmed.amount == Decimal("30")
     assert confirmed.shares == Decimal("25")
-    cash_leg = linked_leg(repository, confirmed)
-    assert cash_leg.status is TransactionStatus.CONFIRMED
-    assert cash_leg.amount == Decimal("30")
-    assert cash_leg.shares == Decimal("30")
+    assert confirmed.linked_transaction_id == ""
+    assert confirmed.destination_cash_product_id == "cash"
+    assert confirmed.settlement_status is None
     assert projector.calculate("fund").total_shares == Decimal("75")
-    assert projector.calculate("cash").total_shares == Decimal("40")
+    assert projector.calculate("cash").total_shares == Decimal("10")
 
 
-def test_confirmed_redemption_rejects_corrupt_destination_amount(services):
+def test_confirmed_redemption_retry_rejects_different_direct_destination(
+    services,
+):
     repository, transactions, _projector = services
     fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND, "003103")
     seed_opening_position(repository, "fund", "100")
     seed_cash(repository, "cash", "0")
-    quote = seed_quote(repository, fund, TRADE_DATE, Decimal("1.2"))
-    redemption = transactions.record_redemption(
+    seed_cash(repository, "other-cash", "0")
+    seed_quote(repository, fund, TRADE_DATE, Decimal("1.2"))
+    transactions.record_redemption(
         "fund",
         Decimal("25"),
         TRADE_DATE,
-        "web:corrupt-redemption-destination",
+        "web:direct-redemption-destination",
         destination_cash_product_id="cash",
     )
-    destination = linked_leg(repository, redemption)
-    disable_confirmed_transaction_guard(repository)
-    with repository.database.connection() as conn:
-        conn.execute(
-            "UPDATE transactions SET amount = ? WHERE id = ?",
-            ("999", destination.id),
-        )
 
     with pytest.raises(
         ValueError, match="idempotency key conflicts with existing request"
@@ -2916,11 +3164,9 @@ def test_confirmed_redemption_rejects_corrupt_destination_amount(services):
             "fund",
             Decimal("25"),
             TRADE_DATE,
-            "web:corrupt-redemption-destination",
-            destination_cash_product_id="cash",
+            "web:direct-redemption-destination",
+            destination_cash_product_id="other-cash",
         )
-    with pytest.raises(ValueError, match="inconsistent linked transaction"):
-        transactions.confirm_pending(redemption.id, quote)
 
 
 @pytest.mark.parametrize(
@@ -3200,7 +3446,7 @@ def test_confirm_linked_update_failure_rolls_back_confirmed_primary(
     assert projector.calculate("fund").total_shares == Decimal("0")
 
 
-def test_redemption_projector_failure_rolls_back_ledger_and_positions(
+def test_redemption_source_projector_failure_rolls_back_ledger_and_positions(
     services, monkeypatch
 ):
     repository, transactions, projector = services
@@ -3211,14 +3457,14 @@ def test_redemption_projector_failure_rolls_back_ledger_and_positions(
     before_cash = repository.get_position("cash")
     original_calculate = projector._calculate
 
-    def fail_destination_calculation(product_id, conn=None):
-        if product_id == "cash":
-            raise RuntimeError("destination projection failed")
+    def fail_source_calculation(product_id, conn=None):
+        if product_id == "fund":
+            raise RuntimeError("source projection failed")
         return original_calculate(product_id, conn)
 
-    monkeypatch.setattr(projector, "_calculate", fail_destination_calculation)
+    monkeypatch.setattr(projector, "_calculate", fail_source_calculation)
 
-    with pytest.raises(RuntimeError, match="destination projection failed"):
+    with pytest.raises(RuntimeError, match="source projection failed"):
         transactions.record_redemption(
             "fund",
             Decimal("20"),

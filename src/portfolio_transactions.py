@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 import json
+import logging
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from src.portfolio_db import canonical_idempotency_key
@@ -12,6 +13,7 @@ from src.portfolio_confirmation import (
 from src.portfolio_models import (
     MarketQuote,
     ProductType,
+    RedemptionSettlementStatus,
     Transaction,
     TransactionStatus,
     TransactionType,
@@ -21,6 +23,7 @@ from src.portfolio_profit import calculate_holding_profit, calculate_latest_prof
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
+logger = logging.getLogger(__name__)
 _PENDING_STATUSES = {
     TransactionStatus.PENDING_QUOTE,
     TransactionStatus.PENDING_CONFIRMATION,
@@ -279,12 +282,28 @@ class PortfolioTransactionService:
                     if status is TransactionStatus.CONFIRMED
                     else None
                 ),
+                destination_cash_product_id=(
+                    destination.id if destination is not None else ""
+                ),
+                settlement_status=(
+                    RedemptionSettlementStatus.PENDING
+                    if (
+                        status is TransactionStatus.CONFIRMED
+                        and settlement_date is not None
+                        and product.product_type
+                        is not ProductType.CASH_MANAGEMENT
+                    )
+                    else None
+                ),
                 note=note,
                 created_by=created_by,
                 settlement_date=settlement_date,
             )
             affected_product_ids = {product.id}
-            if destination is not None:
+            if (
+                destination is not None
+                and product.product_type is ProductType.CASH_MANAGEMENT
+            ):
                 redemption = self._create_linked_pair(
                     redemption,
                     Transaction(
@@ -297,7 +316,9 @@ class PortfolioTransactionService:
                         trade_time=trade_time,
                         amount=amount,
                         shares=amount,
-                        confirmation_nav=ONE if nav is not None else None,
+                        confirmation_nav=(
+                            ONE if nav is not None else None
+                        ),
                         confirmation_date=(
                             trade_date
                             if status is TransactionStatus.CONFIRMED
@@ -310,7 +331,10 @@ class PortfolioTransactionService:
                 )
                 affected_product_ids.add(destination.id)
             else:
-                redemption = self.repository.create_transaction(redemption, conn)
+                redemption = self.repository.create_transaction(
+                    redemption,
+                    conn,
+                )
 
             self._rebuild_positions(affected_product_ids, conn)
             if audit_id:
@@ -535,6 +559,15 @@ class PortfolioTransactionService:
                     amount=amount,
                     confirmation_nav=nav,
                     confirmation_date=confirmed_on,
+                    settlement_status=(
+                        RedemptionSettlementStatus.PENDING
+                        if (
+                            transaction.settlement_date is not None
+                            and product.product_type
+                            is not ProductType.CASH_MANAGEMENT
+                        )
+                        else None
+                    ),
                 )
                 linked_amount = amount
 
@@ -607,6 +640,112 @@ class PortfolioTransactionService:
                 )
             )
         return settled
+
+    def settle_redemptions(self, as_of_date) -> list[Transaction]:
+        settled = []
+        for redemption in self.repository.list_transactions():
+            if (
+                redemption.transaction_type
+                is not TransactionType.MANUAL_REDEMPTION
+                or redemption.status is not TransactionStatus.CONFIRMED
+                or redemption.settlement_status
+                is not RedemptionSettlementStatus.PENDING
+                or redemption.settlement_date is None
+                or redemption.settlement_date > as_of_date
+            ):
+                continue
+            if redemption.linked_transaction_id:
+                logger.warning(
+                    "skip legacy linked redemption until repair: %s",
+                    redemption.id,
+                )
+                continue
+            settled.append(
+                self._settle_redemption(redemption.id, as_of_date)
+            )
+        return settled
+
+    def _settle_redemption(
+        self,
+        transaction_id,
+        as_of_date,
+    ) -> Transaction:
+        with self.repository.database.transaction() as conn:
+            redemption = self.repository.get_transaction_by_id(
+                transaction_id,
+                conn=conn,
+            )
+            if redemption is None:
+                raise ValueError("transaction not found")
+            if (
+                redemption.transaction_type
+                is not TransactionType.MANUAL_REDEMPTION
+                or redemption.status is not TransactionStatus.CONFIRMED
+                or redemption.settlement_status
+                is not RedemptionSettlementStatus.PENDING
+                or redemption.settlement_date is None
+                or redemption.settlement_date > as_of_date
+            ):
+                raise ValueError("redemption is not due for settlement")
+            if redemption.linked_transaction_id:
+                raise ValueError(
+                    "legacy linked redemption requires repair"
+                )
+            amount = self._positive_decimal(redemption.amount, "amount")
+            if redemption.destination_cash_product_id:
+                destination = self.repository.require_product(
+                    redemption.destination_cash_product_id,
+                    conn=conn,
+                )
+                if (
+                    destination.product_type
+                    is not ProductType.CASH_MANAGEMENT
+                ):
+                    raise ValueError("destination must be cash_management")
+                existing = self.repository.find_purchase_by_origin(
+                    redemption.id,
+                    conn=conn,
+                )
+                if existing is not None:
+                    raise ValueError("redemption purchase already exists")
+                submitted_at = datetime.combine(
+                    redemption.settlement_date,
+                    time.min,
+                )
+                schedule = confirmation_schedule(
+                    destination,
+                    TransactionType.MANUAL_PURCHASE,
+                    submitted_at,
+                )
+                self.repository.create_transaction(
+                    Transaction(
+                        id=str(uuid4()),
+                        product_id=destination.id,
+                        transaction_type=TransactionType.MANUAL_PURCHASE,
+                        status=TransactionStatus.PENDING_CONFIRMATION,
+                        trade_date=schedule.trade_date,
+                        trade_time=submitted_at.isoformat(
+                            timespec="seconds"
+                        ),
+                        idempotency_key=(
+                            f"redemption-settlement:{redemption.id}"
+                        ),
+                        amount=amount,
+                        shares=amount,
+                        fee_amount=ZERO,
+                        fee_rate=ZERO,
+                        confirmation_nav=ONE,
+                        origin_transaction_id=redemption.id,
+                        created_by="redemption_settlement",
+                    ),
+                    conn,
+                )
+            return self.repository.update_redemption_settlement(
+                redemption.id,
+                RedemptionSettlementStatus.SETTLED,
+                settled_at=True,
+                conn=conn,
+            )
 
     def cancel_pending(
         self,
@@ -787,7 +926,49 @@ class PortfolioTransactionService:
             )
             if transaction is None:
                 raise ValueError("transaction not found")
-            group = self._reversal_business_group(transaction, conn)
+            group = None
+            cancelled_settlement_purchase = None
+            if (
+                transaction.transaction_type
+                is TransactionType.MANUAL_REDEMPTION
+                and transaction.settlement_status
+                is RedemptionSettlementStatus.SETTLED
+            ):
+                settlement_purchase = (
+                    self.repository.find_purchase_by_origin(
+                        transaction.id,
+                        conn=conn,
+                    )
+                )
+                if (
+                    transaction.destination_cash_product_id
+                    and settlement_purchase is None
+                ):
+                    raise ValueError(
+                        "settled redemption purchase is missing"
+                    )
+                if settlement_purchase is not None:
+                    if settlement_purchase.status in _PENDING_STATUSES:
+                        cancelled_settlement_purchase = (
+                            self.repository.update_pending_transaction(
+                                replace(
+                                    settlement_purchase,
+                                    status=TransactionStatus.CANCELLED,
+                                ),
+                                conn,
+                            )
+                        )
+                    elif (
+                        settlement_purchase.status
+                        is TransactionStatus.CONFIRMED
+                    ):
+                        group = [transaction, settlement_purchase]
+                    else:
+                        raise ValueError(
+                            "inconsistent redemption purchase state"
+                        )
+            if group is None:
+                group = self._reversal_business_group(transaction, conn)
             sip_execution, sip_depth = self._sip_execution_context(
                 group, conn
             )
@@ -856,6 +1037,10 @@ class PortfolioTransactionService:
             affected_product_ids = {
                 member.product_id for member in group
             }
+            if cancelled_settlement_purchase is not None:
+                affected_product_ids.add(
+                    cancelled_settlement_purchase.product_id
+                )
             self._rebuild_positions(affected_product_ids, conn)
             target_states = [
                 self._reversal_target_state(member, conn)
@@ -1964,7 +2149,7 @@ class PortfolioTransactionService:
             or existing.created_by != created_by
             or existing.note != note
             or existing.trade_time != trade_time
-            or self._linked_product_id(existing, conn)
+            or existing.destination_cash_product_id
             != destination_cash_product_id
         ):
             raise ValueError(
