@@ -24,6 +24,7 @@ class PortfolioCycleResult:
     quotes_synced: int
     intents_created: int
     trades_settled: int
+    redemptions_settled: int
     income_accrued: int
 
 
@@ -42,26 +43,37 @@ class PortfolioJobs:
         create_intents,
         settle_pending,
         accrue_income,
+        settle_redemptions=None,
     ):
         self.sync_quotes = sync_quotes
         self.create_intents = create_intents
         self.settle_pending = settle_pending
+        self.settle_redemptions = settle_redemptions or (lambda _day: 0)
         self.accrue_income = accrue_income
         self._last_slot = None
 
     def run_cycle(self, now):
         slot = _slot_key(now)
         if slot == self._last_slot:
-            return PortfolioCycleResult(0, 0, 0, 0)
+            return PortfolioCycleResult(0, 0, 0, 0, 0)
         self._last_slot = slot
         day = now.date()
         quotes = int(self.sync_quotes(day) or 0)
         intents = 0
         if sip_deduction_due(now):
             intents = int(self.create_intents(day) or 0)
-        settled = int(self.settle_pending(day) or 0)
+        first_confirmed = int(self.settle_pending(day) or 0)
+        redemptions = int(self.settle_redemptions(day) or 0)
+        second_confirmed = int(self.settle_pending(day) or 0)
+        settled = first_confirmed + second_confirmed
         income = int(self.accrue_income(day) or 0)
-        return PortfolioCycleResult(quotes, intents, settled, income)
+        return PortfolioCycleResult(
+            quotes,
+            intents,
+            settled,
+            redemptions,
+            income,
+        )
 
 
 def _product_metadata(product):
@@ -160,6 +172,9 @@ def build_portfolio_jobs(runtime, strict=False):
         sip = sip_service.settle_pending(day)
         return len(manual) + len(sip)
 
+    def settle_redemptions(day):
+        return len(transaction_service.settle_redemptions(day))
+
     def accrue_income(day):
         from src.portfolio_wallet import (
             WALLET_PROVIDER,
@@ -192,14 +207,20 @@ def build_portfolio_jobs(runtime, strict=False):
                     accrued += 1
         return accrued
 
-    return PortfolioJobs(sync_quotes, create_intents, settle_pending, accrue_income)
+    return PortfolioJobs(
+        sync_quotes,
+        create_intents,
+        settle_pending,
+        accrue_income,
+        settle_redemptions=settle_redemptions,
+    )
 
 
 def run_portfolio_cycle(runtime, now=None, raise_on_error=False):
     now = now or beijing_now()
     if not getattr(runtime, "write_enabled", False):
         logger.warning("Portfolio runtime is read-only; skipping cycle")
-        return PortfolioCycleResult(0, 0, 0, 0)
+        return PortfolioCycleResult(0, 0, 0, 0, 0)
     jobs = build_portfolio_jobs(runtime, strict=raise_on_error)
     try:
         result = jobs.run_cycle(now)
@@ -207,12 +228,14 @@ def run_portfolio_cycle(runtime, now=None, raise_on_error=False):
         logger.error("Portfolio cycle failed", exc_info=True)
         if raise_on_error:
             raise
-        return PortfolioCycleResult(0, 0, 0, 0)
+        return PortfolioCycleResult(0, 0, 0, 0, 0)
     logger.info(
-        "Portfolio cycle: quotes=%d intents=%d settled=%d income=%d",
+        "Portfolio cycle: quotes=%d intents=%d settled=%d "
+        "redemptions=%d income=%d",
         result.quotes_synced,
         result.intents_created,
         result.trades_settled,
+        result.redemptions_settled,
         result.income_accrued,
     )
     return result

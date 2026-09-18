@@ -195,4 +195,4 @@ def test_run_portfolio_cycle_noop_when_runtime_read_only(monkeypatch):
     result = run_portfolio_cycle(SimpleNamespace(write_enabled=False), datetime(2026, 7, 30, 18, 0))
 
     assert built == []
-    assert result == jobs.PortfolioCycleResult(0, 0, 0, 0)
+    assert result == jobs.PortfolioCycleResult(0, 0, 0, 0, 0)
