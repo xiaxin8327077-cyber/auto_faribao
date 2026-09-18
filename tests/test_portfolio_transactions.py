@@ -74,6 +74,19 @@ def seed_cash(repository, product_id, shares):
     return seed_opening_position(repository, product_id, shares)
 
 
+def seed_wallet_plus(repository, product_id, shares):
+    from src.portfolio_wallet import WALLET_PROVIDER
+
+    repository.add_product(Product(
+        id=product_id,
+        provider=WALLET_PROVIDER,
+        code="WALLETPLUS",
+        name="钱包Plus",
+        product_type=ProductType.CASH_MANAGEMENT,
+    ))
+    return seed_opening_position(repository, product_id, shares)
+
+
 def seed_quote(repository, product, quote_date, unit_nav):
     quote = MarketQuote(
         product_code=product.code,
@@ -102,7 +115,7 @@ def test_redemption_waits_for_settlement_then_creates_t1_wallet_purchase(
         "W001",
     )
     seed_opening_position(repository, wealth.id, "100000", "100000")
-    seed_cash(repository, "wallet-plus", "1000")
+    seed_wallet_plus(repository, "wallet-plus", "1000")
 
     redemption = transactions.record_redemption(
         wealth.id,
@@ -147,7 +160,7 @@ def test_redemption_waits_for_settlement_then_creates_t1_wallet_purchase(
     assert purchase.amount == Decimal("54015")
     assert purchase.trade_date == date(2026, 9, 21)
     assert purchase.confirmation_date is None
-    assert projector.calculate("wallet-plus").total_shares == Decimal("1000")
+    assert projector.calculate("wallet-plus").total_shares == Decimal("55015")
     assert transactions.settle_redemptions(date(2026, 9, 20)) == []
     assert len([
         transaction
@@ -160,6 +173,32 @@ def test_redemption_waits_for_settlement_then_creates_t1_wallet_purchase(
     assert projector.calculate("wallet-plus").total_shares == Decimal("55015")
 
 
+def test_pending_wallet_plus_purchase_can_fund_real_time_purchase(services):
+    repository, transactions, projector = services
+    seed_wallet_plus(repository, "wallet-plus", "0")
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+
+    wallet_purchase = transactions.record_purchase(
+        "wallet-plus",
+        Decimal("108000"),
+        TRADE_DATE,
+        "web:pending-wallet-liquidity",
+    )
+    fund_purchase = transactions.record_purchase(
+        "fund",
+        Decimal("50000"),
+        TRADE_DATE,
+        "web:spend-pending-wallet-liquidity",
+        source_cash_product_id="wallet-plus",
+    )
+
+    assert wallet_purchase.status is TransactionStatus.PENDING_CONFIRMATION
+    assert fund_purchase.status is TransactionStatus.PENDING_QUOTE
+    assert projector.calculate("wallet-plus").total_shares == Decimal("108000")
+    assert projector.calculate("wallet-plus").locked_shares == Decimal("50000")
+    assert projector.calculate("wallet-plus").available_shares == Decimal("58000")
+
+
 def _create_settled_wallet_redemption(services):
     repository, transactions, projector = services
     wealth = seed_product(
@@ -169,7 +208,7 @@ def _create_settled_wallet_redemption(services):
         "W001",
     )
     seed_opening_position(repository, wealth.id, "100000", "100000")
-    seed_cash(repository, "wallet-plus", "1000")
+    seed_wallet_plus(repository, "wallet-plus", "1000")
     redemption = transactions.record_redemption(
         wealth.id,
         Decimal("50000"),
@@ -2651,7 +2690,7 @@ def test_cash_purchase_without_trade_time_still_waits_for_t1_confirmation(
 
     assert purchase.status is TransactionStatus.PENDING_CONFIRMATION
     assert purchase.confirmation_date is None
-    assert projector.calculate("wallet").total_shares == Decimal("1000")
+    assert projector.calculate("wallet").total_shares == Decimal("1100")
     assert transactions.settle_pending(TRADE_DATE) == []
 
     settled = transactions.settle_pending(date(2026, 7, 31))

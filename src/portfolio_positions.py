@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from src.portfolio_models import (
     Position,
+    ProductType,
     TransactionStatus,
     TransactionType,
 )
@@ -46,6 +47,7 @@ _AVERAGE_COST_OUTFLOW_TYPES = {
     TransactionType.MANUAL_REDEMPTION,
     TransactionType.CASH_TRANSFER_OUT,
 }
+_WALLET_PLUS_PROVIDER = "wallet_plus"
 
 
 class PositionProjector:
@@ -72,6 +74,7 @@ class PositionProjector:
         total_shares = ZERO
         locked_shares = ZERO
         cost_basis = ZERO
+        product = self.repository.require_product(product_id, conn=conn)
         transactions = self.repository.list_transactions(
             product_id=product_id,
             conn=conn,
@@ -96,7 +99,19 @@ class PositionProjector:
             ):
                 locked_shares += shares
                 continue
-            if transaction.status not in _APPLIED_STATUSES:
+            realtime_wallet_purchase = (
+                not use_confirmation_date
+                and product.provider == _WALLET_PLUS_PROVIDER
+                and product.product_type is ProductType.CASH_MANAGEMENT
+                and transaction.status in _PENDING_STATUSES
+                and transaction.transaction_type
+                is TransactionType.MANUAL_PURCHASE
+                and shares > ZERO
+            )
+            if (
+                transaction.status not in _APPLIED_STATUSES
+                and not realtime_wallet_purchase
+            ):
                 continue
             if transaction.transaction_type in {
                 TransactionType.CASH_DIVIDEND,

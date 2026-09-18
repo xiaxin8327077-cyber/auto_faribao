@@ -180,6 +180,40 @@ def test_projector_replays_confirmed_events_and_pending_locks(repo):
     )
 
 
+def test_wallet_plus_pending_purchase_is_available_for_real_time_transfer(repo):
+    repo.add_product(Product(
+        "wallet-plus",
+        "wallet_plus",
+        "WALLETPLUS",
+        "钱包Plus",
+        ProductType.CASH_MANAGEMENT,
+    ))
+    repo.create_transaction(tx(
+        "pending-wallet-purchase",
+        "wallet-plus",
+        TransactionType.MANUAL_PURCHASE,
+        TransactionStatus.PENDING_CONFIRMATION,
+        "108000",
+        "108000",
+    ))
+    repo.create_transaction(tx(
+        "pending-wallet-transfer",
+        "wallet-plus",
+        TransactionType.CASH_TRANSFER_OUT,
+        TransactionStatus.PENDING_QUOTE,
+        "50000",
+        "50000",
+    ))
+
+    assert PositionProjector(repo).calculate("wallet-plus") == Position(
+        "wallet-plus",
+        available_shares=Decimal("58000"),
+        locked_shares=Decimal("50000"),
+        total_shares=Decimal("108000"),
+        cost_basis=Decimal("108000"),
+    )
+
+
 def test_projector_uses_average_cost_for_outflows_and_signed_adjustments(repo):
     repo.add_product(product("fund"))
     events = [

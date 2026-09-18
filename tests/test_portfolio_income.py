@@ -178,7 +178,7 @@ def test_purchase_pending_confirmation_does_not_earn_until_confirmed(
     before_confirm = income.accrue("cash", INCOME_DATE)
 
     assert before_confirm.amount == Decimal("0.5")
-    assert projector.calculate("cash").total_shares == Decimal("10000.5")
+    assert projector.calculate("cash").total_shares == Decimal("15000.5")
 
 
 def test_purchase_earns_from_day_after_wallet_confirmation(

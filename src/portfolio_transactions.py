@@ -671,81 +671,86 @@ class PortfolioTransactionService:
         as_of_date,
     ) -> Transaction:
         with self.repository.database.transaction() as conn:
-            redemption = self.repository.get_transaction_by_id(
+            return self._settle_redemption_in_transaction(
                 transaction_id,
+                as_of_date,
+                conn,
+            )
+
+    def _settle_redemption_in_transaction(
+        self,
+        transaction_id,
+        as_of_date,
+        conn,
+    ) -> Transaction:
+        redemption = self.repository.get_transaction_by_id(
+            transaction_id,
+            conn=conn,
+        )
+        if redemption is None:
+            raise ValueError("transaction not found")
+        if (
+            redemption.transaction_type
+            is not TransactionType.MANUAL_REDEMPTION
+            or redemption.status is not TransactionStatus.CONFIRMED
+            or redemption.settlement_status
+            is not RedemptionSettlementStatus.PENDING
+            or redemption.settlement_date is None
+            or redemption.settlement_date > as_of_date
+        ):
+            raise ValueError("redemption is not due for settlement")
+        if redemption.linked_transaction_id:
+            raise ValueError("legacy linked redemption requires repair")
+        amount = self._positive_decimal(redemption.amount, "amount")
+        if redemption.destination_cash_product_id:
+            destination = self.repository.require_product(
+                redemption.destination_cash_product_id,
                 conn=conn,
             )
-            if redemption is None:
-                raise ValueError("transaction not found")
-            if (
-                redemption.transaction_type
-                is not TransactionType.MANUAL_REDEMPTION
-                or redemption.status is not TransactionStatus.CONFIRMED
-                or redemption.settlement_status
-                is not RedemptionSettlementStatus.PENDING
-                or redemption.settlement_date is None
-                or redemption.settlement_date > as_of_date
-            ):
-                raise ValueError("redemption is not due for settlement")
-            if redemption.linked_transaction_id:
-                raise ValueError(
-                    "legacy linked redemption requires repair"
-                )
-            amount = self._positive_decimal(redemption.amount, "amount")
-            if redemption.destination_cash_product_id:
-                destination = self.repository.require_product(
-                    redemption.destination_cash_product_id,
-                    conn=conn,
-                )
-                if (
-                    destination.product_type
-                    is not ProductType.CASH_MANAGEMENT
-                ):
-                    raise ValueError("destination must be cash_management")
-                existing = self.repository.find_purchase_by_origin(
-                    redemption.id,
-                    conn=conn,
-                )
-                if existing is not None:
-                    raise ValueError("redemption purchase already exists")
-                submitted_at = datetime.combine(
-                    redemption.settlement_date,
-                    time.min,
-                )
-                schedule = confirmation_schedule(
-                    destination,
-                    TransactionType.MANUAL_PURCHASE,
-                    submitted_at,
-                )
-                self.repository.create_transaction(
-                    Transaction(
-                        id=str(uuid4()),
-                        product_id=destination.id,
-                        transaction_type=TransactionType.MANUAL_PURCHASE,
-                        status=TransactionStatus.PENDING_CONFIRMATION,
-                        trade_date=schedule.trade_date,
-                        trade_time=submitted_at.isoformat(
-                            timespec="seconds"
-                        ),
-                        idempotency_key=(
-                            f"redemption-settlement:{redemption.id}"
-                        ),
-                        amount=amount,
-                        shares=amount,
-                        fee_amount=ZERO,
-                        fee_rate=ZERO,
-                        confirmation_nav=ONE,
-                        origin_transaction_id=redemption.id,
-                        created_by="redemption_settlement",
-                    ),
-                    conn,
-                )
-            return self.repository.update_redemption_settlement(
+            if destination.product_type is not ProductType.CASH_MANAGEMENT:
+                raise ValueError("destination must be cash_management")
+            existing = self.repository.find_purchase_by_origin(
                 redemption.id,
-                RedemptionSettlementStatus.SETTLED,
-                settled_at=True,
                 conn=conn,
             )
+            if existing is not None:
+                raise ValueError("redemption purchase already exists")
+            submitted_at = datetime.combine(
+                redemption.settlement_date,
+                time.min,
+            )
+            schedule = confirmation_schedule(
+                destination,
+                TransactionType.MANUAL_PURCHASE,
+                submitted_at,
+            )
+            self.repository.create_transaction(
+                Transaction(
+                    id=str(uuid4()),
+                    product_id=destination.id,
+                    transaction_type=TransactionType.MANUAL_PURCHASE,
+                    status=TransactionStatus.PENDING_CONFIRMATION,
+                    trade_date=schedule.trade_date,
+                    trade_time=submitted_at.isoformat(timespec="seconds"),
+                    idempotency_key=(
+                        f"redemption-settlement:{redemption.id}"
+                    ),
+                    amount=amount,
+                    shares=amount,
+                    fee_amount=ZERO,
+                    fee_rate=ZERO,
+                    confirmation_nav=ONE,
+                    origin_transaction_id=redemption.id,
+                    created_by="redemption_settlement",
+                ),
+                conn,
+            )
+        return self.repository.update_redemption_settlement(
+            redemption.id,
+            RedemptionSettlementStatus.SETTLED,
+            settled_at=True,
+            conn=conn,
+        )
 
     def cancel_pending(
         self,

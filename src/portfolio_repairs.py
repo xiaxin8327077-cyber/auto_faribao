@@ -76,6 +76,7 @@ def preview_known_redemption_repairs(repository, as_of_date) -> list[dict]:
 
 def repair_known_redemptions(repository, as_of_date) -> list[dict]:
     projector = PositionProjector(repository)
+    transaction_service = PortfolioTransactionService(repository, projector)
     with repository.database.transaction() as conn:
         states = _validated_states(repository, conn)
         results = []
@@ -100,15 +101,28 @@ def repair_known_redemptions(repository, as_of_date) -> list[dict]:
                     result=result,
                 )
             )
-        if changed:
+        settled = False
+        for source_id in states:
+            source = repository.get_transaction_by_id(source_id, conn=conn)
+            if (
+                source.settlement_status
+                is RedemptionSettlementStatus.PENDING
+                and source.settlement_date is not None
+                and source.settlement_date <= as_of_date
+            ):
+                transaction_service._settle_redemption_in_transaction(
+                    source_id,
+                    as_of_date,
+                    conn,
+                )
+                settled = True
+        if changed or settled:
             for product_id in (SOURCE_PRODUCT_ID, WALLET_PRODUCT_ID):
                 repository.replace_position(
                     projector._calculate(product_id, conn),
                     conn,
                 )
 
-    transaction_service = PortfolioTransactionService(repository, projector)
-    transaction_service.settle_redemptions(as_of_date)
     return results
 
 

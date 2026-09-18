@@ -29,7 +29,11 @@ from src.portfolio_transactions import PortfolioTransactionService
 SOURCE_PRODUCT_ID = "721c838d-b670-58e4-9c02-f1fc95a8e80a"
 
 
-def _build_known_anomaly_database(path, second_amount="54015"):
+def _build_known_anomaly_database(
+    path,
+    second_amount="54015",
+    include_existing_purchase=True,
+):
     database = PortfolioDatabase(path)
     database.initialize()
     repository = PortfolioRepository(database)
@@ -46,6 +50,13 @@ def _build_known_anomaly_database(path, second_amount="54015"):
         "wallet-plus",
         "钱包Plus",
         ProductType.CASH_MANAGEMENT,
+    ))
+    repository.add_product(Product(
+        "target-fund",
+        "test",
+        "target-fund",
+        "东方添益债券",
+        ProductType.PUBLIC_FUND,
     ))
     for product_id, amount in (
         (SOURCE_PRODUCT_ID, "150000"),
@@ -133,6 +144,18 @@ def _build_known_anomaly_database(path, second_amount="54015"):
             status=TransactionStatus.CONFIRMED,
             linked_transaction_id=leg_id,
         ))
+    if include_existing_purchase:
+        PortfolioTransactionService(
+            repository,
+            PositionProjector(repository),
+        ).record_purchase(
+            "target-fund",
+            Decimal("50000"),
+            date(2026, 9, 18),
+            "web:existing-fund-purchase",
+            source_cash_product_id="wallet-plus",
+            trade_time="2026-09-18T10:11:00",
+        )
     PositionProjector(repository).rebuild()
     return database
 
@@ -176,7 +199,9 @@ def test_repair_reverses_premature_wallet_credit_and_is_idempotent(
     wallet = projector.calculate("wallet-plus")
     assert all(row["result"] == "repaired" for row in first)
     assert all(row["result"] == "already_repaired" for row in second)
-    assert wallet.total_shares == wallet_before - Decimal("162015")
+    assert wallet.total_shares == wallet_before - Decimal("54015")
+    assert wallet.locked_shares == Decimal("50000")
+    assert wallet.available_shares == Decimal("59000")
     assert (
         repository.find_purchase_by_origin(
             "658e58e8-a483-4bd3-bed5-0d614f8e534b"
@@ -237,9 +262,13 @@ def test_repair_cli_defaults_to_read_only_preview(known_anomaly_database):
 
 
 def test_repaired_redemption_can_reverse_with_pending_wallet_purchase(
-    known_anomaly_database,
+    tmp_path,
 ):
-    repository = PortfolioRepository(known_anomaly_database)
+    database = _build_known_anomaly_database(
+        tmp_path / "unspent-anomaly.db",
+        include_existing_purchase=False,
+    )
+    repository = PortfolioRepository(database)
     projector = PositionProjector(repository)
     repair_known_redemptions(repository, date(2026, 9, 18))
     transactions = PortfolioTransactionService(repository, projector)
@@ -259,4 +288,31 @@ def test_repaired_redemption_can_reverse_with_pending_wallet_purchase(
     assert (
         repository.get_transaction_by_id(purchase.id).status
         is TransactionStatus.CANCELLED
+    )
+
+
+def test_repaired_redemption_cannot_reverse_after_wallet_funds_are_used(
+    known_anomaly_database,
+):
+    repository = PortfolioRepository(known_anomaly_database)
+    projector = PositionProjector(repository)
+    repair_known_redemptions(repository, date(2026, 9, 18))
+    transactions = PortfolioTransactionService(repository, projector)
+    source_id = "658e58e8-a483-4bd3-bed5-0d614f8e534b"
+    purchase = repository.find_purchase_by_origin(source_id)
+
+    with pytest.raises(ValueError, match="locked shares exceed total shares"):
+        transactions.reverse_confirmed(
+            source_id,
+            "已使用资金不应直接冲正",
+            "test:reject-used-redemption-reversal",
+        )
+
+    assert (
+        repository.get_transaction_by_id(source_id).status
+        is TransactionStatus.CONFIRMED
+    )
+    assert (
+        repository.get_transaction_by_id(purchase.id).status
+        is TransactionStatus.PENDING_CONFIRMATION
     )
