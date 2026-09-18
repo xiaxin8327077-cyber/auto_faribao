@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from src.portfolio_models import (
     ProductType,
+    RedemptionSettlementStatus,
     TransactionStatus,
     TransactionType,
     decimal_text,
@@ -50,18 +51,16 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
     transactions_by_id = {
         transaction.id: transaction for transaction in transactions
     }
-    ordered_transactions = [
-        transaction
-        for _index, transaction in sorted(
-            enumerate(transactions),
-            key=lambda item: (
-                item[1].trade_time
-                or f"{item[1].trade_date.isoformat()}T00:00:00",
-                item[0],
-            ),
-            reverse=True,
-        )
-    ]
+    ordered_transactions = sorted(
+        transactions,
+        key=lambda transaction: (
+            transaction.status_updated_at
+            or transaction.created_at
+            or "",
+            transaction.id,
+        ),
+        reverse=True,
+    )
     return {
         "summary": summary,
         "products": rows,
@@ -408,6 +407,34 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
     linked_product = (
         products_by_id.get(linked.product_id) if linked is not None else None
     )
+    destination_product = products_by_id.get(
+        transaction.destination_cash_product_id
+    )
+    origin = transactions_by_id.get(transaction.origin_transaction_id)
+    origin_product = (
+        products_by_id.get(origin.product_id) if origin is not None else None
+    )
+    purchase_origin = (
+        f"{origin_product.name}赎回到账"
+        if origin_product is not None
+        and transaction.transaction_type is TransactionType.MANUAL_PURCHASE
+        else ""
+    )
+    display_status = transaction.status.value
+    if (
+        transaction.transaction_type is TransactionType.MANUAL_REDEMPTION
+        and transaction.status is TransactionStatus.CONFIRMED
+    ):
+        if (
+            transaction.settlement_status
+            is RedemptionSettlementStatus.PENDING
+        ):
+            display_status = "pending_settlement"
+        elif (
+            transaction.settlement_status
+            is RedemptionSettlementStatus.SETTLED
+        ):
+            display_status = "settled"
     expected_confirmation_date = transaction.confirmation_date
     wallet_plus_redemption = (
         product is not None
@@ -459,6 +486,7 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
         "product_code": product.code if product else "",
         "transaction_type": transaction.transaction_type.value,
         "status": transaction.status.value,
+        "display_status": display_status,
         "trade_date": transaction.trade_date.isoformat(),
         "trade_time": transaction.trade_time or None,
         "effective_trade_date": transaction.trade_date.isoformat(),
@@ -480,6 +508,14 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
             transaction.settlement_date.isoformat()
             if transaction.settlement_date else None
         ),
+        "settlement_status": (
+            transaction.settlement_status.value
+            if transaction.settlement_status is not None
+            else None
+        ),
+        "settled_at": transaction.settled_at,
+        "created_at": transaction.created_at,
+        "status_updated_at": transaction.status_updated_at,
         "amount": _optional_decimal_text(transaction.amount),
         "shares": _optional_decimal_text(transaction.shares),
         "fee_amount": _optional_decimal_text(transaction.fee_amount),
@@ -489,17 +525,21 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
         "plan_id": transaction.plan_id,
         "note": transaction.note,
         "created_by": transaction.created_by,
+        "origin_transaction_id": transaction.origin_transaction_id,
+        "purchase_origin": purchase_origin or None,
     }
     if transaction.transaction_type in {
         TransactionType.MANUAL_PURCHASE,
         TransactionType.SIP_PURCHASE,
     }:
-        row["funding_source"] = (
+        row["funding_source"] = purchase_origin or (
             linked_product.name if linked_product is not None else "钱包"
         )
     elif transaction.transaction_type is TransactionType.MANUAL_REDEMPTION:
         row["redemption_destination"] = (
-            linked_product.name if linked_product is not None else "钱包"
+            destination_product.name
+            if destination_product is not None
+            else linked_product.name if linked_product is not None else "钱包"
         )
     return row
 

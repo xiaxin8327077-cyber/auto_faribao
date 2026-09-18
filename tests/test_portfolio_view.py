@@ -9,6 +9,7 @@ from src.portfolio_models import (
     MarketQuote,
     Product,
     ProductType,
+    RedemptionSettlementStatus,
     SipFrequency,
     SipPlan,
     SipPlanStatus,
@@ -314,6 +315,97 @@ def test_transactions_are_newest_first_and_show_cash_route(portfolio_fixture):
     ]
     assert business_rows[0]["redemption_destination"] == "现金管理"
     assert business_rows[1]["funding_source"] == "现金管理"
+
+
+def test_transactions_sort_by_latest_status_change_and_show_settlement_state(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    for transaction_id, trade_date, created_at, status_updated_at in (
+        (
+            "older-created-newer-state",
+            date(2026, 9, 1),
+            "2026-09-01 01:00:00",
+            "2026-09-18 01:00:00",
+        ),
+        (
+            "newer-created-older-state",
+            date(2026, 9, 17),
+            "2026-09-17 01:00:00",
+            "2026-09-17 23:00:00",
+        ),
+    ):
+        repository.create_transaction(Transaction(
+            id=transaction_id,
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=trade_date,
+            idempotency_key=transaction_id,
+            amount=Decimal("10"),
+            shares=Decimal("10"),
+            created_at=created_at,
+            status_updated_at=status_updated_at,
+        ))
+    repository.create_transaction(Transaction(
+        id="pending-redemption",
+        product_id="fund",
+        transaction_type=TransactionType.MANUAL_REDEMPTION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 9, 17),
+        idempotency_key="pending-redemption",
+        amount=Decimal("54.015"),
+        shares=Decimal("50"),
+        confirmation_date=date(2026, 9, 18),
+        settlement_date=date(2026, 9, 20),
+        destination_cash_product_id="cash",
+        settlement_status=RedemptionSettlementStatus.PENDING,
+        status_updated_at="2026-09-18 02:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="settled-redemption",
+        product_id="fund",
+        transaction_type=TransactionType.MANUAL_REDEMPTION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 9, 16),
+        idempotency_key="settled-redemption",
+        amount=Decimal("108"),
+        shares=Decimal("100"),
+        confirmation_date=date(2026, 9, 17),
+        settlement_date=date(2026, 9, 18),
+        destination_cash_product_id="cash",
+        settlement_status=RedemptionSettlementStatus.SETTLED,
+        settled_at="2026-09-18 03:00:00",
+        status_updated_at="2026-09-18 03:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="wallet-purchase",
+        product_id="cash",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.PENDING_CONFIRMATION,
+        trade_date=date(2026, 9, 18),
+        idempotency_key="wallet-purchase",
+        amount=Decimal("108"),
+        shares=Decimal("108"),
+        origin_transaction_id="settled-redemption",
+        created_by="redemption_settlement",
+        status_updated_at="2026-09-18 03:00:01",
+    ))
+
+    payload = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 9, 18),
+    )
+    rows = payload["transactions"]
+    ids = [row["id"] for row in rows]
+    assert ids.index("older-created-newer-state") < ids.index(
+        "newer-created-older-state"
+    )
+    by_id = {row["id"]: row for row in rows}
+    assert by_id["pending-redemption"]["display_status"] == "pending_settlement"
+    assert by_id["settled-redemption"]["display_status"] == "settled"
+    assert by_id["pending-redemption"]["redemption_destination"] == "现金管理"
+    assert by_id["wallet-purchase"]["purchase_origin"] == "公募基金赎回到账"
 
 
 def test_external_cash_route_is_named_wallet(portfolio_fixture):

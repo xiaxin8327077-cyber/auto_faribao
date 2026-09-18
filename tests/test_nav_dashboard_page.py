@@ -597,6 +597,19 @@ def test_transactions_and_preview_use_chinese_business_labels():
     assert "function transactionDetailsHtml(" in page
 
 
+def test_page_labels_redemption_settlement_and_preserves_backend_order():
+    page = _read_page()
+    assert "pending_settlement: '待到账'" in page
+    assert "settled: '已到账'" in page
+    assert "rowValue(row, 'display_status', 'status')" in page
+    assert "rowValue(row, 'purchase_origin')" in page
+    render_transactions = page[
+        page.index("function renderTransactions()"):
+        page.index("function renderSip()")
+    ]
+    assert ".sort(" not in render_transactions
+
+
 def test_trade_form_applies_wallet_plus_rules_and_redemption_context():
     page = _read_page()
 

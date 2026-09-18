@@ -1556,13 +1556,17 @@
     function normalStatus(value) {
       const raw = String(value || '').toLowerCase();
       if (raw.includes('pending') || raw.includes('quote')) return 'pending';
+      if (raw === 'settled') return 'confirmed';
       if (raw.includes('confirm')) return 'confirmed';
       if (raw.includes('cancel')) return 'cancelled';
       if (raw.includes('reverse')) return 'reversed';
       return raw;
     }
     function transactionStatusLabel(value) {
-      return ({pending: '待确认', confirmed: '已确认', cancelled: '已取消', reversed: '已冲正'})[normalStatus(value)] || esc(value || '--');
+      const raw = String(value || '').toLowerCase();
+      return ({pending_settlement: '待到账', settled: '已到账'})[raw]
+        || ({pending: '待确认', confirmed: '已确认', cancelled: '已取消', reversed: '已冲正'})[normalStatus(value)]
+        || esc(value || '--');
     }
     function transactionTypeLabel(value) {
       return ({
@@ -1623,12 +1627,8 @@
       const incomeStop = rowValue(row, 'income_stop_date');
       const note = rowValue(row, 'note');
       const settlementDate = rowValue(row, 'settlement_date', 'settlement_date');
-      const todayStr = todayDateStr();
-      const status = normalStatus(rowValue(row, 'status'));
-      const notSettled = settlementDate && (
-        settlementDate > todayStr
-        || (settlementDate === todayStr && status !== 'confirmed')
-      );
+      const settlementStatus = String(rowValue(row, 'settlement_status') || '').toLowerCase();
+      const notSettled = settlementDate && settlementStatus === 'pending';
       const add = (label, value, full = false) => {
         if (value === '') return;
         details.push(`<div class="transaction-detail${full ? ' full' : ''}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`);
@@ -1649,7 +1649,7 @@
       if (incomeStart) add('收益起算', `确认份额后（${incomeStart}）`);
       if (incomeStop) add('收益停止', `确认赎回后（${incomeStop}）`);
       if (['manual_purchase', 'sip_purchase'].includes(normalizedTransactionType)) {
-        add('申购资金来源：', rowValue(row, 'funding_source') || '钱包');
+        add('申购资金来源：', rowValue(row, 'purchase_origin') || rowValue(row, 'funding_source') || '钱包');
       } else if (normalizedTransactionType === 'manual_redemption') {
         add('赎回到账：', rowValue(row, 'redemption_destination') || '钱包');
       }
@@ -1671,18 +1671,19 @@
         if (transactionFilter === 'adjustment') return calibration;
         if (calibration) return false;
         if (transactionFilter === 'all') return true;
-        const status = normalStatus(rowValue(row, 'status'));
+        const status = normalStatus(rowValue(row, 'display_status', 'status'));
         return (status === 'reversed' ? 'cancelled' : status) === transactionFilter;
       });
       $('transactionsList').innerHTML = visible.length ? visible.map(row => {
         const id = rowValue(row, 'id', 'transaction_id');
-        const status = normalStatus(rowValue(row, 'status'));
+        const actionStatus = normalStatus(rowValue(row, 'status'));
+        const displayStatus = rowValue(row, 'display_status', 'status');
         const title = rowValue(row, 'product_name', 'name', 'product_id') || '交易';
         const transactionType = rowValue(row, 'transaction_type', 'type');
         const normalizedTransactionType = String(transactionType || '').toLowerCase();
         const kind = transactionKindMeta(normalizedTransactionType, row);
-        const actions = status === 'pending' ? `<button class="row-action" type="button" data-write-operation="cancel" data-transaction-id="${esc(id)}">取消</button>` : '';
-        return `<article class="manage-card transaction-card ${kind.className}"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="transaction-subhead"><span class="transaction-kind ${kind.className}">${kind.label}</span><span class="manage-meta">${esc(transactionDisplayLabel(transactionType, row))} · ${transactionStatusLabel(status)}</span></div></div><div class="transaction-head-actions">${actions}</div></div>${transactionValueHtml(row, kind)}${transactionDetailsHtml(row, normalizedTransactionType)}</article>`;
+        const actions = actionStatus === 'pending' ? `<button class="row-action" type="button" data-write-operation="cancel" data-transaction-id="${esc(id)}">取消</button>` : '';
+        return `<article class="manage-card transaction-card ${kind.className}"><div class="manage-card-head"><div><div class="manage-name">${esc(title)}</div><div class="transaction-subhead"><span class="transaction-kind ${kind.className}">${kind.label}</span><span class="manage-meta">${esc(transactionDisplayLabel(transactionType, row))} · ${transactionStatusLabel(displayStatus)}</span></div></div><div class="transaction-head-actions">${actions}</div></div>${transactionValueHtml(row, kind)}${transactionDetailsHtml(row, normalizedTransactionType)}</article>`;
       }).join('') : '<div class="empty">当前筛选条件下暂无交易记录。</div>';
       updateWriteControls();
     }
