@@ -408,6 +408,37 @@ def test_transactions_sort_by_latest_status_change_and_show_settlement_state(
     assert by_id["wallet-purchase"]["purchase_origin"] == "公募基金赎回到账"
 
 
+def test_pending_wallet_purchase_marks_amount_as_already_in_position(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    repository.add_product(Product(
+        "wallet-plus",
+        "wallet_plus",
+        "WALLETPLUS",
+        "钱包Plus",
+        ProductType.CASH_MANAGEMENT,
+    ))
+    repository.create_transaction(Transaction(
+        id="pending-wallet-purchase",
+        product_id="wallet-plus",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.PENDING_CONFIRMATION,
+        trade_date=date(2026, 9, 18),
+        idempotency_key="pending-wallet-purchase",
+        amount=Decimal("108000"),
+        shares=Decimal("108000"),
+    ))
+
+    rows = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 9, 18),
+    )["transactions"]
+    row = next(item for item in rows if item["id"] == "pending-wallet-purchase")
+
+    assert row["included_in_position"] is True
+
+
 def test_external_cash_route_is_named_wallet(portfolio_fixture):
     repository = portfolio_fixture
     service = PortfolioTransactionService(

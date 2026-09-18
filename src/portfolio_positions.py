@@ -50,6 +50,22 @@ _AVERAGE_COST_OUTFLOW_TYPES = {
 _WALLET_PLUS_PROVIDER = "wallet_plus"
 
 
+def pending_purchase_is_in_current_position(
+    product,
+    transaction,
+    *,
+    use_confirmation_date=False,
+):
+    return (
+        not use_confirmation_date
+        and product.provider == _WALLET_PLUS_PROVIDER
+        and product.product_type is ProductType.CASH_MANAGEMENT
+        and transaction.status in _PENDING_STATUSES
+        and transaction.transaction_type is TransactionType.MANUAL_PURCHASE
+        and (transaction.shares or ZERO) > ZERO
+    )
+
+
 class PositionProjector:
     def __init__(self, repository):
         self.repository = repository
@@ -99,14 +115,10 @@ class PositionProjector:
             ):
                 locked_shares += shares
                 continue
-            realtime_wallet_purchase = (
-                not use_confirmation_date
-                and product.provider == _WALLET_PLUS_PROVIDER
-                and product.product_type is ProductType.CASH_MANAGEMENT
-                and transaction.status in _PENDING_STATUSES
-                and transaction.transaction_type
-                is TransactionType.MANUAL_PURCHASE
-                and shares > ZERO
+            realtime_wallet_purchase = pending_purchase_is_in_current_position(
+                product,
+                transaction,
+                use_confirmation_date=use_confirmation_date,
             )
             if (
                 transaction.status not in _APPLIED_STATUSES

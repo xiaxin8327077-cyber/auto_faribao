@@ -1562,6 +1562,13 @@
       if (raw.includes('reverse')) return 'reversed';
       return raw;
     }
+    function pendingPurchaseAlreadyInHoldings(transaction, transactions) {
+      if (rowValue(transaction, 'included_in_position')) return true;
+      const linkedId = rowValue(transaction, 'linked_transaction_id');
+      if (!linkedId) return false;
+      const funding = transactions.find(row => rowValue(row, 'id') === linkedId);
+      return Boolean(funding && normalStatus(rowValue(funding, 'status')) === 'pending');
+    }
     function transactionStatusLabel(value) {
       const raw = String(value || '').toLowerCase();
       return ({pending_settlement: '待到账', settled: '已到账'})[raw]
@@ -1966,22 +1973,23 @@
       const pfList = data.portfolio?.products || [];
       const pfTxList = data.portfolio?.transactions || [];
       const roundCent = v => Math.round(number(v) * 100) / 100;
+      const todayStr = todayDateStr();
       const holdingsValue = pfList.reduce((sum, p) => sum + roundCent(rowValue(p, 'market_value', 'value', 'holding_value')), 0);
-      const pendingBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase'))
+      const pendingBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase') && !pendingPurchaseAlreadyInHoldings(t, pfTxList))
         .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
       const pendingSell = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('redemption'))
         .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
-      countUp($('totalAssets'), holdingsValue + pendingBuy - pendingSell, v => money(roundCent(v)), 600);
-      countUp($('marketValue'), holdingsValue, v => money(roundCent(v)), 600);
-      // 在途资金:区分申购和赎回
-      const todayStr = todayDateStr();
-      const inTransitBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase'))
-        .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
       const inTransitSell = pfTxList.filter(t => {
         const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
-        const settleDate = rowValue(t, 'settlement_date');
-        return normalStatus(rowValue(t, 'status')) === 'confirmed' && type.includes('redemption') && settleDate && settleDate > todayStr;
+        return normalStatus(rowValue(t, 'status')) === 'confirmed'
+          && type.includes('redemption')
+          && rowValue(t, 'settlement_status') === 'pending';
       }).reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
+      countUp($('totalAssets'), holdingsValue + pendingBuy + inTransitSell - pendingSell, v => money(roundCent(v)), 600);
+      countUp($('marketValue'), holdingsValue, v => money(roundCent(v)), 600);
+      // 在途资金:区分申购和赎回
+      const inTransitBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase'))
+        .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
       const inTransitText = [
         inTransitBuy > 0 ? `申购在途 ${money(inTransitBuy)} 元` : '',
         inTransitSell > 0 ? `赎回在途 ${money(inTransitSell)} 元` : '',

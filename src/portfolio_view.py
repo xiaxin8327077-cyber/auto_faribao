@@ -10,6 +10,7 @@ from src.portfolio_models import (
     decimal_text,
 )
 from src.portfolio_confirmation import confirmation_schedule
+from src.portfolio_positions import pending_purchase_is_in_current_position
 from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
 from src.portfolio_wallet import is_wallet_plus_product
 
@@ -529,6 +530,13 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
         "created_by": transaction.created_by,
         "origin_transaction_id": transaction.origin_transaction_id,
         "purchase_origin": purchase_origin or None,
+        "included_in_position": (
+            product is not None
+            and pending_purchase_is_in_current_position(
+                product,
+                transaction,
+            )
+        ),
     }
     if transaction.transaction_type in {
         TransactionType.MANUAL_PURCHASE,

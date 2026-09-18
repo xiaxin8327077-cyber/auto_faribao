@@ -694,6 +694,22 @@ def test_overview_does_not_remerge_catalog_products_into_authoritative_products(
     assert "data.products = baseProducts.map" not in page
 
 
+def test_total_assets_excludes_pending_purchase_already_in_holdings():
+    page = PAGE_PATH.read_text(encoding="utf-8")
+
+    assert (
+        "function pendingPurchaseAlreadyInHoldings(transaction, transactions)"
+        in page
+    )
+    assert "rowValue(transaction, 'included_in_position')" in page
+    assert "normalStatus(rowValue(funding, 'status')) === 'pending'" in page
+    assert "!pendingPurchaseAlreadyInHoldings(t, pfTxList)" in page
+    assert (
+        "holdingsValue + pendingBuy + inTransitSell - pendingSell"
+        in page
+    )
+
+
 def test_overview_hides_zero_share_products_after_redemption_settled():
     page = PAGE_PATH.read_text(encoding="utf-8")
 
