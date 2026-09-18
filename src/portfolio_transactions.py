@@ -2353,7 +2353,10 @@ class PortfolioTransactionService:
             )
         ]
         if not transaction.linked_transaction_id:
-            if reverse_cash_links:
+            if any(
+                candidate.status is not TransactionStatus.REVERSED
+                for candidate in reverse_cash_links
+            ):
                 raise ValueError("inconsistent linked transaction")
             return None
         linked = self.repository.get_transaction_by_id(
