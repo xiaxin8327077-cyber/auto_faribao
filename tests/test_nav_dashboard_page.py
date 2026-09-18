@@ -316,6 +316,13 @@ def test_non_nav_amounts_and_shares_use_two_decimal_display():
     ) in html
 
 
+def test_wallet_pending_transaction_uses_realtime_remaining_shares():
+    html = _read_page()
+
+    assert "rowValue(row, 'remaining_confirmation_shares')" in html
+    assert "实时剩余确认份额" in html
+
+
 def test_position_detail_opens_a_real_dialog():
     html = _read_page()
 

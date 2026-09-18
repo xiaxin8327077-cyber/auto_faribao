@@ -52,6 +52,19 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
     transactions_by_id = {
         transaction.id: transaction for transaction in transactions
     }
+    remaining_confirmation_shares = {}
+    for product in products:
+        if is_wallet_plus_product(product):
+            remaining_confirmation_shares.update(
+                _wallet_pending_purchase_balances(
+                    product,
+                    [
+                        transaction
+                        for transaction in transactions
+                        if transaction.product_id == product.id
+                    ],
+                )
+            )
     ordered_transactions = sorted(
         transactions,
         key=lambda transaction: (
@@ -73,6 +86,7 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
                 transaction,
                 products_by_id,
                 transactions_by_id,
+                remaining_confirmation_shares,
             )
             for transaction in ordered_transactions
         ],
@@ -170,23 +184,125 @@ def _is_overview_position(row, transactions, as_of):
     return False
 
 
-def _product_row(repository, product, as_of):
-    position = repository.get_position(product.id)
-    quote = repository.latest_quote(product.id, on_or_before=as_of)
-    quote_payload = _quote_payload(product.product_type, quote)
-    market_value = _market_value(product.product_type, position.total_shares, quote)
-    in_transit_amount = sum(
+def _wallet_pending_purchase_balances(product, transactions):
+    if not is_wallet_plus_product(product):
+        return {}
+    pending_purchases = [
+        transaction
+        for transaction in transactions
+        if (
+            transaction.status in _PENDING_STATUSES
+            and transaction.transaction_type in _PURCHASE_TYPES
+        )
+    ]
+    pending_purchase_ids = {
+        transaction.id for transaction in pending_purchases
+    }
+
+    def event_key(transaction):
+        event_time = (
+            transaction.trade_time
+            if "T" in transaction.trade_time
+            else (
+                f"{transaction.trade_date.isoformat()}T"
+                f"{transaction.trade_time or '00:00:00'}"
+            )
+        )
+        event_order = {
+            TransactionType.CASH_TRANSFER_OUT: 0,
+            TransactionType.MANUAL_REDEMPTION: 0,
+            TransactionType.CASH_TRANSFER_IN: 1,
+        }.get(transaction.transaction_type, 2)
+        return (
+            event_time,
+            event_order,
+            transaction.created_at or "",
+            transaction.id,
+        )
+
+    relevant = [
+        transaction
+        for transaction in transactions
+        if (
+            transaction.id in pending_purchase_ids
+            or (
+                transaction.status is TransactionStatus.CONFIRMED
+                and transaction.transaction_type
+                in {
+                    TransactionType.CASH_TRANSFER_OUT,
+                    TransactionType.CASH_TRANSFER_IN,
+                    TransactionType.MANUAL_REDEMPTION,
+                }
+            )
+        )
+    ]
+    remaining_by_purchase = {}
+    allocated_outflows = {}
+    for transaction in sorted(relevant, key=event_key):
+        amount = transaction.amount or _ZERO
+        if transaction.id in pending_purchase_ids:
+            remaining_by_purchase[transaction.id] = amount
+        elif transaction.transaction_type in {
+            TransactionType.CASH_TRANSFER_OUT,
+            TransactionType.MANUAL_REDEMPTION,
+        }:
+            amount_left = amount
+            allocations = []
+            for purchase_id, balance in remaining_by_purchase.items():
+                allocated = min(balance, amount_left)
+                if allocated:
+                    remaining_by_purchase[purchase_id] -= allocated
+                    allocations.append((purchase_id, allocated))
+                    amount_left -= allocated
+                if amount_left <= _ZERO:
+                    break
+            allocated_outflows[transaction.id] = allocations
+        elif transaction.transaction_type is TransactionType.CASH_TRANSFER_IN:
+            amount_left = amount
+            allocations = allocated_outflows.get(
+                transaction.linked_transaction_id,
+                [],
+            )
+            for purchase_id, allocated in allocations:
+                restored = min(allocated, amount_left)
+                if restored:
+                    remaining_by_purchase[purchase_id] += restored
+                    amount_left -= restored
+                if amount_left <= _ZERO:
+                    break
+    return remaining_by_purchase
+
+
+def _pending_purchase_amount(product, transactions):
+    if is_wallet_plus_product(product):
+        return sum(
+            _wallet_pending_purchase_balances(product, transactions).values(),
+            _ZERO,
+        )
+    return sum(
         (
             transaction.amount or _ZERO
-            for transaction in repository.list_transactions(
-                product_id=product.id,
-            )
+            for transaction in transactions
             if (
                 transaction.status in _PENDING_STATUSES
                 and transaction.transaction_type in _PURCHASE_TYPES
             )
         ),
         _ZERO,
+    )
+
+
+def _product_row(repository, product, as_of):
+    position = repository.get_position(product.id)
+    quote = repository.latest_quote(product.id, on_or_before=as_of)
+    quote_payload = _quote_payload(product.product_type, quote)
+    market_value = _market_value(product.product_type, position.total_shares, quote)
+    product_transactions = repository.list_transactions(
+        product_id=product.id,
+    )
+    in_transit_amount = _pending_purchase_amount(
+        product,
+        product_transactions,
     )
     latest_profit_date, latest_profit = calculate_latest_profit(
         repository,
@@ -404,7 +520,13 @@ def _parse_trade_time(trade_time: str, trade_date: date) -> datetime:
     return datetime.combine(trade_date, time.fromisoformat(trade_time))
 
 
-def _transaction_row(transaction, products_by_id, transactions_by_id):
+def _transaction_row(
+    transaction,
+    products_by_id,
+    transactions_by_id,
+    remaining_confirmation_shares=None,
+):
+    remaining_confirmation_shares = remaining_confirmation_shares or {}
     product = products_by_id.get(transaction.product_id)
     linked = transactions_by_id.get(transaction.linked_transaction_id)
     linked_product = (
@@ -521,6 +643,9 @@ def _transaction_row(transaction, products_by_id, transactions_by_id):
         "status_updated_at": transaction.status_updated_at,
         "amount": _optional_decimal_text(transaction.amount),
         "shares": _optional_decimal_text(transaction.shares),
+        "remaining_confirmation_shares": _optional_decimal_text(
+            remaining_confirmation_shares.get(transaction.id)
+        ),
         "fee_amount": _optional_decimal_text(transaction.fee_amount),
         "fee_rate": _optional_decimal_text(transaction.fee_rate),
         "confirmation_nav": _optional_decimal_text(transaction.confirmation_nav),

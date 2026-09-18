@@ -91,9 +91,22 @@ class PositionProjector:
         locked_shares = ZERO
         cost_basis = ZERO
         product = self.repository.require_product(product_id, conn=conn)
-        transactions = self.repository.list_transactions(
-            product_id=product_id,
-            conn=conn,
+        transactions = sorted(
+            self.repository.list_transactions(
+                product_id=product_id,
+                conn=conn,
+            ),
+            key=lambda transaction: (
+                transaction.trade_date,
+                0
+                if pending_purchase_is_in_current_position(
+                    product,
+                    transaction,
+                )
+                else 1,
+                transaction.created_at,
+                transaction.id,
+            ),
         )
         neutralized_event_ids = self._linked_reversal_pair_ids(transactions)
 

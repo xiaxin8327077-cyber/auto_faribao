@@ -194,9 +194,43 @@ def test_pending_wallet_plus_purchase_can_fund_real_time_purchase(services):
 
     assert wallet_purchase.status is TransactionStatus.PENDING_CONFIRMATION
     assert fund_purchase.status is TransactionStatus.PENDING_QUOTE
-    assert projector.calculate("wallet-plus").total_shares == Decimal("108000")
-    assert projector.calculate("wallet-plus").locked_shares == Decimal("50000")
+    cash_leg = linked_leg(repository, fund_purchase)
+    assert cash_leg.status is TransactionStatus.CONFIRMED
+    assert cash_leg.confirmation_nav == Decimal("1")
+    assert cash_leg.confirmation_date == TRADE_DATE
+    assert projector.calculate("wallet-plus").total_shares == Decimal("58000")
+    assert projector.calculate("wallet-plus").locked_shares == Decimal("0")
     assert projector.calculate("wallet-plus").available_shares == Decimal("58000")
+
+
+def test_cancelling_pending_purchase_refunds_realtime_wallet_outflow(services):
+    repository, transactions, projector = services
+    seed_wallet_plus(repository, "wallet-plus", "108000")
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    purchase = transactions.record_purchase(
+        "fund",
+        Decimal("50000"),
+        TRADE_DATE,
+        "web:wallet-realtime-cancel",
+        source_cash_product_id="wallet-plus",
+    )
+
+    cancelled = transactions.cancel_pending(
+        purchase.id,
+        "web:cancel-wallet-realtime",
+    )
+
+    assert cancelled.status is TransactionStatus.CANCELLED
+    assert linked_leg(repository, purchase).status is TransactionStatus.CONFIRMED
+    assert projector.calculate("wallet-plus").total_shares == Decimal("108000")
+    refunds = [
+        row
+        for row in repository.list_transactions(product_id="wallet-plus")
+        if row.transaction_type is TransactionType.CASH_TRANSFER_IN
+        and row.linked_transaction_id == purchase.linked_transaction_id
+    ]
+    assert len(refunds) == 1
+    assert refunds[0].amount == Decimal("50000")
 
 
 def _create_settled_wallet_redemption(services):

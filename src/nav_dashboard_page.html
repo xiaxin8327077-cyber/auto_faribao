@@ -431,6 +431,7 @@
     .transaction-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
     .transaction-summary.single { grid-template-columns: minmax(0, 1fr); }
     .transaction-metric { min-width: 0; padding: 9px 10px; border-radius: 7px; background: var(--bg); }
+    .transaction-metric.realtime { grid-column: 1 / -1; }
     .transaction-metric span { display: block; color: var(--muted); font-size: 10px; }
     .transaction-metric b { display: block; margin-top: 3px; overflow: hidden; font-size: 14px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
     .transaction-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
@@ -1614,12 +1615,14 @@
     function transactionValueHtml(row, kind) {
       const amount = rowValue(row, 'amount');
       const shares = rowValue(row, 'shares');
+      const remainingConfirmationShares = rowValue(row, 'remaining_confirmation_shares');
       const amountLabel = kind.className === 'purchase' ? '申购金额'
         : kind.className === 'redemption' ? '赎回金额' : '交易金额';
       const sharesLabel = kind.className === 'purchase' ? '确认份额' : kind.className === 'redemption' ? '赎回份额' : '交易份额';
       const items = [];
       if (amount !== '') items.push(`<div class="transaction-metric"><span>${amountLabel}</span><b>${esc(money(amount))} 元</b></div>`);
       if (shares !== '') items.push(`<div class="transaction-metric"><span>${sharesLabel}</span><b>${esc(money(shares))} 份</b></div>`);
+      if (remainingConfirmationShares !== '') items.push(`<div class="transaction-metric realtime"><span>实时剩余确认份额</span><b>${esc(money(remainingConfirmationShares))} 份</b></div>`);
       return items.length
         ? `<div class="transaction-summary${items.length === 1 ? ' single' : ''}">${items.join('')}</div>`
         : '<div class="manage-meta">金额和份额将在确认后生成</div>';

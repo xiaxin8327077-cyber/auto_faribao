@@ -635,6 +635,73 @@ def test_position_row_shows_available_shares_and_pending_purchase_amount(
     assert row["in_transit_amount"] == "35"
 
 
+def test_wallet_plus_in_transit_nets_later_realtime_outflow(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    repository.add_product(Product(
+        "wallet-plus",
+        "wallet_plus",
+        "WALLETPLUS",
+        "钱包Plus",
+        ProductType.CASH_MANAGEMENT,
+    ))
+    repository.create_transaction(Transaction(
+        id="opening:wallet-plus",
+        product_id="wallet-plus",
+        transaction_type=TransactionType.OPENING_POSITION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 7, 1),
+        idempotency_key="opening:wallet-plus",
+        amount=Decimal("16551.888"),
+        shares=Decimal("16551.888"),
+    ))
+    repository.create_transaction(Transaction(
+        id="pending-wallet-purchase",
+        product_id="wallet-plus",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.PENDING_CONFIRMATION,
+        trade_date=date(2026, 7, 30),
+        trade_time="2026-07-30T00:00:00",
+        idempotency_key="pending-wallet-purchase",
+        amount=Decimal("108000"),
+        shares=Decimal("108000"),
+    ))
+    projector = PositionProjector(repository)
+    projector.rebuild("wallet-plus")
+    transactions = PortfolioTransactionService(repository, projector)
+    transactions.record_purchase(
+        "fund",
+        Decimal("50000"),
+        date(2026, 7, 30),
+        "web:wallet-realtime-spend",
+        source_cash_product_id="wallet-plus",
+        trade_time="2026-07-30T10:11:00",
+    )
+
+    payload = build_portfolio_payload(
+        repository,
+        as_of=date(2026, 7, 30),
+    )
+    row = next(
+        item
+        for item in payload["positions"]
+        if item["product_id"] == "wallet-plus"
+    )
+    purchase_row = next(
+        item
+        for item in payload["transactions"]
+        if item["id"] == "pending-wallet-purchase"
+    )
+
+    assert row["shares"] == "74551.888"
+    assert row["available_shares"] == "74551.888"
+    assert row["locked_shares"] == "0"
+    assert row["in_transit_amount"] == "58000"
+    assert purchase_row["shares"] == "108000"
+    assert purchase_row["remaining_confirmation_shares"] == "58000"
+
+
 def test_pending_purchase_without_confirmed_shares_is_visible_as_position(
     portfolio_fixture,
 ):

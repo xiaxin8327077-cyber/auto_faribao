@@ -1,4 +1,5 @@
 from contextlib import closing
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 import json
@@ -47,6 +48,167 @@ KNOWN_REDEMPTIONS = {
         "settlement_date": date(2026, 9, 20),
     },
 }
+KNOWN_WALLET_OUTFLOW = {
+    "purchase_id": "df3b02a8-bccd-4f3a-9d39-51664b047e11",
+    "cash_transaction_id": "65c417e9-fdeb-4f6a-8187-137cc53cb8fb",
+    "target_product_id": "7bd7363d-bb41-5fda-8bda-9849ab26b5be",
+    "trade_date": date(2026, 9, 18),
+    "trade_time": "2026-09-18T10:11:00",
+    "amount": Decimal("50000"),
+    "fee_rate": Decimal("0.00008"),
+    "purchase_idempotency_key": "1789697532937-8c71a3b2d0bff",
+}
+
+
+def preview_known_wallet_outflow_repair(repository) -> dict:
+    database_uri = f"{repository.database.path.resolve().as_uri()}?mode=ro"
+    with closing(sqlite3.connect(database_uri, uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        _require_schema_v7(conn)
+        state = _validate_known_wallet_outflow(repository, conn)
+        return _wallet_outflow_report(
+            "already_repaired" if state["already_repaired"] else "would_repair"
+        )
+
+
+def repair_known_wallet_outflow(repository) -> dict:
+    projector = PositionProjector(repository)
+    with repository.database.transaction() as conn:
+        state = _validate_known_wallet_outflow(repository, conn)
+        if state["already_repaired"]:
+            return _wallet_outflow_report("already_repaired")
+        cash = state["cash"]
+        repository.update_pending_transaction(
+            replace(
+                cash,
+                status=TransactionStatus.CONFIRMED,
+                confirmation_nav=Decimal("1"),
+                confirmation_date=cash.trade_date,
+            ),
+            conn,
+        )
+        repository.replace_position(
+            projector._calculate(WALLET_PRODUCT_ID, conn),
+            conn,
+        )
+        repository.append_audit(
+            str(uuid5(NAMESPACE_URL, "repair-wallet-realtime-outflow-v1")),
+            "repair_wallet_realtime_outflow",
+            "transaction",
+            cash.id,
+            before_json=json.dumps(
+                {
+                    "confirmation_date": None,
+                    "confirmation_nav": None,
+                    "status": TransactionStatus.PENDING_QUOTE.value,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            after_json=json.dumps(
+                {
+                    "confirmation_date": cash.trade_date.isoformat(),
+                    "confirmation_nav": "1",
+                    "status": TransactionStatus.CONFIRMED.value,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            source=REPAIR_ACTOR,
+            conn=conn,
+        )
+    return _wallet_outflow_report("repaired")
+
+
+def _require_schema_v7(conn) -> None:
+    version_row = conn.execute(
+        "SELECT version FROM schema_migrations"
+    ).fetchone()
+    if version_row is None or version_row[0] != 7:
+        raise ValueError("portfolio database must be schema version 7")
+
+
+def _validate_known_wallet_outflow(repository, conn) -> dict:
+    expected = KNOWN_WALLET_OUTFLOW
+    purchase = repository.get_transaction_by_id(
+        expected["purchase_id"],
+        conn=conn,
+    )
+    cash = repository.get_transaction_by_id(
+        expected["cash_transaction_id"],
+        conn=conn,
+    )
+    if purchase is None or cash is None:
+        raise ValueError("known wallet outflow does not match production data")
+    purchase_expected = {
+        "product_id": expected["target_product_id"],
+        "transaction_type": TransactionType.MANUAL_PURCHASE,
+        "status": TransactionStatus.PENDING_QUOTE,
+        "trade_date": expected["trade_date"],
+        "trade_time": expected["trade_time"],
+        "amount": expected["amount"],
+        "shares": None,
+        "fee_amount": None,
+        "fee_rate": expected["fee_rate"],
+        "confirmation_nav": None,
+        "confirmation_date": None,
+        "linked_transaction_id": expected["cash_transaction_id"],
+        "plan_id": "",
+        "idempotency_key": expected["purchase_idempotency_key"],
+        "created_by": "web",
+    }
+    cash_expected = {
+        "product_id": WALLET_PRODUCT_ID,
+        "transaction_type": TransactionType.CASH_TRANSFER_OUT,
+        "trade_date": expected["trade_date"],
+        "trade_time": expected["trade_time"],
+        "amount": expected["amount"],
+        "shares": expected["amount"],
+        "fee_amount": None,
+        "fee_rate": None,
+        "linked_transaction_id": expected["purchase_id"],
+        "plan_id": "",
+        "idempotency_key": f"linked:{expected['purchase_id']}",
+        "created_by": "web",
+    }
+    if any(
+        getattr(purchase, name) != value
+        for name, value in purchase_expected.items()
+    ) or any(
+        getattr(cash, name) != value
+        for name, value in cash_expected.items()
+    ):
+        raise ValueError("known wallet outflow does not match production data")
+    if (
+        cash.status is TransactionStatus.PENDING_QUOTE
+        and cash.confirmation_nav is None
+        and cash.confirmation_date is None
+    ):
+        already_repaired = False
+    elif (
+        cash.status is TransactionStatus.CONFIRMED
+        and cash.confirmation_nav == Decimal("1")
+        and cash.confirmation_date == cash.trade_date
+    ):
+        already_repaired = True
+    else:
+        raise ValueError("known wallet outflow does not match production data")
+    return {
+        "already_repaired": already_repaired,
+        "cash": cash,
+        "purchase": purchase,
+    }
+
+
+def _wallet_outflow_report(result) -> dict:
+    return {
+        "purchase_id": KNOWN_WALLET_OUTFLOW["purchase_id"],
+        "cash_transaction_id": KNOWN_WALLET_OUTFLOW[
+            "cash_transaction_id"
+        ],
+        "amount": decimal_text(KNOWN_WALLET_OUTFLOW["amount"]),
+        "result": result,
+    }
 
 
 def preview_known_redemption_repairs(repository, as_of_date) -> list[dict]:
