@@ -458,6 +458,23 @@ def test_transaction_audit_failure_rolls_back_business_write(
     ) is None
 
 
+def test_reconciliation_failure_returns_clear_error_and_no_transaction(api_setup, monkeypatch):
+    from src.portfolio_transactions import PortfolioTransactionService
+    client, _, repository, _ = api_setup
+    monkeypatch.setattr(PortfolioTransactionService, "_rebuild_positions", lambda *args: None)
+    response = client.post(
+        "/api/portfolio/transactions", headers=write_headers(idem="reconciliation-failure"),
+        json={"kind": "purchase", "product_id": "cash", "amount": "30", "trade_date": "2026-07-30"},
+    )
+    assert response.status_code == 409
+    assert response.get_json()["error"] == "portfolio_reconciliation_failed"
+    assert "交易未提交" in response.get_json()["message"]
+    assert repository.get_transaction_by_idempotency("reconciliation-failure") is None
+    assert repository.get_position("cash").total_shares == Decimal("1000")
+    with repository.database.connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM audit_logs WHERE result = 'rejected'").fetchone()[0] > 0
+
+
 def test_transaction_preview_normalizes_server_side_values(client):
     response = client.post(
         "/api/portfolio/transactions/preview",
@@ -538,6 +555,55 @@ def test_wallet_plus_redemption_preview_confirms_same_day(api_setup):
     assert preview["normalized_input"]["trade_date"] == "2026-08-18"
     assert preview["normalized_input"]["settlement_date"] == "2026-08-18"
     assert preview["normalized_input"]["expected_confirmation_date"] == "2026-08-18"
+    assert preview["warning"] == ""
+
+
+def test_wallet_plus_weekend_redemption_preview_uses_submission_day(api_setup):
+    from src.portfolio_wallet import WALLET_CODE, WALLET_NAME, WALLET_PROVIDER
+
+    client, _, repository, _ = api_setup
+    repository.add_product(
+        Product(
+            id="weekend-wallet",
+            provider=WALLET_PROVIDER,
+            code=WALLET_CODE,
+            name=WALLET_NAME,
+            product_type=ProductType.CASH_MANAGEMENT,
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="opening:weekend-wallet",
+            product_id="weekend-wallet",
+            transaction_type=TransactionType.OPENING_POSITION,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 9, 1),
+            idempotency_key="opening:weekend-wallet",
+            amount=Decimal("1000"),
+            shares=Decimal("1000"),
+            confirmation_nav=Decimal("1"),
+            confirmation_date=date(2026, 9, 1),
+        )
+    )
+    PositionProjector(repository).rebuild("weekend-wallet")
+
+    response = client.post(
+        "/api/portfolio/transactions/preview",
+        headers=write_headers(idem="preview-wallet-plus-weekend-redemption"),
+        json={
+            "kind": "redemption",
+            "product_id": "weekend-wallet",
+            "shares": "200",
+            "trade_time": "2026-09-19T17:28:00",
+        },
+    )
+
+    assert response.status_code == 200
+    preview = response.get_json()["preview"]
+    assert preview["status_prediction"] == "confirmed"
+    assert preview["normalized_input"]["trade_date"] == "2026-09-19"
+    assert preview["normalized_input"]["settlement_date"] == "2026-09-19"
+    assert preview["normalized_input"]["expected_confirmation_date"] == "2026-09-19"
     assert preview["warning"] == ""
 
 

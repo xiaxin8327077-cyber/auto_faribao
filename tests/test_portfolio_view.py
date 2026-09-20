@@ -128,6 +128,198 @@ def test_payload_keeps_overview_fields_and_cash_value_is_shares(portfolio_fixtur
     assert cash["latest_profit_date"] == "2026-07-30"
 
 
+def test_total_assets_includes_pending_purchase_after_wallet_realtime_outflow(
+    portfolio_fixture,
+):
+    from src.portfolio_wallet import WALLET_PROVIDER
+
+    repository = portfolio_fixture
+    repository.add_product(
+        Product(
+            "wallet-plus",
+            WALLET_PROVIDER,
+            "WALLETPLUS",
+            "钱包Plus",
+            ProductType.CASH_MANAGEMENT,
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="opening:wallet-plus:total-assets",
+            product_id="wallet-plus",
+            transaction_type=TransactionType.OPENING_POSITION,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 1),
+            idempotency_key="opening:wallet-plus:total-assets",
+            amount=Decimal("1000"),
+            shares=Decimal("1000"),
+            confirmation_nav=Decimal("1"),
+            confirmation_date=date(2026, 7, 1),
+        )
+    )
+    projector = PositionProjector(repository)
+    projector.rebuild("wallet-plus")
+    PortfolioTransactionService(repository, projector).record_purchase(
+        "fund",
+        Decimal("200"),
+        date(2026, 7, 30),
+        "web:wallet-funded-pending-total-assets",
+        source_cash_product_id="wallet-plus",
+        trade_time="2026-07-30T10:11:00",
+    )
+
+    payload = build_portfolio_payload(repository, as_of=date(2026, 7, 30))
+
+    assert Decimal(payload["summary"]["total_assets"]) == (
+        Decimal(payload["summary"]["market_value"]) + Decimal("200")
+    )
+
+
+def test_total_assets_includes_external_pending_purchase(portfolio_fixture):
+    repository = portfolio_fixture
+    projector = PositionProjector(repository)
+    PortfolioTransactionService(repository, projector).record_purchase(
+        "fund",
+        Decimal("200"),
+        date(2026, 7, 30),
+        "web:external-pending-total-assets",
+        trade_time="2026-07-30T10:11:00",
+    )
+
+    payload = build_portfolio_payload(repository, as_of=date(2026, 7, 30))
+
+    assert Decimal(payload["summary"]["total_assets"]) == (
+        Decimal(payload["summary"]["market_value"]) + Decimal("200")
+    )
+
+
+def test_total_assets_ignores_transactions_after_requested_as_of(
+    portfolio_fixture,
+):
+    repository = portfolio_fixture
+    repository.create_transaction(Transaction(
+        id="future-pending-purchase",
+        product_id="fund",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.PENDING_QUOTE,
+        trade_date=date(2026, 7, 31),
+        idempotency_key="future-pending-purchase",
+        amount=Decimal("200"),
+    ))
+    repository.create_transaction(Transaction(
+        id="future-pending-redemption",
+        product_id="fund",
+        transaction_type=TransactionType.MANUAL_REDEMPTION,
+        status=TransactionStatus.PENDING_CONFIRMATION,
+        trade_date=date(2026, 7, 31),
+        idempotency_key="future-pending-redemption",
+        amount=Decimal("50"),
+        shares=Decimal("50"),
+        confirmation_nav=Decimal("1"),
+    ))
+
+    payload = build_portfolio_payload(repository, as_of=date(2026, 7, 30))
+
+    assert payload["summary"]["total_assets"] == payload["summary"]["market_value"]
+
+
+def test_total_assets_includes_manual_and_sip_wallet_outflows_together(
+    portfolio_fixture,
+):
+    from src.portfolio_wallet import WALLET_PROVIDER
+
+    repository = portfolio_fixture
+    repository.add_product(Product(
+        "wallet-plus",
+        WALLET_PROVIDER,
+        "WALLETPLUS",
+        "钱包Plus",
+        ProductType.CASH_MANAGEMENT,
+    ))
+    repository.create_transaction(Transaction(
+        id="opening:wallet-plus:combined-total",
+        product_id="wallet-plus",
+        transaction_type=TransactionType.OPENING_POSITION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 7, 1),
+        idempotency_key="opening:wallet-plus:combined-total",
+        amount=Decimal("60000"),
+        shares=Decimal("60000"),
+        confirmation_nav=Decimal("1"),
+        confirmation_date=date(2026, 7, 1),
+    ))
+    projector = PositionProjector(repository)
+    projector.rebuild("wallet-plus")
+    PortfolioTransactionService(repository, projector).record_purchase(
+        "fund",
+        Decimal("50000"),
+        date(2026, 7, 30),
+        "web:combined-manual-purchase",
+        source_cash_product_id="wallet-plus",
+        trade_time="2026-07-30T10:11:00",
+    )
+    sip = repository.create_transaction(Transaction(
+        id="combined-sip-purchase",
+        product_id="fund",
+        transaction_type=TransactionType.SIP_PURCHASE,
+        status=TransactionStatus.PENDING_QUOTE,
+        trade_date=date(2026, 7, 30),
+        idempotency_key="combined-sip-purchase",
+        amount=Decimal("2000"),
+        fee_rate=Decimal("0"),
+        plan_id="combined-sip-plan",
+    ))
+    cash_out = repository.create_transaction(Transaction(
+        id="combined-sip-cash-out",
+        product_id="wallet-plus",
+        transaction_type=TransactionType.CASH_TRANSFER_OUT,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 7, 30),
+        idempotency_key="combined-sip-cash-out",
+        amount=Decimal("2000"),
+        shares=Decimal("2000"),
+        confirmation_nav=Decimal("1"),
+        confirmation_date=date(2026, 7, 30),
+        linked_transaction_id=sip.id,
+        plan_id="combined-sip-plan",
+    ))
+    with repository.database.transaction() as conn:
+        repository.update_pending_transaction(
+            replace(sip, linked_transaction_id=cash_out.id),
+            conn,
+        )
+    projector.rebuild("wallet-plus")
+    repository.create_transaction(Transaction(
+        id="combined-external-purchase",
+        product_id="fund",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.PENDING_QUOTE,
+        trade_date=date(2026, 7, 30),
+        idempotency_key="combined-external-purchase",
+        amount=Decimal("300"),
+    ))
+    repository.create_transaction(Transaction(
+        id="combined-unsettled-redemption",
+        product_id="wealth",
+        transaction_type=TransactionType.MANUAL_REDEMPTION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 7, 30),
+        idempotency_key="combined-unsettled-redemption",
+        amount=Decimal("400"),
+        shares=Decimal("1"),
+        confirmation_nav=Decimal("400"),
+        confirmation_date=date(2026, 7, 30),
+        settlement_date=date(2026, 7, 31),
+        settlement_status=RedemptionSettlementStatus.PENDING,
+    ))
+
+    payload = build_portfolio_payload(repository, as_of=date(2026, 7, 30))
+
+    assert Decimal(payload["summary"]["total_assets"]) == (
+        Decimal(payload["summary"]["market_value"]) + Decimal("52700")
+    )
+
+
 def test_cash_latest_profit_date_stays_on_latest_income_not_newer_quote(
     portfolio_fixture,
 ):
@@ -297,6 +489,7 @@ def test_transactions_are_newest_first_and_show_cash_route(portfolio_fixture):
         Decimal("5"),
         date(2026, 7, 30),
         "web:redemption-with-destination",
+        settlement_date=date(2026, 7, 31),
         destination_cash_product_id="cash",
         trade_time="2026-07-30T14:30:00",
     )
@@ -635,6 +828,38 @@ def test_position_row_shows_available_shares_and_pending_purchase_amount(
     assert row["in_transit_amount"] == "35"
 
 
+@pytest.mark.parametrize("created_at,purchase_time,remaining", [
+    ("2026-09-18 01:00:35", "2026-09-18T00:00:00", "55800"),
+    ("2026-09-17 23:00:35", "2026-09-18T00:00:00", "55800"),
+    ("2026-09-18 01:00:35", "2026-09-18T10:00:00", "57800"),
+    ("2026-09-20 01:00:35", "2026-09-18T00:00:00", "57800"),
+])
+def test_wallet_pending_balances_include_dated_sip_outflow(created_at, purchase_time, remaining):
+    from src.portfolio_view import _wallet_pending_purchase_balances
+
+    product = Product("wallet-plus", "wallet_plus", "WALLETPLUS", "钱包Plus", ProductType.CASH_MANAGEMENT)
+    def event(key, kind, amount, day, trade_time="", created=""):
+        return Transaction(
+            id=key, product_id=product.id, transaction_type=kind,
+            status=(TransactionStatus.PENDING_CONFIRMATION
+                    if kind is TransactionType.MANUAL_PURCHASE
+                    else TransactionStatus.CONFIRMED),
+            trade_date=day, trade_time=trade_time, created_at=created,
+            idempotency_key=key, amount=Decimal(amount), shares=Decimal(amount),
+        )
+    rows = [
+        event("purchase-108000", TransactionType.MANUAL_PURCHASE, "108000", date(2026, 9, 18), purchase_time),
+        event("sip-out", TransactionType.CASH_TRANSFER_OUT, "2000", date(2026, 9, 18), created=created_at),
+        event("fund-out", TransactionType.CASH_TRANSFER_OUT, "50000", date(2026, 9, 18), "2026-09-18T10:11:00"),
+        event("redeem", TransactionType.MANUAL_REDEMPTION, "200", date(2026, 9, 19), "2026-09-19T17:28:00"),
+        event("purchase-54015", TransactionType.MANUAL_PURCHASE, "54015", date(2026, 9, 21), "2026-09-20T00:00:00"),
+    ]
+    balances = _wallet_pending_purchase_balances(product, list(reversed(rows)))
+    assert balances == {"purchase-108000": Decimal(remaining), "purchase-54015": Decimal("54015")}
+    assert sum(balances.values()) == Decimal(remaining) + Decimal("54015")
+    assert rows[0].amount == Decimal("108000")
+
+
 def test_wallet_plus_in_transit_nets_later_realtime_outflow(
     portfolio_fixture,
 ):
@@ -700,6 +925,9 @@ def test_wallet_plus_in_transit_nets_later_realtime_outflow(
     assert row["in_transit_amount"] == "58000"
     assert purchase_row["shares"] == "108000"
     assert purchase_row["remaining_confirmation_shares"] == "58000"
+    assert Decimal(payload["summary"]["total_assets"]) == (
+        Decimal(payload["summary"]["market_value"]) + Decimal("50000")
+    )
 
 
 def test_pending_purchase_without_confirmed_shares_is_visible_as_position(

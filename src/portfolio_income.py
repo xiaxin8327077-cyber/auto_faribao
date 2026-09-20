@@ -9,6 +9,7 @@ from src.portfolio_models import (
     TransactionType,
 )
 from src.portfolio_wallet import WALLET_PROVIDER, previous_wallet_income_date
+from src.portfolio_reconciliation import reconciled_transaction
 
 
 ONE = Decimal("1")
@@ -24,7 +25,7 @@ class CashIncomeService:
         idempotency_key = (
             f"income:{product_id}:{quote_date.isoformat()}"
         )
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "income_accrual") as conn:
             product = self.repository.require_product(product_id, conn=conn)
             if product.product_type is not ProductType.CASH_MANAGEMENT:
                 raise ValueError("product must be cash_management")

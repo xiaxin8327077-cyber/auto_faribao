@@ -69,6 +69,7 @@ def seed_cash(
             confirmation_date=trade_date,
         )
     )
+    PositionProjector(repository).rebuild(product_id)
 
 
 def seed_fund(repository, product_id, code):

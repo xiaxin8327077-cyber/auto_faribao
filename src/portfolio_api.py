@@ -38,6 +38,7 @@ from src.portfolio_sip import SipService
 from src.portfolio_sip_schedule import first_sip_trade_date, normalize_sip_schedule
 from src.portfolio_transactions import PortfolioTransactionService
 from src.portfolio_wallet import is_wallet_plus_product
+from src.portfolio_reconciliation import ReconciliationError
 
 
 _WRITE_LIMIT = 30
@@ -475,6 +476,8 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
         persist=True,
         operation_action=None,
     ):
+        if isinstance(exc, ReconciliationError):
+            code, status = "portfolio_reconciliation_failed", 409
         safe_body = {
             **_safe_audit_value(body),
             "error": str(exc)[:240],
@@ -670,6 +673,9 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             if kind == "purchase"
             else TransactionType.MANUAL_REDEMPTION
         )
+        wallet_plus_redemption = (
+            kind == "redemption" and is_wallet_plus_product(product)
+        )
         schedule = None
         if trade_time_value:
             submitted_at = _parse_datetime(trade_time_value, "trade_time")
@@ -678,7 +684,11 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 transaction_type,
                 submitted_at,
             )
-            trade_date = schedule.trade_date
+            trade_date = (
+                submitted_at.date()
+                if wallet_plus_redemption
+                else schedule.trade_date
+            )
             normalized_trade_time = submitted_at.isoformat(timespec="seconds")
         else:
             trade_date = _parse_date(
@@ -690,9 +700,6 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             Decimal("1")
             if product.product_type is ProductType.CASH_MANAGEMENT
             else (quote.unit_nav if quote is not None else None)
-        )
-        wallet_plus_redemption = (
-            kind == "redemption" and is_wallet_plus_product(product)
         )
         status = (
             "confirmed"
@@ -797,6 +804,9 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             destination = repo.require_product(destination_id)
             if destination.product_type is not ProductType.CASH_MANAGEMENT:
                 raise ValueError("destination must be cash_management")
+        if (destination_id and product.product_type is not ProductType.CASH_MANAGEMENT
+            and settlement_date is None):
+            raise ValueError("赎回转入钱包需要填写预计到账日期")
         amount = shares * nav if nav is not None else None
         normalized = {
             "destination_cash_product_id": destination_id,

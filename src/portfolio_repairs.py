@@ -58,6 +58,368 @@ KNOWN_WALLET_OUTFLOW = {
     "fee_rate": Decimal("0.00008"),
     "purchase_idempotency_key": "1789697532937-8c71a3b2d0bff",
 }
+KNOWN_WALLET_REDEMPTION = {
+    "transaction_id": "7bcd665c-a888-4562-94de-da4f07d14b39",
+    "product_id": WALLET_PRODUCT_ID,
+    "wrong_trade_date": date(2026, 9, 21),
+    "corrected_trade_date": date(2026, 9, 19),
+    "trade_time": "2026-09-19T17:28:00",
+    "amount": Decimal("200"),
+    "shares": Decimal("200"),
+    "confirmation_nav": Decimal("1"),
+    "idempotency_key": "1789810095333-e9f9b14a3a2028",
+    "created_at": "2026-09-19 09:28:33",
+}
+_WALLET_REDEMPTION_REPAIR_REASON = "修正钱包Plus周末赎回实时到账日期"
+
+
+def preview_known_wallet_redemption_repair(repository) -> dict:
+    database_uri = f"{repository.database.path.resolve().as_uri()}?mode=ro"
+    with closing(sqlite3.connect(database_uri, uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        _require_schema_v7(conn)
+        state = _validate_known_wallet_redemption(repository, conn)
+        return _wallet_redemption_report(
+            "already_repaired" if state["already_repaired"] else "would_repair"
+        )
+
+
+def repair_known_wallet_redemption(repository) -> dict:
+    projector = PositionProjector(repository)
+    expected = KNOWN_WALLET_REDEMPTION
+    original_id = expected["transaction_id"]
+    reversal_id = str(
+        uuid5(NAMESPACE_URL, f"repair-wallet-redemption-reversal:{original_id}")
+    )
+    corrected_id = str(
+        uuid5(NAMESPACE_URL, f"repair-wallet-redemption-corrected:{original_id}")
+    )
+    with repository.database.transaction() as conn:
+        state = _validate_known_wallet_redemption(repository, conn)
+        if state["already_repaired"]:
+            return _wallet_redemption_report("already_repaired")
+        original = state["original"]
+        reversal = repository.create_transaction(
+            Transaction(
+                id=reversal_id,
+                product_id=original.product_id,
+                transaction_type=TransactionType.REVERSAL,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=original.trade_date,
+                idempotency_key=f"repair-reversal:{original.id}",
+                amount=-original.amount,
+                shares=-original.shares,
+                confirmation_nav=original.confirmation_nav,
+                confirmation_date=original.confirmation_date,
+                linked_transaction_id=original.id,
+                note=_WALLET_REDEMPTION_REPAIR_REASON,
+                created_by=REPAIR_ACTOR,
+            ),
+            conn,
+        )
+        if not _known_wallet_redemption_reversal_matches(
+            reversal,
+            original,
+        ):
+            raise ValueError(
+                "known wallet redemption does not match production data"
+            )
+        PortfolioTransactionService._mark_reversed(original.id, conn)
+        corrected = repository.create_transaction(
+            Transaction(
+                id=corrected_id,
+                product_id=original.product_id,
+                transaction_type=TransactionType.MANUAL_REDEMPTION,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=expected["corrected_trade_date"],
+                trade_time=expected["trade_time"],
+                idempotency_key=(
+                    f"repair:wallet-plus-redemption:{original.id}"
+                ),
+                amount=expected["amount"],
+                shares=expected["shares"],
+                confirmation_nav=expected["confirmation_nav"],
+                confirmation_date=expected["corrected_trade_date"],
+                settlement_date=expected["corrected_trade_date"],
+                settlement_status=RedemptionSettlementStatus.SETTLED,
+                settled_at=expected["created_at"],
+                note=original.note,
+                created_by=original.created_by,
+            ),
+            conn,
+        )
+        if not _known_wallet_redemption_corrected_matches(corrected):
+            raise ValueError(
+                "known wallet redemption does not match production data"
+            )
+        repository.replace_position(
+            projector._calculate(WALLET_PRODUCT_ID, conn),
+            conn,
+        )
+        repository.append_audit(
+            str(uuid5(NAMESPACE_URL, f"repair-wallet-redemption:{original.id}")),
+            "repair_wallet_realtime_redemption",
+            "transaction",
+            original.id,
+            before_json=json.dumps(
+                {
+                    "confirmation_date": original.confirmation_date.isoformat(),
+                    "settlement_date": original.settlement_date.isoformat(),
+                    "settlement_status": None,
+                    "status": original.status.value,
+                    "trade_date": original.trade_date.isoformat(),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            after_json=json.dumps(
+                {
+                    "corrected_transaction_id": corrected_id,
+                    "reversal_transaction_id": reversal_id,
+                    "settlement_date": expected[
+                        "corrected_trade_date"
+                    ].isoformat(),
+                    "settlement_status": (
+                        RedemptionSettlementStatus.SETTLED.value
+                    ),
+                    "trade_date": expected[
+                        "corrected_trade_date"
+                    ].isoformat(),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            source=REPAIR_ACTOR,
+            conn=conn,
+        )
+    return _wallet_redemption_report("repaired")
+
+
+def _validate_known_wallet_redemption(repository, conn) -> dict:
+    expected = KNOWN_WALLET_REDEMPTION
+    original_id = expected["transaction_id"]
+    original = repository.get_transaction_by_id(original_id, conn=conn)
+    reversal_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"repair-wallet-redemption-reversal:{original_id}",
+        )
+    )
+    corrected_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"repair-wallet-redemption-corrected:{original_id}",
+        )
+    )
+    audit_id = str(
+        uuid5(NAMESPACE_URL, f"repair-wallet-redemption:{original_id}")
+    )
+    reversal = repository.get_transaction_by_id(
+        reversal_id,
+        conn=conn,
+    )
+    reversal_by_key = repository.get_transaction_by_idempotency(
+        f"repair-reversal:{original_id}",
+        conn=conn,
+    )
+    corrected = repository.get_transaction_by_id(
+        corrected_id,
+        conn=conn,
+    )
+    corrected_by_key = repository.get_transaction_by_idempotency(
+        f"repair:wallet-plus-redemption:{original_id}",
+        conn=conn,
+    )
+    audit = conn.execute(
+        """SELECT id, action, object_type, object_id, before_json,
+                  after_json, result, source
+           FROM audit_logs
+           WHERE id = ?""",
+        (audit_id,),
+    ).fetchone()
+    base_expected = {
+        "product_id": expected["product_id"],
+        "transaction_type": TransactionType.MANUAL_REDEMPTION,
+        "trade_date": expected["wrong_trade_date"],
+        "trade_time": expected["trade_time"],
+        "amount": expected["amount"],
+        "shares": expected["shares"],
+        "fee_amount": None,
+        "fee_rate": None,
+        "confirmation_nav": expected["confirmation_nav"],
+        "confirmation_date": expected["wrong_trade_date"],
+        "linked_transaction_id": "",
+        "plan_id": "",
+        "idempotency_key": expected["idempotency_key"],
+        "note": "",
+        "created_by": "web",
+        "settlement_date": expected["wrong_trade_date"],
+        "destination_cash_product_id": "",
+        "origin_transaction_id": "",
+        "settlement_status": None,
+        "settled_at": None,
+        "created_at": expected["created_at"],
+    }
+    if original is None or any(
+        getattr(original, name) != value
+        for name, value in base_expected.items()
+    ):
+        raise ValueError(
+            "known wallet redemption does not match production data"
+        )
+    if (
+        original.status is TransactionStatus.CONFIRMED
+        and reversal is None
+        and reversal_by_key is None
+        and corrected is None
+        and corrected_by_key is None
+        and audit is None
+    ):
+        return {"already_repaired": False, "original": original}
+    if (
+        original.status is not TransactionStatus.REVERSED
+        or reversal is None
+        or reversal_by_key is None
+        or reversal.id != reversal_by_key.id
+        or corrected is None
+        or corrected_by_key is None
+        or corrected.id != corrected_by_key.id
+        or not _known_wallet_redemption_reversal_matches(
+            reversal,
+            original,
+        )
+        or not _known_wallet_redemption_corrected_matches(corrected)
+        or not _known_wallet_redemption_audit_matches(audit)
+    ):
+        raise ValueError(
+            "known wallet redemption does not match production data"
+        )
+    return {"already_repaired": True, "original": original}
+
+
+def _known_wallet_redemption_reversal_matches(reversal, original) -> bool:
+    expected = KNOWN_WALLET_REDEMPTION
+    expected_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"repair-wallet-redemption-reversal:{original.id}",
+        )
+    )
+    return (
+        reversal.id == expected_id
+        and reversal.product_id == expected["product_id"]
+        and reversal.transaction_type is TransactionType.REVERSAL
+        and reversal.status is TransactionStatus.CONFIRMED
+        and reversal.trade_date == expected["wrong_trade_date"]
+        and reversal.amount == -expected["amount"]
+        and reversal.shares == -expected["shares"]
+        and reversal.confirmation_nav == expected["confirmation_nav"]
+        and reversal.confirmation_date == expected["wrong_trade_date"]
+        and reversal.linked_transaction_id == original.id
+        and reversal.idempotency_key == f"repair-reversal:{original.id}"
+        and reversal.note == _WALLET_REDEMPTION_REPAIR_REASON
+        and reversal.created_by == REPAIR_ACTOR
+    )
+
+
+def _known_wallet_redemption_corrected_matches(corrected) -> bool:
+    expected = KNOWN_WALLET_REDEMPTION
+    original_id = expected["transaction_id"]
+    expected_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"repair-wallet-redemption-corrected:{original_id}",
+        )
+    )
+    return (
+        corrected.id == expected_id
+        and corrected.product_id == expected["product_id"]
+        and corrected.transaction_type
+        is TransactionType.MANUAL_REDEMPTION
+        and corrected.status is TransactionStatus.CONFIRMED
+        and corrected.trade_date == expected["corrected_trade_date"]
+        and corrected.trade_time == expected["trade_time"]
+        and corrected.amount == expected["amount"]
+        and corrected.shares == expected["shares"]
+        and corrected.fee_amount is None
+        and corrected.fee_rate is None
+        and corrected.confirmation_nav == expected["confirmation_nav"]
+        and corrected.confirmation_date == expected["corrected_trade_date"]
+        and corrected.settlement_date == expected["corrected_trade_date"]
+        and corrected.settlement_status
+        is RedemptionSettlementStatus.SETTLED
+        and corrected.settled_at == expected["created_at"]
+        and corrected.idempotency_key
+        == f"repair:wallet-plus-redemption:{original_id}"
+        and corrected.linked_transaction_id == ""
+        and corrected.plan_id == ""
+        and corrected.note == ""
+        and corrected.created_by == "web"
+        and corrected.destination_cash_product_id == ""
+        and corrected.origin_transaction_id == ""
+    )
+
+
+def _known_wallet_redemption_audit_matches(audit) -> bool:
+    if audit is None:
+        return False
+    expected = KNOWN_WALLET_REDEMPTION
+    original_id = expected["transaction_id"]
+    reversal_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"repair-wallet-redemption-reversal:{original_id}",
+        )
+    )
+    corrected_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"repair-wallet-redemption-corrected:{original_id}",
+        )
+    )
+    try:
+        before = json.loads(audit["before_json"])
+        after = json.loads(audit["after_json"])
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return (
+        audit["id"]
+        == str(uuid5(NAMESPACE_URL, f"repair-wallet-redemption:{original_id}"))
+        and audit["action"] == "repair_wallet_realtime_redemption"
+        and audit["object_type"] == "transaction"
+        and audit["object_id"] == original_id
+        and audit["result"] == "success"
+        and audit["source"] == REPAIR_ACTOR
+        and before
+        == {
+            "confirmation_date": expected["wrong_trade_date"].isoformat(),
+            "settlement_date": expected["wrong_trade_date"].isoformat(),
+            "settlement_status": None,
+            "status": TransactionStatus.CONFIRMED.value,
+            "trade_date": expected["wrong_trade_date"].isoformat(),
+        }
+        and after
+        == {
+            "corrected_transaction_id": corrected_id,
+            "reversal_transaction_id": reversal_id,
+            "settlement_date": expected["corrected_trade_date"].isoformat(),
+            "settlement_status": RedemptionSettlementStatus.SETTLED.value,
+            "trade_date": expected["corrected_trade_date"].isoformat(),
+        }
+    )
+
+
+def _wallet_redemption_report(result) -> dict:
+    return {
+        "original_transaction_id": KNOWN_WALLET_REDEMPTION["transaction_id"],
+        "amount": decimal_text(KNOWN_WALLET_REDEMPTION["amount"]),
+        "corrected_trade_date": KNOWN_WALLET_REDEMPTION[
+            "corrected_trade_date"
+        ].isoformat(),
+        "result": result,
+    }
 
 
 def preview_known_wallet_outflow_repair(repository) -> dict:

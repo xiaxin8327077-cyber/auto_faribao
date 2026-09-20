@@ -55,10 +55,9 @@
     }
     #dashboardContent[hidden] { display: none !important; }
     .topbar {
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
+      position: relative;
+      order: 1;
+      flex: 0 0 auto;
       z-index: 40;
       margin: 0;
       min-height: 54px;
@@ -342,10 +341,9 @@
     .sip-record-status { color: var(--muted); font-size: 11px; font-weight: 650; }
     .sip-record-shares { color: var(--muted); font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; }
     .management-tabs {
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
+      position: relative;
+      order: 3;
+      flex: 0 0 auto;
       z-index: 40;
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -370,9 +368,7 @@
       min-height: 0;
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
-      /* 给上下毛玻璃栏留空，滚动时内容可透出模糊 */
-      padding-top: calc(12px + 54px + env(safe-area-inset-top, 0px));
-      padding-bottom: calc(16px + 54px + env(safe-area-inset-bottom, 0px));
+      /* 顶底栏独立占位，内容和滚动条都限制在两栏之间。 */
     }
     .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 2px 14px; }
     /* 持仓/交易记录/定投面板首块与总览 hero 同距顶栏 */
@@ -415,7 +411,8 @@
     .position-stat-grid .manage-stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
     .row-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
     .row-action { min-height: 31px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--blue); font-size: 12px; font-weight: 750; cursor: pointer; }
-    .transaction-filters { display: flex; overflow-x: auto; gap: 7px; margin-top: 12px; padding-bottom: 2px; scrollbar-width: none; }
+    .transaction-filters { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; padding-bottom: 2px; }
+    .transaction-filter-row { display: flex; flex-wrap: wrap; gap: 7px; }
     .transaction-filter { flex: 0 0 auto; min-height: 31px; padding: 0 10px; border: 1px solid var(--line); border-radius: 15px; background: var(--panel); color: var(--muted); font-size: 12px; font-weight: 750; cursor: pointer; }
     .transaction-filter[aria-pressed="true"] { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); }
     .transaction-card { padding: 12px 13px; }
@@ -670,12 +667,18 @@
 
       <section id="transactionsPanel" class="management-panel" role="tabpanel" aria-labelledby="transactionsTab" hidden>
         <div class="write-notice" id="transactionsWriteNotice" hidden></div>
-        <div class="transaction-filters" role="group" aria-label="交易状态筛选">
-          <button class="transaction-filter" type="button" aria-pressed="true" data-transaction-filter="all">全部</button>
-          <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="pending">待确认</button>
-          <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="confirmed">已确认</button>
-          <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="cancelled">已取消</button>
-          <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="adjustment">校准</button>
+        <div class="transaction-filters" role="group" aria-label="交易记录筛选">
+          <div class="transaction-filter-row">
+            <button class="transaction-filter" type="button" aria-pressed="true" data-transaction-filter="all">全部</button>
+            <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="purchase">申购</button>
+            <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="redemption">赎回</button>
+            <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="pending">待确认</button>
+            <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="confirmed">已确认</button>
+          </div>
+          <div class="transaction-filter-row">
+            <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="cancelled">已取消</button>
+            <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="adjustment">校准</button>
+          </div>
         </div>
         <div class="manage-list" id="transactionsList"><div class="empty">暂无交易记录</div></div>
       </section>
@@ -1510,7 +1513,7 @@
       const inTransitBuy = transactions.filter(t => {
         const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
         return normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('purchase');
-      }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
+      }).reduce((sum, t) => sum + pendingPurchaseRemainingAmount(t), 0);
       const inTransitSell = transactions.filter(t => {
         const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
         const settleDate = rowValue(t, 'settlement_date');
@@ -1564,12 +1567,9 @@
       if (raw.includes('reverse')) return 'reversed';
       return raw;
     }
-    function pendingPurchaseAlreadyInHoldings(transaction, transactions) {
-      if (rowValue(transaction, 'included_in_position')) return true;
-      const linkedId = rowValue(transaction, 'linked_transaction_id');
-      if (!linkedId) return false;
-      const funding = transactions.find(row => rowValue(row, 'id') === linkedId);
-      return Boolean(funding && normalStatus(rowValue(funding, 'status')) === 'pending');
+    function pendingPurchaseRemainingAmount(transaction) {
+      const remaining = rowValue(transaction, 'remaining_confirmation_shares');
+      return Math.round(number(remaining === '' ? rowValue(transaction, 'amount') : remaining) * 100) / 100;
     }
     function transactionStatusLabel(value) {
       const raw = String(value || '').toLowerCase();
@@ -1679,6 +1679,8 @@
       const visible = rows.filter(row => {
         const type = String(rowValue(row, 'transaction_type', 'type')).toLowerCase();
         const calibration = CALIBRATION_TRANSACTION_TYPES.has(type);
+        if (transactionFilter === 'purchase') return type === 'manual_purchase' || type === 'sip_purchase';
+        if (transactionFilter === 'redemption') return type === 'manual_redemption';
         if (transactionFilter === 'adjustment') return calibration;
         if (calibration) return false;
         if (transactionFilter === 'all') return true;
@@ -1978,22 +1980,22 @@
       const pfTxList = data.portfolio?.transactions || [];
       const roundCent = v => Math.round(number(v) * 100) / 100;
       const todayStr = todayDateStr();
-      const holdingsValue = pfList.reduce((sum, p) => sum + roundCent(rowValue(p, 'market_value', 'value', 'holding_value')), 0);
-      const pendingBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase') && !pendingPurchaseAlreadyInHoldings(t, pfTxList))
-        .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
-      const pendingSell = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('redemption'))
-        .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
+      const marketValue = rowValue(data.portfolio?.summary, 'market_value');
+      const holdingsValue = marketValue === ''
+        ? pfList.reduce((sum, p) => sum + number(rowValue(p, 'market_value', 'value', 'holding_value')), 0)
+        : number(marketValue);
       const inTransitSell = pfTxList.filter(t => {
         const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
         return normalStatus(rowValue(t, 'status')) === 'confirmed'
           && type.includes('redemption')
           && rowValue(t, 'settlement_status') === 'pending';
       }).reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
-      countUp($('totalAssets'), holdingsValue + pendingBuy + inTransitSell - pendingSell, v => money(roundCent(v)), 600);
+      const totalAssets = rowValue(data.portfolio?.summary, 'total_assets');
+      countUp($('totalAssets'), totalAssets === '' ? holdingsValue : number(totalAssets), v => money(roundCent(v)), 600);
       countUp($('marketValue'), holdingsValue, v => money(roundCent(v)), 600);
       // 在途资金:区分申购和赎回
       const inTransitBuy = pfTxList.filter(t => (normalStatus(rowValue(t, 'status')) === 'pending') && String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase().includes('purchase'))
-        .reduce((sum, t) => sum + roundCent(rowValue(t, 'amount')), 0);
+        .reduce((sum, t) => sum + pendingPurchaseRemainingAmount(t), 0);
       const inTransitText = [
         inTransitBuy > 0 ? `申购在途 ${money(inTransitBuy)} 元` : '',
         inTransitSell > 0 ? `赎回在途 ${money(inTransitSell)} 元` : '',
@@ -2026,10 +2028,12 @@
         const pid = rowValue(item, 'product_id', 'id', 'code');
         const profit = item.latest_profit;
         // 计算该产品的在途申购和赎回
-        const pendingBuyAmt = pfTxList.filter(t => {
+        const portfolioProduct = pfList.find(p => String(rowValue(p, 'product_id', 'id', 'code')) === String(pid));
+        const remainingInTransit = rowValue(portfolioProduct, 'in_transit_amount');
+        const pendingBuyAmt = remainingInTransit !== '' ? number(remainingInTransit) : pfTxList.filter(t => {
           const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
           return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('purchase');
-        }).reduce((sum, t) => sum + Math.round(Number(rowValue(t, 'amount') || 0) * 100) / 100, 0);
+        }).reduce((sum, t) => sum + pendingPurchaseRemainingAmount(t), 0);
         const pendingRedemptionShares = pfTxList.filter(t => {
           const type = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
           return rowValue(t, 'product_id') === pid && normalStatus(rowValue(t, 'status')) === 'pending' && type.includes('redemption');

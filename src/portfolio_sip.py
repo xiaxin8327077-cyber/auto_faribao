@@ -1,6 +1,7 @@
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation
+from src.portfolio_reconciliation import reconciled_transaction
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from src.beijing_time import TZ_CN, today as beijing_today
@@ -211,7 +212,7 @@ class SipService:
         _scheduled_dates=None,
     ) -> PlanExecution:
         should_notify = False
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "sip_deduction") as conn:
             plan = self._require_plan(plan_id, conn)
             reason = self._skip_reason(
                 plan, intended_date, _scheduled_dates
@@ -372,7 +373,7 @@ class SipService:
         execution_id,
         as_of_date,
     ) -> PlanExecution | None:
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "sip_confirmation") as conn:
             execution = self.repository.get_plan_execution_by_id(
                 execution_id, conn=conn
             )

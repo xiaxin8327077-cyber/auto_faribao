@@ -19,8 +19,10 @@ from src.portfolio_models import (
 )
 from src.portfolio_positions import PositionProjector
 from src.portfolio_repairs import (
+    preview_known_wallet_redemption_repair,
     preview_known_wallet_outflow_repair,
     preview_known_redemption_repairs,
+    repair_known_wallet_redemption,
     repair_known_wallet_outflow,
     repair_known_redemptions,
 )
@@ -32,6 +34,7 @@ SOURCE_PRODUCT_ID = "721c838d-b670-58e4-9c02-f1fc95a8e80a"
 WALLET_OUTFLOW_PURCHASE_ID = "df3b02a8-bccd-4f3a-9d39-51664b047e11"
 WALLET_OUTFLOW_CASH_ID = "65c417e9-fdeb-4f6a-8187-137cc53cb8fb"
 WALLET_OUTFLOW_TARGET_ID = "7bd7363d-bb41-5fda-8bda-9849ab26b5be"
+WALLET_REDEMPTION_ID = "7bcd665c-a888-4562-94de-da4f07d14b39"
 
 
 def _build_known_anomaly_database(
@@ -149,6 +152,7 @@ def _build_known_anomaly_database(
             status=TransactionStatus.CONFIRMED,
             linked_transaction_id=leg_id,
         ))
+    PositionProjector(repository).rebuild()
     if include_existing_purchase:
         PortfolioTransactionService(
             repository,
@@ -226,6 +230,50 @@ def _build_known_wallet_outflow_database(path):
     return database
 
 
+def _build_known_wallet_redemption_database(path, amount="200"):
+    database = PortfolioDatabase(path)
+    database.initialize()
+    repository = PortfolioRepository(database)
+    repository.add_product(Product(
+        "wallet-plus",
+        "wallet_plus",
+        "WALLETPLUS",
+        "钱包Plus",
+        ProductType.CASH_MANAGEMENT,
+    ))
+    repository.create_transaction(Transaction(
+        id="opening:wallet-plus:weekend-redemption",
+        product_id="wallet-plus",
+        transaction_type=TransactionType.OPENING_POSITION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 9, 1),
+        idempotency_key="opening:wallet-plus:weekend-redemption",
+        amount=Decimal("1000"),
+        shares=Decimal("1000"),
+        confirmation_nav=Decimal("1"),
+        confirmation_date=date(2026, 9, 1),
+    ))
+    repository.create_transaction(Transaction(
+        id=WALLET_REDEMPTION_ID,
+        product_id="wallet-plus",
+        transaction_type=TransactionType.MANUAL_REDEMPTION,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 9, 21),
+        trade_time="2026-09-19T17:28:00",
+        idempotency_key="1789810095333-e9f9b14a3a2028",
+        amount=Decimal(amount),
+        shares=Decimal("200"),
+        confirmation_nav=Decimal("1"),
+        confirmation_date=date(2026, 9, 21),
+        settlement_date=date(2026, 9, 21),
+        created_by="web",
+        created_at="2026-09-19 09:28:33",
+        status_updated_at="2026-09-19 09:28:33",
+    ))
+    PositionProjector(repository).rebuild()
+    return database
+
+
 @pytest.fixture
 def known_anomaly_database(tmp_path):
     return _build_known_anomaly_database(tmp_path / "known-anomaly.db")
@@ -247,6 +295,151 @@ def test_known_wallet_outflow_preview_is_read_only(tmp_path):
         "result": "would_repair",
     }
     assert database.path.read_bytes() == before
+
+
+def test_known_wallet_redemption_preview_is_read_only(tmp_path):
+    database = _build_known_wallet_redemption_database(
+        tmp_path / "known-wallet-redemption.db"
+    )
+    repository = PortfolioRepository(database)
+    before = database.path.read_bytes()
+
+    result = preview_known_wallet_redemption_repair(repository)
+
+    assert result == {
+        "original_transaction_id": WALLET_REDEMPTION_ID,
+        "amount": "200",
+        "corrected_trade_date": "2026-09-19",
+        "result": "would_repair",
+    }
+    assert database.path.read_bytes() == before
+
+
+def test_known_wallet_redemption_repair_is_auditable_and_idempotent(tmp_path):
+    database = _build_known_wallet_redemption_database(
+        tmp_path / "known-wallet-redemption.db"
+    )
+    repository = PortfolioRepository(database)
+
+    first = repair_known_wallet_redemption(repository)
+    second = repair_known_wallet_redemption(repository)
+
+    assert first["result"] == "repaired"
+    assert second["result"] == "already_repaired"
+    original = repository.get_transaction_by_id(WALLET_REDEMPTION_ID)
+    corrected = repository.get_transaction_by_idempotency(
+        f"repair:wallet-plus-redemption:{WALLET_REDEMPTION_ID}"
+    )
+    reversals = [
+        transaction
+        for transaction in repository.list_transactions()
+        if (
+            transaction.transaction_type is TransactionType.REVERSAL
+            and transaction.linked_transaction_id == WALLET_REDEMPTION_ID
+        )
+    ]
+    assert original.status is TransactionStatus.REVERSED
+    assert len(reversals) == 1
+    assert corrected.status is TransactionStatus.CONFIRMED
+    assert corrected.trade_date == date(2026, 9, 19)
+    assert corrected.confirmation_date == date(2026, 9, 19)
+    assert corrected.settlement_date == date(2026, 9, 19)
+    assert corrected.settlement_status is RedemptionSettlementStatus.SETTLED
+    assert corrected.settled_at == "2026-09-19 09:28:33"
+    assert PositionProjector(repository).calculate(
+        "wallet-plus"
+    ).total_shares == Decimal("800")
+    with database.connection() as conn:
+        audit = conn.execute(
+            """SELECT action, object_type, object_id, source,
+                      before_json, after_json
+               FROM audit_logs
+               WHERE action = 'repair_wallet_realtime_redemption'"""
+        ).fetchone()
+    assert audit["object_type"] == "transaction"
+    assert audit["object_id"] == WALLET_REDEMPTION_ID
+    assert audit["source"] == "ops:redemption-settlement-repair"
+    assert json.loads(audit["before_json"])["trade_date"] == "2026-09-21"
+    assert json.loads(audit["after_json"])["trade_date"] == "2026-09-19"
+
+
+def test_known_wallet_redemption_repair_rejects_mismatched_record(tmp_path):
+    database = _build_known_wallet_redemption_database(
+        tmp_path / "known-wallet-redemption.db",
+        amount="201",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="known wallet redemption does not match production data",
+    ):
+        repair_known_wallet_redemption(PortfolioRepository(database))
+
+
+def test_known_wallet_redemption_repair_rejects_idempotency_collision(tmp_path):
+    database = _build_known_wallet_redemption_database(
+        tmp_path / "known-wallet-redemption.db"
+    )
+    repository = PortfolioRepository(database)
+    repository.create_transaction(Transaction(
+        id="colliding-repair-key",
+        product_id="wallet-plus",
+        transaction_type=TransactionType.HOLDING_ADJUSTMENT,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 9, 19),
+        idempotency_key=f"repair-reversal:{WALLET_REDEMPTION_ID}",
+        amount=Decimal("1"),
+        shares=Decimal("1"),
+        confirmation_date=date(2026, 9, 19),
+    ))
+
+    with pytest.raises(
+        ValueError,
+        match="known wallet redemption does not match production data",
+    ):
+        repair_known_wallet_redemption(repository)
+    assert repository.get_transaction_by_id(
+        WALLET_REDEMPTION_ID
+    ).status is TransactionStatus.CONFIRMED
+
+
+def test_known_wallet_redemption_repair_rejects_corrupted_audit(tmp_path):
+    database = _build_known_wallet_redemption_database(
+        tmp_path / "known-wallet-redemption.db"
+    )
+    repository = PortfolioRepository(database)
+    repair_known_wallet_redemption(repository)
+    with database.transaction() as conn:
+        conn.execute(
+            """UPDATE audit_logs
+               SET source = 'corrupt'
+               WHERE action = 'repair_wallet_realtime_redemption'"""
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="known wallet redemption does not match production data",
+    ):
+        preview_known_wallet_redemption_repair(repository)
+
+
+def test_wallet_redemption_repair_cli_does_not_create_missing_database(tmp_path):
+    missing = tmp_path / "missing" / "portfolio.db"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/repair_wallet_plus_redemption.py",
+            "--database",
+            str(missing),
+            "--execute",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert not missing.exists()
 
 
 def test_known_wallet_outflow_repair_confirms_cash_leg_and_is_idempotent(

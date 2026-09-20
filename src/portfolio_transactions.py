@@ -20,6 +20,7 @@ from src.portfolio_models import (
 )
 from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
 from src.portfolio_wallet import is_wallet_plus_product
+from src.portfolio_reconciliation import reconciled_transaction
 
 
 ZERO = Decimal("0")
@@ -55,7 +56,7 @@ class PortfolioTransactionService:
         amount = self._positive_decimal(amount, "amount")
         fee_rate = self._fee_rate(fee_rate)
 
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "manual_transaction") as conn:
             self._reject_operation_audit_collision(
                 idempotency_key, conn
             )
@@ -225,18 +226,24 @@ class PortfolioTransactionService:
         )
         shares = self._positive_decimal(shares, "shares")
 
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "manual_transaction") as conn:
             self._reject_operation_audit_collision(
                 idempotency_key, conn
             )
             product = self.repository.require_product(product_id, conn=conn)
             trade_time = self._trade_time(trade_time)
+            wallet_plus_redemption = is_wallet_plus_product(product)
             if trade_time:
-                trade_date = confirmation_schedule(
-                    product,
-                    TransactionType.MANUAL_REDEMPTION,
-                    datetime.fromisoformat(trade_time),
-                ).trade_date
+                submitted_at = datetime.fromisoformat(trade_time)
+                trade_date = (
+                    submitted_at.date()
+                    if wallet_plus_redemption
+                    else confirmation_schedule(
+                        product,
+                        TransactionType.MANUAL_REDEMPTION,
+                        submitted_at,
+                    ).trade_date
+                )
             existing = self.repository.get_transaction_by_idempotency(
                 idempotency_key, conn=conn
             )
@@ -264,6 +271,11 @@ class PortfolioTransactionService:
                 )
                 if destination.product_type is not ProductType.CASH_MANAGEMENT:
                     raise ValueError("destination must be cash_management")
+
+            if (destination is not None
+                and product.product_type is not ProductType.CASH_MANAGEMENT
+                and settlement_date is None):
+                raise ValueError("赎回转入钱包需要填写预计到账日期")
 
             position = self.projector._calculate(product.id, conn)
             if position.available_shares < shares:
@@ -304,9 +316,12 @@ class PortfolioTransactionService:
                     RedemptionSettlementStatus.PENDING
                     if (
                         status is TransactionStatus.CONFIRMED
-                        and settlement_date is not None
-                        and product.product_type
-                        is not ProductType.CASH_MANAGEMENT
+                        and (settlement_date is not None or destination is not None)
+                        and (
+                            wallet_plus_redemption
+                            or product.product_type
+                            is not ProductType.CASH_MANAGEMENT
+                        )
                     )
                     else None
                 ),
@@ -349,6 +364,16 @@ class PortfolioTransactionService:
                 redemption = self.repository.create_transaction(
                     redemption,
                     conn,
+                )
+            if (
+                wallet_plus_redemption
+                and redemption.status is TransactionStatus.CONFIRMED
+            ):
+                redemption = self.repository.update_redemption_settlement(
+                    redemption.id,
+                    RedemptionSettlementStatus.SETTLED,
+                    settled_at=True,
+                    conn=conn,
                 )
 
             self._rebuild_positions(affected_product_ids, conn)
@@ -403,7 +428,7 @@ class PortfolioTransactionService:
             "product_id": product_id,
         }
 
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "manual_transaction") as conn:
             retry = self._operation_retry(
                 idempotency_key,
                 "record_cash_dividend",
@@ -508,7 +533,7 @@ class PortfolioTransactionService:
     def confirm_pending(
         self, transaction_id, quote, as_of_date=None
     ) -> Transaction:
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "manual_transaction") as conn:
             transaction = self.repository.get_transaction_by_id(
                 transaction_id, conn=conn
             )
@@ -530,6 +555,13 @@ class PortfolioTransactionService:
                 return transaction
             if transaction.status not in _PENDING_STATUSES:
                 raise ValueError("transaction is not pending")
+            if (
+                transaction.transaction_type is TransactionType.MANUAL_REDEMPTION
+                and product.product_type is not ProductType.CASH_MANAGEMENT
+                and transaction.destination_cash_product_id
+                and transaction.settlement_date is None
+            ):
+                raise ValueError("赎回转入钱包需要填写预计到账日期")
             if quote.product_code != product.code:
                 raise ValueError("quote product does not match")
             if quote.quote_date != transaction.trade_date:
@@ -577,9 +609,13 @@ class PortfolioTransactionService:
                     settlement_status=(
                         RedemptionSettlementStatus.PENDING
                         if (
-                            transaction.settlement_date is not None
-                            and product.product_type
-                            is not ProductType.CASH_MANAGEMENT
+                            (transaction.settlement_date is not None
+                             or transaction.destination_cash_product_id)
+                            and (
+                                is_wallet_plus_product(product)
+                                or product.product_type
+                                is not ProductType.CASH_MANAGEMENT
+                            )
                         )
                         else None
                     ),
@@ -607,6 +643,18 @@ class PortfolioTransactionService:
                     )
                 affected_product_ids.add(confirmed_linked.product_id)
 
+            if (
+                transaction.transaction_type
+                is TransactionType.MANUAL_REDEMPTION
+                and is_wallet_plus_product(product)
+            ):
+                confirmed = self.repository.update_redemption_settlement(
+                    confirmed.id,
+                    RedemptionSettlementStatus.SETTLED,
+                    settled_at=True,
+                    conn=conn,
+                )
+
             self._rebuild_positions(affected_product_ids, conn)
             return confirmed
 
@@ -623,10 +671,17 @@ class PortfolioTransactionService:
                     TransactionType.MANUAL_PURCHASE,
                     TransactionType.MANUAL_REDEMPTION,
                 }
-                or transaction.trade_date > as_of_date
             ):
                 continue
             product = self.repository.require_product(transaction.product_id)
+            confirmed_on = self._confirmation_date(
+                product,
+                transaction.transaction_type,
+                transaction.trade_time,
+                transaction.trade_date,
+            )
+            if confirmed_on > as_of_date:
+                continue
             if product.product_type is ProductType.CASH_MANAGEMENT:
                 quote = MarketQuote(
                     product_code=product.code,
@@ -642,14 +697,6 @@ class PortfolioTransactionService:
                 )
                 if quote is None or quote.unit_nav is None:
                     continue
-            confirmed_on = self._confirmation_date(
-                product,
-                transaction.transaction_type,
-                transaction.trade_time,
-                transaction.trade_date,
-            )
-            if confirmed_on > as_of_date:
-                continue
             settled.append(
                 self.confirm_pending(
                     transaction.id,
@@ -688,7 +735,7 @@ class PortfolioTransactionService:
         transaction_id,
         as_of_date,
     ) -> Transaction:
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "manual_transaction") as conn:
             return self._settle_redemption_in_transaction(
                 transaction_id,
                 as_of_date,
@@ -763,6 +810,7 @@ class PortfolioTransactionService:
                 ),
                 conn,
             )
+            self._rebuild_positions({destination.id}, conn)
         return self.repository.update_redemption_settlement(
             redemption.id,
             RedemptionSettlementStatus.SETTLED,
@@ -784,7 +832,7 @@ class PortfolioTransactionService:
             "actor": actor,
             "transaction_id": transaction_id,
         }
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "manual_transaction") as conn:
             retry = self._operation_retry(
                 idempotency_key,
                 "cancel_pending",
@@ -908,7 +956,7 @@ class PortfolioTransactionService:
             "reason": reason,
             "transaction_id": transaction_id,
         }
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "manual_transaction") as conn:
             retry = self._operation_retry(
                 idempotency_key,
                 "reverse_confirmed",
@@ -1149,7 +1197,7 @@ class PortfolioTransactionService:
             "reason": reason,
         }
 
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "manual_transaction") as conn:
             retry = self._operation_retry(
                 idempotency_key,
                 "adjust_holding",
@@ -1268,7 +1316,7 @@ class PortfolioTransactionService:
             "reason": reason,
         }
 
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "manual_transaction") as conn:
             retry = self._operation_retry(
                 idempotency_key,
                 "adjust_holding_profit",
@@ -1381,7 +1429,7 @@ class PortfolioTransactionService:
             "reason": reason,
         }
 
-        with self.repository.database.transaction() as conn:
+        with reconciled_transaction(self.repository, "manual_transaction") as conn:
             retry = self._operation_retry(
                 idempotency_key,
                 "adjust_latest_profit",
@@ -2284,7 +2332,11 @@ class PortfolioTransactionService:
             is_wallet_plus_product(product)
             and transaction_type is TransactionType.MANUAL_REDEMPTION
         ):
-            return trade_date
+            return (
+                self._parse_trade_time(trade_time, trade_date).date()
+                if trade_time
+                else trade_date
+            )
         if not trade_time:
             if is_wallet_plus_product(product):
                 submitted = datetime.combine(trade_date, time(12, 0))

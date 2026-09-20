@@ -56,6 +56,7 @@ def _seed_cash(repo, product_id="cash", shares="1000", trade_date=date(2026, 1, 
         confirmation_nav=Decimal("1"),
         confirmation_date=trade_date,
     ))
+    PositionProjector(repo).rebuild(product_id)
     return product_id
 
 

@@ -148,6 +148,11 @@ def test_redemption_waits_for_settlement_then_creates_t1_wallet_purchase(
     assert projector.calculate("wallet-plus").total_shares == Decimal("1000")
     assert transactions.settle_redemptions(date(2026, 9, 19)) == []
 
+    from src.portfolio_view import build_portfolio_payload
+
+    assets_before = build_portfolio_payload(
+        repository, as_of=date(2026, 9, 20)
+    )["summary"]["total_assets"]
     settled = transactions.settle_redemptions(date(2026, 9, 20))
     purchase = repository.find_purchase_by_origin(redemption.id)
     assert len(settled) == 1
@@ -161,6 +166,10 @@ def test_redemption_waits_for_settlement_then_creates_t1_wallet_purchase(
     assert purchase.trade_date == date(2026, 9, 21)
     assert purchase.confirmation_date is None
     assert projector.calculate("wallet-plus").total_shares == Decimal("55015")
+    assert repository.get_position("wallet-plus").total_shares == Decimal("55015")
+    assert build_portfolio_payload(
+        repository, as_of=date(2026, 9, 20)
+    )["summary"]["total_assets"] == assets_before
     assert transactions.settle_redemptions(date(2026, 9, 20)) == []
     assert len([
         transaction
@@ -547,7 +556,7 @@ def test_cancel_pending_is_idempotent_and_audited_once(services):
         audits = conn.execute(
             """SELECT action, object_type, object_id, result, source,
                       before_json, after_json
-               FROM audit_logs"""
+               FROM audit_logs WHERE action != 'portfolio_reconciliation'"""
         ).fetchall()
     assert len(audits) == 1
     assert tuple(audits[0][:5]) == (
@@ -2625,6 +2634,7 @@ def test_redemption_retry_is_idempotent_and_does_not_lock_twice(services):
         Decimal("25.00"),
         TRADE_DATE,
         "web:redemption-retry",
+        settlement_date=date(2026, 7, 31),
         destination_cash_product_id="cash",
     )
     retry = transactions.record_redemption(
@@ -2632,6 +2642,7 @@ def test_redemption_retry_is_idempotent_and_does_not_lock_twice(services):
         Decimal("25"),
         TRADE_DATE,
         "web:redemption-retry",
+        settlement_date=date(2026, 7, 31),
         destination_cash_product_id="cash",
     )
 
@@ -2846,6 +2857,30 @@ def test_wallet_plus_redemption_confirms_immediately_on_trade_date(services):
     assert projector.calculate("destination").total_shares == Decimal("410")
 
 
+def test_wallet_plus_weekend_redemption_uses_submission_day_and_is_settled(
+    services,
+):
+    """钱包Plus 周末赎回也应按实际提交日立即确认并到账。"""
+    repository, transactions, projector = services
+    seed_wallet_plus(repository, "wallet", "1000")
+
+    redemption = transactions.record_redemption(
+        "wallet",
+        Decimal("200"),
+        date(2026, 9, 19),
+        "web:wallet-plus-weekend-redemption",
+        trade_time="2026-09-19T17:28:00",
+    )
+
+    assert redemption.status is TransactionStatus.CONFIRMED
+    assert redemption.trade_date == date(2026, 9, 19)
+    assert redemption.confirmation_date == date(2026, 9, 19)
+    assert redemption.settlement_date == date(2026, 9, 19)
+    assert redemption.settlement_status is RedemptionSettlementStatus.SETTLED
+    assert redemption.settled_at is not None
+    assert projector.calculate("wallet").total_shares == Decimal("800")
+
+
 def test_pending_wallet_plus_redemption_settles_on_trade_date(services):
     """历史上已挂起的钱包Plus 赎回，交易日当天就应确认到账。"""
     from src.portfolio_wallet import WALLET_PROVIDER
@@ -2939,6 +2974,7 @@ def test_redemption_idempotency_key_rejects_conflicting_request(
         "shares": Decimal("25.00"),
         "trade_date": TRADE_DATE,
         "idempotency_key": "web:redemption-conflict",
+        "settlement_date": date(2026, 7, 31),
         "destination_cash_product_id": "cash",
         "created_by": "web",
     }
@@ -3196,6 +3232,7 @@ def test_confirm_pending_redemption_does_not_credit_destination_before_settlemen
         Decimal("25"),
         TRADE_DATE,
         "web:confirm-redemption",
+        settlement_date=date(2026, 7, 31),
         destination_cash_product_id="cash",
     )
     quote = MarketQuote(
@@ -3208,7 +3245,7 @@ def test_confirm_pending_redemption_does_not_credit_destination_before_settlemen
     assert confirmed.shares == Decimal("25")
     assert confirmed.linked_transaction_id == ""
     assert confirmed.destination_cash_product_id == "cash"
-    assert confirmed.settlement_status is None
+    assert confirmed.settlement_status is RedemptionSettlementStatus.PENDING
     assert projector.calculate("fund").total_shares == Decimal("75")
     assert projector.calculate("cash").total_shares == Decimal("10")
 
@@ -3227,6 +3264,7 @@ def test_confirmed_redemption_retry_rejects_different_direct_destination(
         Decimal("25"),
         TRADE_DATE,
         "web:direct-redemption-destination",
+        settlement_date=date(2026, 7, 31),
         destination_cash_product_id="cash",
     )
 
@@ -3238,6 +3276,7 @@ def test_confirmed_redemption_retry_rejects_different_direct_destination(
             Decimal("25"),
             TRADE_DATE,
             "web:direct-redemption-destination",
+            settlement_date=date(2026, 7, 31),
             destination_cash_product_id="other-cash",
         )
 
@@ -3543,6 +3582,7 @@ def test_redemption_source_projector_failure_rolls_back_ledger_and_positions(
             Decimal("20"),
             TRADE_DATE,
             "web:redemption-projection-failure",
+            settlement_date=date(2026, 7, 31),
             destination_cash_product_id="cash",
         )
 
@@ -3702,7 +3742,7 @@ def test_cash_dividend_is_idempotent_and_audited_once(services):
         audits = conn.execute(
             """SELECT action, object_type, object_id, source,
                       before_json, after_json
-               FROM audit_logs"""
+               FROM audit_logs WHERE action != 'portfolio_reconciliation'"""
         ).fetchall()
     assert len(audits) == 1
     assert tuple(audits[0][:4]) == (

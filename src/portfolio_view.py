@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 from src.portfolio_models import (
@@ -13,6 +13,8 @@ from src.portfolio_confirmation import confirmation_schedule
 from src.portfolio_positions import pending_purchase_is_in_current_position
 from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
 from src.portfolio_wallet import is_wallet_plus_product
+from src.beijing_time import TZ_CN
+from src.portfolio_reconciliation import transit_assets
 
 
 _ZERO = Decimal("0")
@@ -48,7 +50,13 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
         if _is_overview_position(row, transactions, as_of)
     ]
     profit_history = _profit_history(repository)
-    summary = _summary(rows, profit_history, as_of, repository=repository)
+    summary = _summary(
+        rows,
+        profit_history,
+        as_of,
+        transactions=transactions,
+        products_by_id=products_by_id,
+    )
     transactions_by_id = {
         transaction.id: transaction for transaction in transactions
     }
@@ -200,12 +208,22 @@ def _wallet_pending_purchase_balances(product, transactions):
     }
 
     def event_key(transaction):
+        clock_time = transaction.trade_time or "00:00:00"
+        if not transaction.trade_time and transaction.created_at:
+            # SQLite creation timestamps are UTC; scheduled cash deductions
+            # have no trade_time. Use the actual local time on the trade date.
+            created = datetime.fromisoformat(transaction.created_at)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            local_created = created.astimezone(TZ_CN)
+            if local_created.date() == transaction.trade_date:
+                clock_time = local_created.strftime("%H:%M:%S")
         event_time = (
             transaction.trade_time
             if "T" in transaction.trade_time
             else (
                 f"{transaction.trade_date.isoformat()}T"
-                f"{transaction.trade_time or '00:00:00'}"
+                f"{clock_time}"
             )
         )
         event_order = {
@@ -471,7 +489,15 @@ def _legacy_profit_rows(repository):
     ]
 
 
-def _summary(products, profit_history, as_of, repository=None):
+def _summary(
+    products,
+    profit_history,
+    as_of,
+    *,
+    transactions=(),
+    products_by_id=None,
+):
+    products_by_id = products_by_id or {}
     market_value = sum(
         (Decimal(row["market_value"]) for row in products if row["market_value"] is not None),
         _ZERO,
@@ -498,9 +524,16 @@ def _summary(products, profit_history, as_of, repository=None):
         ),
         _ZERO,
     )
+    pending_buy, in_transit_sell = transit_assets(
+        products_by_id,
+        [tx for tx in transactions if _transaction_is_effective_as_of(tx, as_of)],
+    )
     return {
         "as_of": as_of.isoformat(),
         "market_value": decimal_text(market_value),
+        "total_assets": decimal_text(
+            market_value + pending_buy + in_transit_sell
+        ),
         "cost_basis": decimal_text(cost_basis),
         "unrealized_profit": decimal_text(market_value - cost_basis),
         "cumulative_profit": decimal_text(cumulative_profit),
@@ -677,6 +710,13 @@ def _transaction_row(
             else linked_product.name if linked_product is not None else "钱包"
         )
     return row
+
+
+def _transaction_is_effective_as_of(transaction, as_of):
+    effective_date = transaction.trade_date
+    if transaction.trade_time and "T" in transaction.trade_time:
+        effective_date = datetime.fromisoformat(transaction.trade_time).date()
+    return effective_date <= as_of
 
 
 def _sip_purchase_for_deduction(deduction, transactions):

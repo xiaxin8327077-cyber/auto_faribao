@@ -54,32 +54,34 @@ def test_position_group_cards_drop_header_rule_and_space_products():
     assert "}).join('')}</div></section>`" in html
 
 
-def test_page_scrollbar_stops_above_bottom_tabs():
+def test_page_scrollbar_stays_between_topbar_and_bottom_tabs():
     html = _read_page()
     assert "html, body { height: 100%; overflow: hidden; }" in html
     tabs = html[html.index(".management-tabs {"): html.index(".management-tabs {") + 420]
-    assert "position: absolute;" in tabs
-    assert "bottom: 0;" in tabs
+    assert "position: relative;" in tabs
+    assert "order: 3;" in tabs
+    assert "flex: 0 0 auto;" in tabs
     assert "backdrop-filter: saturate(180%) blur(18px);" in tabs
     start = html.index(".management-panel:not([hidden])")
     block = html[start: start + 420]
     assert "order: 2;" in block
     assert "overflow-y: auto;" in block
-    assert "padding-top: calc(12px + 54px + env(safe-area-inset-top, 0px));" in block
-    assert "padding-bottom: calc(16px + 54px + env(safe-area-inset-bottom, 0px));" in block
+    assert "padding-top: calc(12px + 54px" not in block
+    assert "padding-bottom: calc(16px + 54px" not in block
 
 
-def test_topbar_uses_frosted_glass_overlay():
+def test_bars_keep_frosted_style_and_reserve_layout_space():
     html = _read_page()
     start = html.index(".topbar {")
     block = html[start: html.index(".top-actions")]
-    assert "position: absolute;" in block
+    assert "position: relative;" in block
+    assert "flex: 0 0 auto;" in block
     assert "backdrop-filter: saturate(180%) blur(18px);" in block
     assert "background: rgba(255, 255, 255, 0.66);" in block
     assert "#dashboardContent" in html and "position: relative;" in html[html.index("#dashboardContent"): html.index("#dashboardContent") + 180]
     tabs = html[html.index(".management-tabs {"): html.index(".management-tabs {") + 420]
-    assert "position: absolute;" in tabs
-    assert "bottom: 0;" in tabs
+    assert "position: relative;" in tabs
+    assert "order: 3;" in tabs
     assert "backdrop-filter: saturate(180%) blur(18px);" in tabs
     assert "background: rgba(255, 255, 255, 0.66);" in tabs
 
@@ -109,15 +111,14 @@ def test_page_title_uses_quiet_app_bar_style():
     start = html.index(".topbar {")
     block = html[start: html.index(".top-actions")]
     assert "align-items: center;" in block
-    assert "position: absolute;" in block
+    assert "position: relative;" in block
     assert "background: rgba(255, 255, 255, 0.66);" in block
     assert "backdrop-filter: saturate(180%) blur(18px);" in block
     assert "min-height: 54px;" in block
     assert "border-bottom: 1px solid rgba(215, 228, 242, 0.55);" in block
     assert ".management-tabs" in html and "background: rgba(255, 255, 255, 0.66);" in html
     assert ".management-tab" in html and "min-height: 54px;" in html
-    assert "padding-top: calc(12px + 54px + env(safe-area-inset-top, 0px));" in html
-    assert "padding-bottom: calc(16px + 54px + env(safe-area-inset-bottom, 0px));" in html
+    assert ".management-panel { padding: 12px 14px 16px; }" in html
     title = html[html.index("h1 { margin: 0;"): html.index("h1 { margin: 0;") + 160]
     assert "font-size: 17px;" in title
     assert "font-weight: 700;" in title
@@ -326,6 +327,33 @@ def test_wallet_pending_transaction_uses_realtime_remaining_shares():
 
     assert "rowValue(row, 'remaining_confirmation_shares')" in html
     assert "实时剩余确认份额" in html
+
+
+def test_wallet_overview_uses_remaining_in_transit_and_preserves_zero():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for JavaScript behavior checks")
+    html = _read_page()
+    helper = html[html.index("function pendingPurchaseRemainingAmount("):html.index("function transactionStatusLabel(")]
+    overview = html[html.index("const portfolioProduct = pfList.find("):html.index("const pendingRedemptionShares = pfTxList.filter(")]
+    script = r"""
+const assert = require('assert');
+const rowValue = (row, ...keys) => {for (const key of keys) if (row?.[key] !== undefined && row[key] !== null) return row[key]; return '';};
+const number = value => Number(value) || 0;
+const normalStatus = value => value.startsWith('pending') ? 'pending' : value;
+""" + helper + "\nfunction overviewAmount(pfList, pfTxList, pid) {\n" + overview + "\nreturn pendingBuyAmt;\n}\n" + r"""
+const transactions = [
+  {product_id:'wallet-plus',status:'pending_confirmation',transaction_type:'manual_purchase',amount:'108000',remaining_confirmation_shares:'55800'},
+  {product_id:'wallet-plus',status:'pending_confirmation',transaction_type:'manual_purchase',amount:'54015',remaining_confirmation_shares:'54015'}
+];
+assert.strictEqual(overviewAmount([{product_id:'wallet-plus',in_transit_amount:'109815'}], transactions, 'wallet-plus'),109815);
+assert.strictEqual(overviewAmount([{product_id:'wallet-plus',in_transit_amount:'0'}], transactions, 'wallet-plus'),0);
+assert.strictEqual(overviewAmount([], transactions, 'wallet-plus'),109815);
+assert.strictEqual(pendingPurchaseRemainingAmount({amount:'108000',remaining_confirmation_shares:'0'}),0);
+assert.strictEqual(pendingPurchaseRemainingAmount({amount:'50000',remaining_confirmation_shares:null}),50000);
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_position_detail_opens_a_real_dialog():
@@ -709,17 +737,33 @@ def test_overview_does_not_remerge_catalog_products_into_authoritative_products(
 def test_total_assets_excludes_pending_purchase_already_in_holdings():
     page = PAGE_PATH.read_text(encoding="utf-8")
 
-    assert (
-        "function pendingPurchaseAlreadyInHoldings(transaction, transactions)"
-        in page
-    )
-    assert "rowValue(transaction, 'included_in_position')" in page
-    assert "normalStatus(rowValue(funding, 'status')) === 'pending'" in page
-    assert "!pendingPurchaseAlreadyInHoldings(t, pfTxList)" in page
-    assert (
-        "holdingsValue + pendingBuy + inTransitSell - pendingSell"
-        in page
-    )
+    assert "rowValue(data.portfolio?.summary, 'total_assets')" in page
+    assert "holdingsValue + pendingBuy + inTransitSell - pendingSell" not in page
+
+
+def test_overview_rounds_summary_once_instead_of_rounding_each_product():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for JavaScript behavior checks")
+    page = _read_page()
+    logic = page[page.index("const marketValue = rowValue(data.portfolio?.summary, 'market_value');"):page.index("const inTransitSell = pfTxList.filter(")]
+    script = r"""
+const assert = require('assert');
+const rowValue = (row, ...keys) => {for (const k of keys) if (row?.[k] !== undefined && row[k] !== null) return row[k]; return '';};
+const number = value => Number(value) || 0;
+function market(data, pfList) {
+""" + logic + r"""
+return Math.round(holdingsValue * 100) / 100;
+}
+const products = [{market_value:'100.006'}, {market_value:'200.006'}];
+assert.strictEqual(market({portfolio:{summary:{market_value:'300.012'}}},products),300.01);
+assert.strictEqual(market({},products),300.01);
+assert.strictEqual(market({portfolio:{summary:{market_value:'665555.830385323649'}}},products),665555.83);
+assert.strictEqual(Math.round((717555.83-665555.83)*100)/100,52000);
+assert.strictEqual(market({portfolio:{summary:{market_value:'0'}}},products),0);
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_overview_hides_zero_share_products_after_redemption_settled():
@@ -789,6 +833,84 @@ def test_calibration_transactions_have_an_exclusive_filter():
     assert "if (transactionFilter === 'adjustment') return calibration;" in page
     assert "if (calibration) return false;" in page
     assert "status === 'reversed' ? 'cancelled' : status" in page
+
+
+def test_transactions_reuse_all_tag_and_add_purchase_and_redemption():
+    page = _read_page()
+    assert page.count('data-transaction-filter="all"') == 1
+    assert 'data-transaction-filter="purchase">申购</button>' in page
+    assert 'data-transaction-filter="redemption">赎回</button>' in page
+    assert 'data-transaction-type-filter' not in page
+
+
+def test_transaction_filter_tags_wrap_without_horizontal_scrolling():
+    page = _read_page()
+    assert '\n    .transaction-filter-row {' in page
+    container = page.split('\n    .transaction-filters {', 1)[1].split('}', 1)[0]
+    row = page.split('\n    .transaction-filter-row {', 1)[1].split('}', 1)[0]
+    button = page.split('\n    .transaction-filter {', 1)[1].split('}', 1)[0]
+    assert 'flex-direction: column;' in container
+    assert 'flex-wrap: wrap;' in row
+    assert 'overflow-x: auto;' not in container
+    assert 'gap: 7px;' in container
+    assert 'flex: 0 0 auto;' in button
+
+
+def test_cancelled_and_adjustment_filters_are_on_the_second_row():
+    page = _read_page()
+    filters = page[page.index('aria-label="交易记录筛选"'):page.index('id="transactionsList"')]
+    rows = filters.split('<div class="transaction-filter-row">')[1:]
+    assert len(rows) == 2
+    expected = [('all', 'purchase', 'redemption', 'pending', 'confirmed'), ('cancelled', 'adjustment')]
+    for row, values in zip(rows, expected):
+        found = [part.split('"', 1)[0] for part in row.split('data-transaction-filter="')[1:]]
+        assert found == list(values)
+
+
+def test_transaction_purchase_redemption_filters_preserve_existing_filters_and_order():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for JavaScript behavior checks")
+    page = _read_page()
+    logic = page[page.index("function renderTransactions() {"):page.index("$('transactionsList').innerHTML =")]
+    script = r"""
+const assert = require('assert');
+const rowValue = (row, ...keys) => {for (const k of keys) if (row?.[k] !== undefined && row[k] !== null) return row[k]; return '';};
+const normalStatus = value => ({pending_quote:'pending', pending_confirmation:'pending', settled:'confirmed'})[value] || value;
+const CALIBRATION_TRANSACTION_TYPES = new Set(['holding_adjustment', 'profit_adjustment', 'latest_profit_adjustment']);
+const isVisibleTransaction = () => true;
+const records = [
+  {id:'redemption-settled', transaction_type:'manual_redemption', status:'confirmed', display_status:'settled'},
+  {id:'sip-pending', transaction_type:'sip_purchase', status:'pending_quote'},
+  {id:'manual-confirmed', transaction_type:'manual_purchase', status:'confirmed'},
+  {id:'manual-cancelled', transaction_type:'manual_purchase', status:'cancelled'},
+  {id:'redemption-pending', transaction_type:'manual_redemption', status:'pending_confirmation'},
+  {id:'cash-leg', transaction_type:'cash_transfer_out', plan_id:'sip', status:'confirmed'},
+  {id:'income', transaction_type:'income_accrual', status:'confirmed'},
+  {id:'adjustment', transaction_type:'holding_adjustment', status:'confirmed'},
+];
+const portfolioRows = () => records;
+let transactionFilter = 'all';
+""" + logic + r"""
+return visible.map(row => row.id);
+}
+transactionFilter = 'purchase';
+assert.deepStrictEqual(renderTransactions(), ['sip-pending','manual-confirmed','manual-cancelled']);
+transactionFilter = 'pending';
+assert.deepStrictEqual(renderTransactions(), ['sip-pending','redemption-pending']);
+transactionFilter = 'confirmed';
+assert.deepStrictEqual(renderTransactions(), ['redemption-settled','manual-confirmed','cash-leg','income']);
+transactionFilter = 'redemption';
+assert.deepStrictEqual(renderTransactions(), ['redemption-settled','redemption-pending']);
+transactionFilter = 'cancelled';
+assert.deepStrictEqual(renderTransactions(), ['manual-cancelled']);
+transactionFilter = 'adjustment';
+assert.deepStrictEqual(renderTransactions(), ['adjustment']);
+transactionFilter = 'all';
+assert.deepStrictEqual(renderTransactions(), records.filter(row => row.id !== 'adjustment').map(row => row.id));
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_top_metrics_unchanged():
