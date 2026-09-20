@@ -12,6 +12,22 @@ def _read_page() -> str:
     return PAGE_PATH.read_text(encoding="utf-8")
 
 
+def test_selected_logo_is_shared_by_header_and_browser_icon():
+    html = _read_page()
+    asset = "/nav-assets/private-wealth-logo.png"
+    assert f'<link rel="icon" type="image/png" href="{asset}">' in html
+    header = html[html.index('<header class="topbar">'):html.index('</header>')]
+    assert '<div class="app-brand">' in header
+    assert (
+        f'<img class="brand-logo" src="{asset}" width="38" height="38" '
+        'alt="" aria-hidden="true">'
+    ) in header
+    assert header.index('class="brand-logo"') < header.index('<h1>理财组合看板</h1>')
+    assert ".app-brand { display: flex; align-items: center; gap: 4px; min-width: 0; }" in html
+    assert ".brand-logo { width: 38px; height: 38px; flex: 0 0 38px; object-fit: contain; }" in html
+    assert ".app-brand h1 { white-space: nowrap; }" in html
+
+
 def test_page_has_four_management_tabs_and_quick_trade():
     html = _read_page()
     for element_id in (

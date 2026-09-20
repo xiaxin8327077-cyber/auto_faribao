@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <meta name="color-scheme" content="light">
   <title>理财组合看板</title>
+  <link rel="icon" type="image/png" href="/nav-assets/private-wealth-logo.png">
   <link rel="stylesheet" href="/nav-assets/fonts/fz-fangsong/font.css">
   <style>
     :root {
@@ -73,6 +74,9 @@
       box-shadow: 0 1px 0 rgba(255, 255, 255, 0.45) inset;
     }
     h1 { margin: 0; color: var(--text); font-size: 17px; line-height: 24px; font-weight: 700; }
+    .app-brand { display: flex; align-items: center; gap: 4px; min-width: 0; }
+    .brand-logo { width: 38px; height: 38px; flex: 0 0 38px; object-fit: contain; }
+    .app-brand h1 { white-space: nowrap; }
     .top-actions { display: flex; align-items: center; gap: 8px; }
     .refresh-meta { min-width: 70px; text-align: right; }
     .refresh-state { font-size: 11px; line-height: 1.25; font-weight: 800; }
@@ -589,7 +593,10 @@
     </div>
     <div id="dashboardContent" hidden>
       <header class="topbar">
-        <h1>理财组合看板</h1>
+        <div class="app-brand">
+          <img class="brand-logo" src="/nav-assets/private-wealth-logo.png" width="38" height="38" alt="" aria-hidden="true">
+          <h1>理财组合看板</h1>
+        </div>
         <div class="top-actions">
           <div class="refresh-meta">
             <div class="refresh-state idle" id="refreshState" role="status" aria-live="polite">等待更新</div>

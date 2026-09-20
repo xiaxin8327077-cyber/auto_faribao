@@ -147,6 +147,17 @@ def test_nav_icon_assets_are_served_locally():
     assert response.mimetype == "image/svg+xml"
 
 
+def test_selected_logo_png_is_served_locally_with_transparency():
+    response = create_app(_cfg()).test_client().get("/nav-assets/private-wealth-logo.png")
+
+    assert response.status_code == 200
+    assert response.mimetype == "image/png"
+    assert response.data.startswith(b"\x89PNG\r\n\x1a\n")
+    # PNG IHDR color type 6 is RGBA: the logo must not bake in a checkerboard.
+    assert response.data[25] == 6
+    assert len(response.data) < 400_000
+
+
 def test_fangsong_webfont_is_served_locally():
     client = create_app(_cfg()).test_client()
     css = client.get("/nav-assets/fonts/fz-fangsong/font.css")
