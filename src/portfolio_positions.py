@@ -66,6 +66,17 @@ def pending_purchase_is_in_current_position(
     )
 
 
+def redemption_settlement_purchase_is_start_of_day(product, transaction):
+    return (
+        product.provider == _WALLET_PLUS_PROVIDER
+        and product.product_type is ProductType.CASH_MANAGEMENT
+        and transaction.transaction_type is TransactionType.MANUAL_PURCHASE
+        and transaction.created_by == "redemption_settlement"
+        and bool(transaction.origin_transaction_id)
+        and (transaction.shares or ZERO) > ZERO
+    )
+
+
 class PositionProjector:
     def __init__(self, repository):
         self.repository = repository
@@ -99,11 +110,18 @@ class PositionProjector:
             key=lambda transaction: (
                 transaction.trade_date,
                 0
-                if pending_purchase_is_in_current_position(
+                if redemption_settlement_purchase_is_start_of_day(
                     product,
                     transaction,
                 )
-                else 1,
+                else (
+                    1
+                    if pending_purchase_is_in_current_position(
+                        product,
+                        transaction,
+                    )
+                    else 2
+                ),
                 transaction.created_at,
                 transaction.id,
             ),

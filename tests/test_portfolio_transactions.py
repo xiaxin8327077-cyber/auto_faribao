@@ -282,6 +282,44 @@ def _create_settled_wallet_redemption(services):
     )
 
 
+def test_redemption_settlement_wallet_purchase_keeps_priority_when_confirmed(
+    services,
+):
+    repository, transactions, projector, _redemption, wallet_purchase = (
+        _create_settled_wallet_redemption(services)
+    )
+    seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    fund_purchase = transactions.record_purchase(
+        "fund",
+        Decimal("50000"),
+        wallet_purchase.trade_date,
+        "web:spend-late-created-redemption-settlement",
+        source_cash_product_id="wallet-plus",
+    )
+    cash_out = linked_leg(repository, fund_purchase)
+    with repository.database.transaction() as conn:
+        conn.execute(
+            """UPDATE transactions
+               SET created_at = (
+                   SELECT datetime(created_at, '+1 second')
+                   FROM transactions
+                   WHERE id = ?
+               )
+               WHERE id = ?""",
+            (cash_out.id, wallet_purchase.id),
+        )
+
+    assert projector.calculate("wallet-plus").total_shares == Decimal("5015")
+
+    transactions.settle_pending(date(2026, 9, 22))
+
+    assert (
+        repository.get_transaction_by_id(wallet_purchase.id).status
+        is TransactionStatus.CONFIRMED
+    )
+    assert projector.calculate("wallet-plus").total_shares == Decimal("5015")
+
+
 def test_reversing_settled_redemption_cancels_pending_wallet_purchase(
     services,
 ):
