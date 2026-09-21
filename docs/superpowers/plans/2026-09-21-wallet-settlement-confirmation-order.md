@@ -55,13 +55,21 @@ Return true only for positive-share `MANUAL_PURCHASE` transactions on the Wallet
 
 Give those events priority independent of pending/confirmed status. Keep `pending_purchase_is_in_current_position` unchanged for realtime inclusion semantics.
 
-- [ ] **Step 3: Run the focused test and verify GREEN**
+- [ ] **Step 3: Add the historical-income regression test**
 
-Run: `python -m pytest tests/test_portfolio_transactions.py::test_redemption_settlement_wallet_purchase_keeps_priority_when_confirmed -q`
+Create a WalletPlus position with confirmed opening shares, a wallet purchase whose confirmation date is later than the historical income date, and a same-day outflow larger than the confirmed opening shares but smaller than total realtime liquidity. Assert the historical confirmed position is zero rather than negative and the pending purchase does not earn income early.
 
-Expected: `1 passed`.
+- [ ] **Step 4: Track pending liquidity only in historical replay**
 
-- [ ] **Step 4: Run affected suites**
+When `use_confirmation_date=True`, keep future-confirming WalletPlus purchases out of confirmed shares but track their shares in a local liquidity pool. Permit negative-delta wallet events to consume that pool only after confirmed shares reach zero; retain the negative-share error when the pool cannot cover the shortfall.
+
+- [ ] **Step 5: Run the focused tests and verify GREEN**
+
+Run: `python -m pytest tests/test_portfolio_transactions.py::test_redemption_settlement_wallet_purchase_keeps_priority_when_confirmed tests/test_portfolio_income.py::test_wallet_outflow_can_consume_future_confirming_liquidity_without_negative_history -q`
+
+Expected: `2 passed`.
+
+- [ ] **Step 6: Run affected suites**
 
 Run: `python -m pytest tests/test_portfolio_positions.py tests/test_portfolio_transactions.py tests/test_portfolio_sip.py tests/test_portfolio_jobs.py -q`
 
@@ -142,4 +150,3 @@ Verify wallet income for 19 and 20 September exists, all positions recalculate t
 - [ ] **Step 4: Verify unaffected production behavior**
 
 Confirm the service remains active, NAV/profit pushes are no longer gated by a failed portfolio cycle, and unrelated product transactions did not change.
-

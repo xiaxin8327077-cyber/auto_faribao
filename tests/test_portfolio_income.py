@@ -218,6 +218,51 @@ def test_purchase_earns_from_day_after_wallet_confirmation(
     assert earn_day.amount == Decimal("0.75005000125")
 
 
+def test_wallet_outflow_can_consume_future_confirming_liquidity_without_negative_history(
+    income_services,
+):
+    repository, projector, income = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    repository.create_transaction(
+        Transaction(
+            id="future-confirming-purchase:cash",
+            product_id="cash",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=INCOME_DATE,
+            confirmation_date=date(2026, 7, 31),
+            idempotency_key="future-confirming-purchase:cash",
+            amount=Decimal("5000"),
+            shares=Decimal("5000"),
+            confirmation_nav=Decimal("1"),
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="same-day-outflow:cash",
+            product_id="cash",
+            transaction_type=TransactionType.CASH_TRANSFER_OUT,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=INCOME_DATE,
+            confirmation_date=INCOME_DATE,
+            idempotency_key="same-day-outflow:cash",
+            amount=Decimal("12000"),
+            shares=Decimal("12000"),
+            confirmation_nav=Decimal("1"),
+        )
+    )
+    projector.rebuild("cash")
+    seed_quote(repository, "cash", date(2026, 7, 30), "0.5")
+
+    result = income.accrue("cash", date(2026, 7, 30))
+
+    assert result.amount == Decimal("0")
+    assert projector.calculate_confirmed_as_of(
+        "cash", INCOME_DATE
+    ).total_shares == Decimal("0")
+    assert projector.calculate("cash").total_shares == Decimal("3000")
+
+
 def test_wallet_income_accrues_on_weekend(income_services):
     """现金产品周末也计提收益。"""
     repository, projector, income = income_services

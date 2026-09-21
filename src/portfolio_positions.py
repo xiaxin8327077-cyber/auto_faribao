@@ -77,6 +77,29 @@ def redemption_settlement_purchase_is_start_of_day(product, transaction):
     )
 
 
+def wallet_purchase_is_unconfirmed_liquidity(
+    product,
+    transaction,
+    *,
+    as_of,
+    use_confirmation_date,
+):
+    return (
+        use_confirmation_date
+        and as_of is not None
+        and product.provider == _WALLET_PLUS_PROVIDER
+        and product.product_type is ProductType.CASH_MANAGEMENT
+        and transaction.transaction_type is TransactionType.MANUAL_PURCHASE
+        and transaction.status in (_APPLIED_STATUSES | _PENDING_STATUSES)
+        and transaction.trade_date <= as_of
+        and (
+            transaction.confirmation_date is None
+            or transaction.confirmation_date > as_of
+        )
+        and (transaction.shares or ZERO) > ZERO
+    )
+
+
 class PositionProjector:
     def __init__(self, repository):
         self.repository = repository
@@ -101,6 +124,7 @@ class PositionProjector:
         total_shares = ZERO
         locked_shares = ZERO
         cost_basis = ZERO
+        unconfirmed_wallet_liquidity = ZERO
         product = self.repository.require_product(product_id, conn=conn)
         transactions = sorted(
             self.repository.list_transactions(
@@ -131,6 +155,16 @@ class PositionProjector:
         for transaction in transactions:
             if transaction.id in neutralized_event_ids:
                 continue
+            shares = transaction.shares or ZERO
+            if wallet_purchase_is_unconfirmed_liquidity(
+                product,
+                transaction,
+                as_of=as_of,
+                use_confirmation_date=use_confirmation_date,
+            ):
+                # WalletPlus 待确认资金可用于转出，但确认前不计入生息份额。
+                unconfirmed_wallet_liquidity += shares
+                continue
             effective_date = (
                 transaction.confirmation_date or transaction.trade_date
                 if use_confirmation_date
@@ -138,7 +172,6 @@ class PositionProjector:
             )
             if as_of is not None and effective_date > as_of:
                 continue
-            shares = transaction.shares or ZERO
             if (
                 transaction.status in _PENDING_STATUSES
                 and transaction.transaction_type in _LOCKING_TYPES
@@ -174,7 +207,23 @@ class PositionProjector:
             )
             next_total = total_shares + share_delta
             if next_total < ZERO:
-                raise ValueError("negative portfolio shares")
+                shortfall = -next_total
+                can_use_unconfirmed_wallet_liquidity = (
+                    use_confirmation_date
+                    and product.provider == _WALLET_PLUS_PROVIDER
+                    and product.product_type is ProductType.CASH_MANAGEMENT
+                    and transaction.transaction_type
+                    in (_AVERAGE_COST_OUTFLOW_TYPES | {
+                        TransactionType.HOLDING_ADJUSTMENT,
+                    })
+                    and share_delta < ZERO
+                    and unconfirmed_wallet_liquidity >= shortfall
+                )
+                if not can_use_unconfirmed_wallet_liquidity:
+                    raise ValueError("negative portfolio shares")
+                unconfirmed_wallet_liquidity -= shortfall
+                share_delta = -total_shares
+                next_total = ZERO
 
             amount = transaction.amount or ZERO
             if transaction.transaction_type in _COST_ADDITION_TYPES:
