@@ -860,6 +860,69 @@ def test_wallet_pending_balances_include_dated_sip_outflow(created_at, purchase_
     assert rows[0].amount == Decimal("108000")
 
 
+def test_wallet_pending_balance_applies_restored_double_reversal_outflow():
+    from src.portfolio_view import _wallet_pending_purchase_balances
+
+    product = Product(
+        "wallet-plus",
+        "wallet_plus",
+        "WALLETPLUS",
+        "钱包Plus",
+        ProductType.CASH_MANAGEMENT,
+    )
+    purchase = Transaction(
+        id="pending-purchase",
+        product_id=product.id,
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.PENDING_CONFIRMATION,
+        trade_date=date(2026, 9, 18),
+        trade_time="2026-09-18T09:00:00",
+        idempotency_key="pending-purchase",
+        amount=Decimal("5000"),
+        shares=Decimal("5000"),
+    )
+    outflow = Transaction(
+        id="restored-outflow",
+        product_id=product.id,
+        transaction_type=TransactionType.CASH_TRANSFER_OUT,
+        status=TransactionStatus.REVERSED,
+        trade_date=date(2026, 9, 18),
+        trade_time="2026-09-18T10:00:00",
+        idempotency_key="restored-outflow",
+        amount=Decimal("4000"),
+        shares=Decimal("4000"),
+    )
+    first_reversal = Transaction(
+        id="first-reversal",
+        product_id=product.id,
+        transaction_type=TransactionType.REVERSAL,
+        status=TransactionStatus.REVERSED,
+        trade_date=date(2026, 9, 18),
+        idempotency_key="first-reversal",
+        amount=Decimal("-4000"),
+        shares=Decimal("-4000"),
+        linked_transaction_id=outflow.id,
+    )
+    second_reversal = Transaction(
+        id="second-reversal",
+        product_id=product.id,
+        transaction_type=TransactionType.REVERSAL,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 9, 18),
+        idempotency_key="second-reversal",
+        amount=Decimal("4000"),
+        shares=Decimal("4000"),
+        linked_transaction_id=first_reversal.id,
+    )
+
+    balances = _wallet_pending_purchase_balances(
+        product,
+        [purchase, outflow, first_reversal, second_reversal],
+    )
+
+    assert balances == {purchase.id: Decimal("1000")}
+
+
 def test_wallet_plus_in_transit_nets_later_realtime_outflow(
     portfolio_fixture,
 ):

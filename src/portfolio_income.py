@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from decimal import Decimal
 from uuid import uuid4
 
@@ -21,11 +22,18 @@ class CashIncomeService:
         self.repository = repository
         self.projector = projector
 
-    def accrue(self, product_id, quote_date) -> Transaction | None:
+    def accrue(self, product_id, quote_date, *, conn=None) -> Transaction | None:
+        """Optionally join an existing reconciled transaction for maintenance."""
+        if conn is not None and not conn.in_transaction:
+            raise ValueError("income accrual requires an active transaction")
         idempotency_key = (
             f"income:{product_id}:{quote_date.isoformat()}"
         )
-        with reconciled_transaction(self.repository, "income_accrual") as conn:
+        context = (
+            reconciled_transaction(self.repository, "income_accrual")
+            if conn is None else nullcontext(conn)
+        )
+        with context as conn:
             product = self.repository.require_product(product_id, conn=conn)
             if product.product_type is not ProductType.CASH_MANAGEMENT:
                 raise ValueError("product must be cash_management")

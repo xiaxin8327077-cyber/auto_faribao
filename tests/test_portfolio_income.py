@@ -218,7 +218,7 @@ def test_purchase_earns_from_day_after_wallet_confirmation(
     assert earn_day.amount == Decimal("0.75005000125")
 
 
-def test_wallet_outflow_can_consume_future_confirming_liquidity_without_negative_history(
+def test_wallet_outflow_consumes_future_confirming_liquidity_before_confirmed_principal(
     income_services,
 ):
     repository, projector, income = income_services
@@ -249,6 +249,7 @@ def test_wallet_outflow_can_consume_future_confirming_liquidity_without_negative
             amount=Decimal("12000"),
             shares=Decimal("12000"),
             confirmation_nav=Decimal("1"),
+            trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
         )
     )
     projector.rebuild("cash")
@@ -256,11 +257,433 @@ def test_wallet_outflow_can_consume_future_confirming_liquidity_without_negative
 
     result = income.accrue("cash", date(2026, 7, 30))
 
-    assert result.amount == Decimal("0")
+    assert result.amount == Decimal("0.15")
     assert projector.calculate_confirmed_as_of(
         "cash", INCOME_DATE
-    ).total_shares == Decimal("0")
-    assert projector.calculate("cash").total_shares == Decimal("3000")
+    ).total_shares == Decimal("3000")
+    assert projector.calculate_confirmed_as_of(
+        "cash", date(2026, 7, 31)
+    ).total_shares == Decimal("3000.15")
+    assert projector.calculate("cash").total_shares == Decimal("3000.15")
+
+
+def test_wallet_pending_amount_spent_before_confirmation_is_not_added_twice():
+    from src.portfolio_wallet_allocation import (
+        wallet_pending_purchase_allocations,
+    )
+
+    product = Product(
+        "cash", "wallet_plus", "cash", "cash", ProductType.CASH_MANAGEMENT
+    )
+    purchase = Transaction(
+        id="future-confirming-purchase:cash",
+        product_id="cash",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=date(2026, 7, 31),
+        idempotency_key="future-confirming-purchase:cash",
+        amount=Decimal("5000"),
+        shares=Decimal("5000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T09:00:00",
+    )
+    outflow = Transaction(
+        id="same-day-outflow:cash",
+        product_id="cash",
+        transaction_type=TransactionType.CASH_TRANSFER_OUT,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=INCOME_DATE,
+        idempotency_key="same-day-outflow:cash",
+        amount=Decimal("12000"),
+        shares=Decimal("12000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
+    )
+
+    allocations = wallet_pending_purchase_allocations(
+        product,
+        [purchase, outflow],
+        include_confirmed_purchases=True,
+    )
+
+    assert allocations.allocated_by_outflow == {
+        outflow.id: Decimal("5000"),
+    }
+    assert allocations.confirmed_shares_by_purchase == {
+        purchase.id: Decimal("0"),
+    }
+
+
+def test_wallet_pending_purchase_cannot_cover_an_earlier_outflow():
+    from src.portfolio_wallet_allocation import (
+        wallet_pending_purchase_allocations,
+    )
+
+    product = Product(
+        "cash", "wallet_plus", "cash", "cash", ProductType.CASH_MANAGEMENT
+    )
+    outflow = Transaction(
+        id="earlier-outflow:cash",
+        product_id="cash",
+        transaction_type=TransactionType.CASH_TRANSFER_OUT,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=INCOME_DATE,
+        idempotency_key="earlier-outflow:cash",
+        amount=Decimal("12000"),
+        shares=Decimal("12000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T09:00:00",
+    )
+    late_purchase = Transaction(
+        id="late-future-confirming-purchase:cash",
+        product_id="cash",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=date(2026, 7, 31),
+        idempotency_key="late-future-confirming-purchase:cash",
+        amount=Decimal("5000"),
+        shares=Decimal("5000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
+    )
+
+    allocations = wallet_pending_purchase_allocations(
+        product,
+        [late_purchase, outflow],
+        include_confirmed_purchases=True,
+    )
+
+    assert allocations.allocated_by_outflow == {outflow.id: Decimal("0")}
+    assert allocations.confirmed_shares_by_purchase == {
+        late_purchase.id: Decimal("5000"),
+    }
+
+
+def test_wallet_refund_before_confirmation_restores_pending_without_duplicate_principal(
+    income_services,
+):
+    repository, projector, _ = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    repository.create_transaction(Transaction(
+        id="pending-purchase:cash",
+        product_id="cash",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=date(2026, 7, 31),
+        idempotency_key="pending-purchase:cash",
+        amount=Decimal("5000"),
+        shares=Decimal("5000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T09:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="outflow:cash",
+        product_id="cash",
+        transaction_type=TransactionType.CASH_TRANSFER_OUT,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=INCOME_DATE,
+        idempotency_key="outflow:cash",
+        amount=Decimal("2000"),
+        shares=Decimal("2000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="refund:cash",
+        product_id="cash",
+        transaction_type=TransactionType.CASH_TRANSFER_IN,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 7, 30),
+        confirmation_date=date(2026, 7, 30),
+        linked_transaction_id="outflow:cash",
+        idempotency_key="refund:cash",
+        amount=Decimal("2000"),
+        shares=Decimal("2000"),
+        trade_time="2026-07-30T10:00:00",
+    ))
+
+    before_confirmation = projector.calculate_confirmed_as_of(
+        "cash", date(2026, 7, 30)
+    )
+    confirmed = projector.calculate_confirmed_as_of(
+        "cash", date(2026, 7, 31)
+    )
+
+    assert before_confirmation.total_shares == Decimal("10000")
+    assert confirmed.total_shares == Decimal("15000")
+    assert confirmed.cost_basis == Decimal("15000")
+
+
+def test_wallet_confirmation_uses_only_unspent_pending_amount_for_cost_basis(
+    income_services,
+):
+    repository, projector, _ = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    repository.create_transaction(Transaction(
+        id="pending-purchase:cash",
+        product_id="cash",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=date(2026, 7, 31),
+        idempotency_key="pending-purchase:cash",
+        amount=Decimal("5000"),
+        shares=Decimal("5000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T09:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="outflow:cash",
+        product_id="cash",
+        transaction_type=TransactionType.CASH_TRANSFER_OUT,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=INCOME_DATE,
+        idempotency_key="outflow:cash",
+        amount=Decimal("2000"),
+        shares=Decimal("2000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
+    ))
+
+    confirmed = projector.calculate_confirmed_as_of(
+        "cash", date(2026, 7, 31)
+    )
+
+    assert confirmed.total_shares == Decimal("13000")
+    assert confirmed.cost_basis == Decimal("13000")
+
+
+def test_wallet_refund_after_confirmation_restores_confirmed_principal(
+    income_services,
+):
+    repository, projector, _ = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    repository.create_transaction(Transaction(
+        id="pending-purchase:cash",
+        product_id="cash",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=date(2026, 7, 31),
+        idempotency_key="pending-purchase:cash",
+        amount=Decimal("5000"),
+        shares=Decimal("5000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T09:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="outflow:cash",
+        product_id="cash",
+        transaction_type=TransactionType.CASH_TRANSFER_OUT,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=INCOME_DATE,
+        idempotency_key="outflow:cash",
+        amount=Decimal("12000"),
+        shares=Decimal("12000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="refund:cash",
+        product_id="cash",
+        transaction_type=TransactionType.CASH_TRANSFER_IN,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 8, 1),
+        confirmation_date=date(2026, 8, 1),
+        linked_transaction_id="outflow:cash",
+        idempotency_key="refund:cash",
+        amount=Decimal("12000"),
+        shares=Decimal("12000"),
+        trade_time="2026-08-01T10:00:00",
+    ))
+
+    after_confirmation = projector.calculate_confirmed_as_of(
+        "cash", date(2026, 7, 31)
+    )
+    after_refund = projector.calculate_confirmed_as_of(
+        "cash", date(2026, 8, 1)
+    )
+
+    assert after_confirmation.total_shares == Decimal("3000")
+    assert after_refund.total_shares == Decimal("15000")
+    assert after_refund.cost_basis == Decimal("15000")
+
+
+def test_wallet_historical_balance_ignores_outflow_after_confirmation(
+    income_services,
+):
+    repository, projector, _ = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    repository.create_transaction(Transaction(
+        id="pending-purchase:cash",
+        product_id="cash",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=date(2026, 7, 31),
+        idempotency_key="pending-purchase:cash",
+        amount=Decimal("5000"),
+        shares=Decimal("5000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T09:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="future-outflow:cash",
+        product_id="cash",
+        transaction_type=TransactionType.CASH_TRANSFER_OUT,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=date(2026, 8, 1),
+        confirmation_date=date(2026, 8, 1),
+        idempotency_key="future-outflow:cash",
+        amount=Decimal("12000"),
+        shares=Decimal("12000"),
+        trade_time="2026-08-01T10:00:00",
+    ))
+
+    before_future_outflow = projector.calculate_confirmed_as_of(
+        "cash", date(2026, 7, 31)
+    )
+
+    assert before_future_outflow.total_shares == Decimal("15000")
+    assert before_future_outflow.cost_basis == Decimal("15000")
+
+
+def test_wallet_double_reversal_keeps_restored_outflow_in_pending_allocation(
+    income_services,
+):
+    repository, projector, _ = income_services
+    seed_cash(repository, "cash", "10000", provider="wallet_plus")
+    repository.create_transaction(Transaction(
+        id="pending-purchase:cash",
+        product_id="cash",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=date(2026, 7, 31),
+        idempotency_key="pending-purchase:cash",
+        amount=Decimal("5000"),
+        shares=Decimal("5000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T09:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="restored-outflow:cash",
+        product_id="cash",
+        transaction_type=TransactionType.CASH_TRANSFER_OUT,
+        status=TransactionStatus.REVERSED,
+        trade_date=INCOME_DATE,
+        confirmation_date=INCOME_DATE,
+        idempotency_key="restored-outflow:cash",
+        amount=Decimal("4000"),
+        shares=Decimal("4000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="first-reversal:cash",
+        product_id="cash",
+        transaction_type=TransactionType.REVERSAL,
+        status=TransactionStatus.REVERSED,
+        trade_date=INCOME_DATE,
+        idempotency_key="first-reversal:cash",
+        amount=Decimal("-4000"),
+        shares=Decimal("-4000"),
+        linked_transaction_id="restored-outflow:cash",
+    ))
+    repository.create_transaction(Transaction(
+        id="second-reversal:cash",
+        product_id="cash",
+        transaction_type=TransactionType.REVERSAL,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        idempotency_key="second-reversal:cash",
+        amount=Decimal("4000"),
+        shares=Decimal("4000"),
+        linked_transaction_id="first-reversal:cash",
+    ))
+
+    confirmed = projector.calculate_confirmed_as_of("cash", INCOME_DATE)
+
+    assert confirmed.total_shares == Decimal("10000")
+    assert confirmed.cost_basis == Decimal("10000")
+
+
+def test_wallet_negative_holding_adjustment_can_consume_unconfirmed_liquidity(
+    income_services,
+):
+    repository, projector, _ = income_services
+    seed_cash(repository, "cash", "0", provider="wallet_plus")
+    repository.create_transaction(Transaction(
+        id="pending-purchase:cash",
+        product_id="cash",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=date(2026, 7, 31),
+        idempotency_key="pending-purchase:cash",
+        amount=Decimal("1000"),
+        shares=Decimal("1000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T09:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="pending-liquidity-adjustment:cash",
+        product_id="cash",
+        transaction_type=TransactionType.HOLDING_ADJUSTMENT,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=INCOME_DATE,
+        idempotency_key="pending-liquidity-adjustment:cash",
+        amount=Decimal("-10"),
+        shares=Decimal("-10"),
+        trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
+    ))
+
+    before_confirmation = projector.calculate_confirmed_as_of(
+        "cash", INCOME_DATE
+    )
+    after_confirmation = projector.calculate_confirmed_as_of(
+        "cash", date(2026, 7, 31)
+    )
+
+    assert before_confirmation.total_shares == Decimal("0")
+    assert after_confirmation.total_shares == Decimal("990")
+    assert projector.calculate("cash").total_shares == Decimal("990")
+
+
+def test_wallet_holding_adjustment_uses_confirmed_principal_before_pending_liquidity(
+    income_services,
+):
+    repository, projector, _ = income_services
+    seed_cash(repository, "cash", "100", provider="wallet_plus")
+    repository.create_transaction(Transaction(
+        id="pending-purchase:cash",
+        product_id="cash",
+        transaction_type=TransactionType.MANUAL_PURCHASE,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=date(2026, 7, 31),
+        idempotency_key="pending-purchase:cash",
+        amount=Decimal("1000"),
+        shares=Decimal("1000"),
+        trade_time=f"{INCOME_DATE.isoformat()}T09:00:00",
+    ))
+    repository.create_transaction(Transaction(
+        id="confirmed-principal-adjustment:cash",
+        product_id="cash",
+        transaction_type=TransactionType.HOLDING_ADJUSTMENT,
+        status=TransactionStatus.CONFIRMED,
+        trade_date=INCOME_DATE,
+        confirmation_date=INCOME_DATE,
+        idempotency_key="confirmed-principal-adjustment:cash",
+        amount=Decimal("-1.698"),
+        shares=Decimal("-1.698"),
+        trade_time=f"{INCOME_DATE.isoformat()}T10:00:00",
+    ))
+
+    before_confirmation = projector.calculate_confirmed_as_of(
+        "cash", INCOME_DATE
+    )
+    after_confirmation = projector.calculate_confirmed_as_of(
+        "cash", date(2026, 7, 31)
+    )
+
+    assert before_confirmation.total_shares == Decimal("98.302")
+    assert after_confirmation.total_shares == Decimal("1098.302")
 
 
 def test_wallet_income_accrues_on_weekend(income_services):

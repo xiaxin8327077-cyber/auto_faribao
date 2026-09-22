@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from src.portfolio_models import (
@@ -10,10 +10,13 @@ from src.portfolio_models import (
     decimal_text,
 )
 from src.portfolio_confirmation import confirmation_schedule
-from src.portfolio_positions import pending_purchase_is_in_current_position
+from src.portfolio_positions import (
+    PositionProjector,
+    pending_purchase_is_in_current_position,
+)
 from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
 from src.portfolio_wallet import is_wallet_plus_product
-from src.beijing_time import TZ_CN
+from src.portfolio_wallet_allocation import wallet_pending_purchase_allocations
 from src.portfolio_reconciliation import transit_assets
 
 
@@ -193,102 +196,13 @@ def _is_overview_position(row, transactions, as_of):
 
 
 def _wallet_pending_purchase_balances(product, transactions):
-    if not is_wallet_plus_product(product):
-        return {}
-    pending_purchases = [
-        transaction
-        for transaction in transactions
-        if (
-            transaction.status in _PENDING_STATUSES
-            and transaction.transaction_type in _PURCHASE_TYPES
-        )
-    ]
-    pending_purchase_ids = {
-        transaction.id for transaction in pending_purchases
-    }
-
-    def event_key(transaction):
-        clock_time = transaction.trade_time or "00:00:00"
-        if not transaction.trade_time and transaction.created_at:
-            # SQLite creation timestamps are UTC; scheduled cash deductions
-            # have no trade_time. Use the actual local time on the trade date.
-            created = datetime.fromisoformat(transaction.created_at)
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            local_created = created.astimezone(TZ_CN)
-            if local_created.date() == transaction.trade_date:
-                clock_time = local_created.strftime("%H:%M:%S")
-        event_time = (
-            transaction.trade_time
-            if "T" in transaction.trade_time
-            else (
-                f"{transaction.trade_date.isoformat()}T"
-                f"{clock_time}"
-            )
-        )
-        event_order = {
-            TransactionType.CASH_TRANSFER_OUT: 0,
-            TransactionType.MANUAL_REDEMPTION: 0,
-            TransactionType.CASH_TRANSFER_IN: 1,
-        }.get(transaction.transaction_type, 2)
-        return (
-            event_time,
-            event_order,
-            transaction.created_at or "",
-            transaction.id,
-        )
-
-    relevant = [
-        transaction
-        for transaction in transactions
-        if (
-            transaction.id in pending_purchase_ids
-            or (
-                transaction.status is TransactionStatus.CONFIRMED
-                and transaction.transaction_type
-                in {
-                    TransactionType.CASH_TRANSFER_OUT,
-                    TransactionType.CASH_TRANSFER_IN,
-                    TransactionType.MANUAL_REDEMPTION,
-                }
-            )
-        )
-    ]
-    remaining_by_purchase = {}
-    allocated_outflows = {}
-    for transaction in sorted(relevant, key=event_key):
-        amount = transaction.amount or _ZERO
-        if transaction.id in pending_purchase_ids:
-            remaining_by_purchase[transaction.id] = amount
-        elif transaction.transaction_type in {
-            TransactionType.CASH_TRANSFER_OUT,
-            TransactionType.MANUAL_REDEMPTION,
-        }:
-            amount_left = amount
-            allocations = []
-            for purchase_id, balance in remaining_by_purchase.items():
-                allocated = min(balance, amount_left)
-                if allocated:
-                    remaining_by_purchase[purchase_id] -= allocated
-                    allocations.append((purchase_id, allocated))
-                    amount_left -= allocated
-                if amount_left <= _ZERO:
-                    break
-            allocated_outflows[transaction.id] = allocations
-        elif transaction.transaction_type is TransactionType.CASH_TRANSFER_IN:
-            amount_left = amount
-            allocations = allocated_outflows.get(
-                transaction.linked_transaction_id,
-                [],
-            )
-            for purchase_id, allocated in allocations:
-                restored = min(allocated, amount_left)
-                if restored:
-                    remaining_by_purchase[purchase_id] += restored
-                    amount_left -= restored
-                if amount_left <= _ZERO:
-                    break
-    return remaining_by_purchase
+    return wallet_pending_purchase_allocations(
+        product,
+        transactions,
+        neutralized_event_ids=PositionProjector._linked_reversal_pair_ids(
+            transactions
+        ),
+    ).remaining_by_purchase
 
 
 def _pending_purchase_amount(product, transactions):

@@ -6,6 +6,10 @@ from src.portfolio_models import (
     TransactionStatus,
     TransactionType,
 )
+from src.portfolio_wallet_allocation import (
+    redemption_settlement_purchase_is_start_of_day,
+    wallet_pending_purchase_allocations,
+)
 
 
 ZERO = Decimal("0")
@@ -66,17 +70,6 @@ def pending_purchase_is_in_current_position(
     )
 
 
-def redemption_settlement_purchase_is_start_of_day(product, transaction):
-    return (
-        product.provider == _WALLET_PLUS_PROVIDER
-        and product.product_type is ProductType.CASH_MANAGEMENT
-        and transaction.transaction_type is TransactionType.MANUAL_PURCHASE
-        and transaction.created_by == "redemption_settlement"
-        and bool(transaction.origin_transaction_id)
-        and (transaction.shares or ZERO) > ZERO
-    )
-
-
 def wallet_purchase_is_unconfirmed_liquidity(
     product,
     transaction,
@@ -96,6 +89,18 @@ def wallet_purchase_is_unconfirmed_liquidity(
             transaction.confirmation_date is None
             or transaction.confirmation_date > as_of
         )
+        and (transaction.shares or ZERO) > ZERO
+    )
+
+
+def wallet_purchase_has_future_confirmation(product, transaction):
+    return (
+        product.provider == _WALLET_PLUS_PROVIDER
+        and product.product_type is ProductType.CASH_MANAGEMENT
+        and transaction.transaction_type is TransactionType.MANUAL_PURCHASE
+        and transaction.status in _APPLIED_STATUSES
+        and transaction.confirmation_date is not None
+        and transaction.confirmation_date > transaction.trade_date
         and (transaction.shares or ZERO) > ZERO
     )
 
@@ -140,9 +145,15 @@ class PositionProjector:
                 )
                 else (
                     1
-                    if pending_purchase_is_in_current_position(
-                        product,
-                        transaction,
+                    if (
+                        pending_purchase_is_in_current_position(
+                            product,
+                            transaction,
+                        )
+                        or wallet_purchase_has_future_confirmation(
+                            product,
+                            transaction,
+                        )
                     )
                     else 2
                 ),
@@ -151,18 +162,25 @@ class PositionProjector:
             ),
         )
         neutralized_event_ids = self._linked_reversal_pair_ids(transactions)
+        wallet_allocations = wallet_pending_purchase_allocations(
+            product,
+            transactions,
+            include_confirmed_purchases=use_confirmation_date,
+            neutralized_event_ids=neutralized_event_ids,
+        )
 
         for transaction in transactions:
             if transaction.id in neutralized_event_ids:
                 continue
             shares = transaction.shares or ZERO
+            original_shares = shares
             if wallet_purchase_is_unconfirmed_liquidity(
                 product,
                 transaction,
                 as_of=as_of,
                 use_confirmation_date=use_confirmation_date,
             ):
-                # WalletPlus 待确认资金可用于转出，但确认前不计入生息份额。
+                # 待确认资金可转出，但确认前不计入生息份额。
                 unconfirmed_wallet_liquidity += shares
                 continue
             effective_date = (
@@ -202,6 +220,36 @@ class PositionProjector:
             ):
                 continue
 
+            if use_confirmation_date:
+                if transaction.id in wallet_allocations.confirmed_shares_by_purchase:
+                    shares = wallet_allocations.confirmed_shares_by_purchase[
+                        transaction.id
+                    ]
+                elif transaction.transaction_type in _AVERAGE_COST_OUTFLOW_TYPES:
+                    shares -= wallet_allocations.allocated_by_outflow.get(
+                        transaction.id,
+                        ZERO,
+                    )
+                elif transaction.transaction_type is TransactionType.CASH_TRANSFER_IN:
+                    shares -= wallet_allocations.restored_by_inflow.get(
+                        transaction.id,
+                        ZERO,
+                    )
+                if transaction.transaction_type in _AVERAGE_COST_OUTFLOW_TYPES:
+                    unconfirmed_wallet_liquidity -= (
+                        wallet_allocations.allocated_by_outflow.get(
+                            transaction.id,
+                            ZERO,
+                        )
+                    )
+                elif transaction.transaction_type is TransactionType.CASH_TRANSFER_IN:
+                    unconfirmed_wallet_liquidity += (
+                        wallet_allocations.restored_by_inflow.get(
+                            transaction.id,
+                            ZERO,
+                        )
+                    )
+
             share_delta = (
                 shares * SHARE_DIRECTION[transaction.transaction_type]
             )
@@ -213,9 +261,7 @@ class PositionProjector:
                     and product.provider == _WALLET_PLUS_PROVIDER
                     and product.product_type is ProductType.CASH_MANAGEMENT
                     and transaction.transaction_type
-                    in (_AVERAGE_COST_OUTFLOW_TYPES | {
-                        TransactionType.HOLDING_ADJUSTMENT,
-                    })
+                    is TransactionType.HOLDING_ADJUSTMENT
                     and share_delta < ZERO
                     and unconfirmed_wallet_liquidity >= shortfall
                 )
@@ -226,6 +272,8 @@ class PositionProjector:
                 next_total = ZERO
 
             amount = transaction.amount or ZERO
+            if use_confirmation_date and original_shares > ZERO:
+                amount *= shares / original_shares
             if transaction.transaction_type in _COST_ADDITION_TYPES:
                 cost_basis += amount
             elif transaction.transaction_type in _AVERAGE_COST_OUTFLOW_TYPES:
