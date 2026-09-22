@@ -94,13 +94,13 @@
 │   ├── 调度通知：scheduler / server / notifier / wechat_*
 │   │            browser_lock / pending_confirmation
 │   ├── 净值：nav_monitor / nav_dashboard / nav_holdings / nav_report_image
-│   ├── 账本：portfolio_*（SQLite schema v4）
+│   ├── 账本：portfolio_*（SQLite schema v7）
 │   └── AI：ai_assistant / ai_chat / ai_command_router
 │          ai_diagnostic_* / longcat_client
 └── tests/
 ```
 
-本地忽略：`venv/`、`backups/`、日志、`config.yaml`、`data/`。仓库历史里可能仍有旧副本，新增密钥不要再提交。
+本地忽略：`venv/`、`backups/`、`runtime/`、日志、`config.yaml`、`data/`。仓库历史里可能仍有旧副本，新增密钥不要再提交。
 
 ## 命令
 
