@@ -1404,3 +1404,24 @@ def test_render_sets_state_before_filtering_overview_products():
         html.index("function renderPositions()")
     ]
     assert "state.data = data || {};" not in management
+
+
+def test_market_tab_follows_overview_and_renders_bond_barometer():
+    html = _read_page()
+
+    # 页签顺序：总览之后紧跟行情
+    overview = html.index('data-tab="overview"')
+    market = html.index('data-tab="market"')
+    positions = html.index('data-tab="positions"')
+    assert overview < market < positions
+    assert "const MANAGEMENT_TABS = ['overview', 'market', 'positions', 'transactions', 'sip'];" in html
+    assert 'id="marketPanel"' in html
+    assert 'id="barometerRefreshButton"' in html
+    assert "async function loadBarometer(force = false)" in html
+    assert "function renderBarometer(data)" in html
+    assert "if (tab === 'market') loadBarometer();" in html
+    assert "$('barometerRefreshButton').addEventListener('click', () => loadBarometer(true));" in html
+    assert "/api/portfolio/bond-barometer" in html
+    assert "红=收益率下行、绿=上行、灰=变动≤0.05bp" in html
+    assert "交易时段（工作日 9:00-17:30）内每 30 分钟自动更新" in html
+    assert "grid-template-columns: repeat(5, 1fr);" in html

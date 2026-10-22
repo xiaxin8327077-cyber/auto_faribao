@@ -2183,3 +2183,36 @@ def test_latest_profit_adjustment_uses_api_beijing_date_on_submit(
     assert response.get_json()["preview"]["latest_profit_date"] == (
         latest_date.isoformat()
     )
+
+
+def test_bond_barometer_api_returns_payload_and_supports_force_refresh(
+    api_setup, monkeypatch,
+):
+    client, _, _, _ = api_setup
+    calls = []
+
+    def fake_latest(force=False):
+        calls.append(force)
+        return {
+            "available": True,
+            "as_of": "2026-10-22",
+            "previous_as_of": "2026-10-21",
+            "rate": {"rows": [], "counts": {"red": 0, "green": 0, "flat": 0}, "weather": "flat"},
+            "credit": {"rows": [], "counts": {"red": 0, "green": 0, "flat": 0}, "weather": "flat"},
+        }
+
+    monkeypatch.setattr("src.bond_barometer.latest_barometer", fake_latest)
+
+    response = client.get(
+        "/api/portfolio/bond-barometer",
+        headers={"X-Nav-Dashboard-Key": "secret"},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["available"] is True
+    forced = client.get(
+        "/api/portfolio/bond-barometer?refresh=1",
+        headers={"X-Nav-Dashboard-Key": "secret"},
+    )
+    assert forced.status_code == 200
+    assert calls == [False, True]
+    assert client.get("/api/portfolio/bond-barometer").status_code == 403

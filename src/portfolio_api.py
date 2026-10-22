@@ -1893,6 +1893,23 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
                 500,
             )
 
+    @blueprint.get("/api/portfolio/bond-barometer")
+    def bond_barometer():
+        guard = read_guard()
+        if guard:
+            return guard
+        from src.bond_barometer import latest_barometer
+
+        force = request.args.get("refresh") == "1"
+        try:
+            return jsonify(latest_barometer(force=force))
+        except Exception as exc:
+            return _error(
+                "portfolio_bond_barometer",
+                f"行情数据获取失败：{str(exc)[:200]}",
+                502,
+            )
+
     @blueprint.get("/api/portfolio/sip-plans/start-date")
     def sip_start_date():
         guard = read_guard()

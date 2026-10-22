@@ -1,11 +1,14 @@
 import logging
 import threading
 import time
-from datetime import date, timedelta
+from datetime import date, time as clock_time, timedelta
 from src.beijing_time import now as beijing_now, today
 from src.pending_confirmation import handle_pending_timeout_if_needed
 
 logger = logging.getLogger(__name__)
+
+_BAROMETER_START = clock_time(9, 0)
+_BAROMETER_END = clock_time(17, 30)
 
 _scheduler_lock = threading.Lock()
 _runtime_cfg = None
@@ -74,6 +77,7 @@ def _run(cfg):
     last_nav_estimate_date = None
     last_calendar_update_year = None
     last_portfolio_slot = None
+    last_barometer_slot = None
 
     while True:
         with _scheduler_lock:
@@ -84,6 +88,12 @@ def _run(cfg):
 
         now = beijing_now()
         today_str = now.strftime("%Y-%m-%d")
+
+        # 行情预热：交易时段内每个 30 分钟槽后台刷新一次债市晴雨表，
+        # 不阻塞定时推送；非交易时段不自动更新。
+        if _barometer_due(last_barometer_slot, now):
+            last_barometer_slot = _portfolio_slot(now)
+            threading.Thread(target=_warm_bond_barometer, daemon=True).start()
 
         ch, cm, rh, rm, sh, sm, cch, ccm = _get_times(current_cfg)
 
@@ -150,6 +160,24 @@ def _run(cfg):
             _run_calendar_update(current_cfg)
 
         time.sleep(30)
+
+
+def _barometer_due(last_slot, now):
+    if now.weekday() >= 5:
+        return False
+    if not (_BAROMETER_START <= now.time() <= _BAROMETER_END):
+        return False
+    return _portfolio_slot(now) != last_slot
+
+
+def _warm_bond_barometer():
+    try:
+        from src.bond_barometer import latest_barometer
+
+        # 槽刚切换时缓存可能恰好未过期，强制刷新保证每 30 分钟一次。
+        latest_barometer(force=True)
+    except Exception:
+        logger.warning("Bond barometer prefetch failed", exc_info=True)
 
 
 def _portfolio_slot(now):
