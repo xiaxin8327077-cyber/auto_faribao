@@ -426,7 +426,6 @@
     .fund-dividend-mode-copy { display: grid; gap: 2px; min-width: 0; }
     .fund-dividend-mode-copy b { color: var(--text); font-size: 13px; }
     .fund-dividend-mode-copy small { color: var(--muted); font-size: 11px; line-height: 1.4; }
-    .fund-dividend-note { margin: 0 0 12px; padding: 9px 10px; border-radius: 7px; background: var(--blue-soft); color: var(--muted); font-size: 11px; line-height: 1.55; }
     .fund-dividend-status { min-height: 17px; margin: 0 0 8px; color: var(--muted); font-size: 11px; line-height: 1.45; }
     .fund-dividend-status.error { color: var(--negative); }
     .fund-dividend-content { display: grid; gap: 12px; }
@@ -836,7 +835,6 @@
           <label class="fund-dividend-mode-option"><input type="radio" name="dividend_mode" value="cash" checked><span class="fund-dividend-mode-copy"><b>现金分红</b><small>现金在公开派现日记入钱包 Plus</small></span></label>
           <label class="fund-dividend-mode-option"><input type="radio" name="dividend_mode" value="reinvest"><span class="fund-dividend-mode-copy"><b>红利再投</b><small>按公开确认信息记录新增份额</small></span></label>
         </fieldset>
-        <p class="fund-dividend-note">此设置仅影响尚未登记的分红记录；现金按公开派现日记入钱包 Plus。系统不会向银行或基金销售平台发送真实分红指令。</p>
         <div class="fund-dividend-status" id="fundDividendStatus" role="status" aria-live="polite">正在读取分红记录...</div>
         <div class="fund-dividend-content" id="fundDividendContent"><div class="empty">正在读取分红记录...</div></div>
       </div>
@@ -1625,7 +1623,7 @@
           const moreAction = `<button class="stat-more" type="button" data-view-product="${esc(id)}" aria-label="更多，查看持仓详情">更多</button>`;
           // 净值日并入标题行括号；第二行是净值 + 涨跌幅 + 更多，避免三行占高。
           const navStat = group === 'cash_management'
-            ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b><small class="manage-subvalue">${moreAction}</small></div>`
+            ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)} ${moreAction}</b></div>`
             : `<div class="manage-stat"><span>单位净值（${esc(shortDate(quoteDate) || '--')}）</span><b>${esc(nav || '--')} <span class="change-value ${tone(changePct)}">${changePct === '' ? '--' : esc(signedPercent(changePct))}</span> ${moreAction}</b></div>`;
           const latestProfitStat = `<div class="manage-stat"><span>最新收益</span><b>${latestProfit === '' ? '--' : signedMoney(latestProfit) + ' 元'}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;

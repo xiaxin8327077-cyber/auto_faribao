@@ -431,8 +431,9 @@ def test_dividend_panel_shows_modes_events_and_uses_safe_rendering():
     assert 'type="radio" name="dividend_mode" value="reinvest"' in html
     assert "现金分红" in html
     assert "红利再投" in html
-    assert "仅影响尚未登记的分红记录" in html
-    assert "不会向银行或基金销售平台发送真实分红指令" in html
+    # 说明性提示已移除，不再占用弹窗空间。
+    assert "仅影响尚未登记的分红记录" not in html
+    assert "不会向银行或基金销售平台发送真实分红指令" not in html
     # 净值模块两行布局：净值日并入标题括号，第二行净值+涨跌幅+更多。
     assert "单位净值（${esc(shortDate(quoteDate) || '--')}）" in html
     # 抓取失败的多为瞬时抖动，弹窗不再展示该类提示。
