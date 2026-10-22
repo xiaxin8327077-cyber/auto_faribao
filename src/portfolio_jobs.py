@@ -26,6 +26,7 @@ class PortfolioCycleResult:
     trades_settled: int
     redemptions_settled: int
     income_accrued: int
+    dividends_processed: int = 0
 
 
 def _slot_key(now):
@@ -44,12 +45,14 @@ class PortfolioJobs:
         settle_pending,
         accrue_income,
         settle_redemptions=None,
+        process_dividends=None,
     ):
         self.sync_quotes = sync_quotes
         self.create_intents = create_intents
         self.settle_pending = settle_pending
         self.settle_redemptions = settle_redemptions or (lambda _day: 0)
         self.accrue_income = accrue_income
+        self.process_dividends = process_dividends or (lambda _day: 0)
         self._last_slot = None
 
     def run_cycle(self, now):
@@ -66,6 +69,7 @@ class PortfolioJobs:
         redemptions = int(self.settle_redemptions(day) or 0)
         second_confirmed = int(self.settle_pending(day) or 0)
         settled = first_confirmed + second_confirmed
+        dividends = int(self.process_dividends(day) or 0)
         income = int(self.accrue_income(day) or 0)
         return PortfolioCycleResult(
             quotes,
@@ -73,6 +77,7 @@ class PortfolioJobs:
             settled,
             redemptions,
             income,
+            dividends,
         )
 
 
@@ -95,6 +100,8 @@ def build_portfolio_jobs(runtime, strict=False):
     sip_service = SipService(repository, projector, transaction_service)
     income_service = CashIncomeService(repository, projector)
     sync_service = QuoteSyncService(repository, get_market_provider)
+    from src.portfolio_dividends import FundDividendService
+    dividend_service = FundDividendService(repository)
 
     def sync_quotes(day):
         from src.portfolio_wallet import (
@@ -213,6 +220,7 @@ def build_portfolio_jobs(runtime, strict=False):
         settle_pending,
         accrue_income,
         settle_redemptions=settle_redemptions,
+        process_dividends=dividend_service.run,
     )
 
 

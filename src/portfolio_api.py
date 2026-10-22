@@ -1163,6 +1163,135 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             {"products": [_json_value(row) for row in repository().list_products()]}
         )
 
+    @blueprint.get("/api/portfolio/products/<product_id>/dividends")
+    def product_dividends(product_id):
+        guard = read_guard()
+        if guard:
+            return guard
+        repo = repository()
+        product = repo.get_product(product_id)
+        if product is None:
+            return _error("product_not_found", "product not found", 404)
+        if product.product_type is not ProductType.PUBLIC_FUND:
+            return _error(
+                "validation_error",
+                "dividend records are only available for public funds",
+                400,
+            )
+        try:
+            # Keep this import local while the records service is maintained
+            # alongside the financial ledger implementation.
+            from src.portfolio_dividends import dividend_records
+
+            payload = dividend_records(repo, product_id)
+            if not isinstance(payload, dict):
+                raise TypeError("dividend records returned an invalid payload")
+            return jsonify(payload)
+        except Exception:
+            return _error(
+                "portfolio_dividend_read_failed",
+                "failed to read fund dividend records",
+                500,
+            )
+
+    @blueprint.post("/api/portfolio/products/<product_id>/dividend-mode")
+    def update_dividend_mode(product_id):
+        idem, guard = write_guard()
+        if guard:
+            return guard
+        action = f"dividend-mode:{product_id}"
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return business_error(
+                "portfolio_dividend_mode",
+                "product",
+                product_id,
+                {},
+                ValueError("JSON body must be an object"),
+                idem,
+                operation_action=action,
+            )
+        try:
+            cached = replay(action, idem, body)
+            if cached:
+                return cached
+            mode = body.get("mode")
+            if not isinstance(mode, str) or mode not in {"cash", "reinvest"}:
+                raise ValueError("mode must be 'cash' or 'reinvest'")
+
+            repo = repository()
+            with repo.database.transaction() as conn:
+                cached = replay(action, idem, body, conn=conn)
+                if cached:
+                    return cached
+                product = repo.get_product(product_id, conn=conn)
+                if product is None:
+                    raise ValueError("product not found")
+                if product.product_type is not ProductType.PUBLIC_FUND:
+                    raise ValueError(
+                        "dividend mode can only be set for public funds"
+                    )
+                try:
+                    metadata = json.loads(product.metadata_json or "{}")
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("product metadata is invalid") from exc
+                if not isinstance(metadata, dict):
+                    raise ValueError("product metadata is invalid")
+                metadata["dividend_mode"] = mode
+                conn.execute(
+                    "UPDATE products SET metadata_json = ?, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (
+                        json.dumps(
+                            metadata,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        product_id,
+                    ),
+                )
+                payload = {
+                    "product_id": product_id,
+                    "dividend_mode": mode,
+                }
+                audit(
+                    "portfolio_dividend_mode",
+                    "product",
+                    product_id,
+                    payload,
+                    "success",
+                    idem,
+                    conn=conn,
+                )
+                remember(
+                    action,
+                    idem,
+                    body,
+                    payload,
+                    200,
+                    conn=conn,
+                )
+            return jsonify(payload)
+        except ValueError as exc:
+            return business_error(
+                "portfolio_dividend_mode",
+                "product",
+                product_id,
+                body,
+                exc,
+                idem,
+                code=("product_not_found" if str(exc) == "product not found" else "validation_error"),
+                status=(404 if str(exc) == "product not found" else 400),
+                operation_action=action,
+            )
+        except Exception:
+            return _error(
+                "portfolio_write_failed",
+                "portfolio dividend mode write failed",
+                500,
+            )
+
     @blueprint.get("/api/portfolio/products/<product_id>/history")
     def product_history(product_id):
         guard = read_guard()

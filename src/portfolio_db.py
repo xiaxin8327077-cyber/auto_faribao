@@ -492,7 +492,7 @@ WHEN OLD.status = 'confirmed' AND NOT (
     )
     OR
     (
-        OLD.transaction_type = 'manual_redemption'
+        OLD.transaction_type IN ('manual_redemption', 'cash_dividend')
         AND NEW.status = 'confirmed'
         AND NEW.id IS OLD.id
         AND NEW.product_id IS OLD.product_id
@@ -523,12 +523,35 @@ WHEN OLD.status = 'confirmed' AND NOT (
                 AND NEW.settled_at IS NOT NULL
                 AND NEW.destination_cash_product_id
                     IS OLD.destination_cash_product_id
-                AND NEW.linked_transaction_id
-                    IS OLD.linked_transaction_id
+                AND (NEW.linked_transaction_id IS OLD.linked_transaction_id
+                     OR (OLD.transaction_type = 'cash_dividend'
+                         AND OLD.linked_transaction_id IS NULL
+                         AND EXISTS (SELECT 1 FROM transactions receipt
+                             WHERE receipt.id = NEW.linked_transaction_id
+                               AND receipt.linked_transaction_id = OLD.id
+                               AND receipt.transaction_type IN ('cash_transfer_in','holding_adjustment')
+                               AND receipt.status = 'confirmed'
+                               AND receipt.amount IS OLD.amount
+                               AND receipt.created_by IS OLD.created_by
+                               AND ((receipt.transaction_type = 'cash_transfer_in'
+                                     AND receipt.product_id = OLD.destination_cash_product_id
+                                     AND receipt.shares IS OLD.amount
+                                     AND receipt.trade_date IS OLD.settlement_date
+                                     AND receipt.confirmation_date IS OLD.settlement_date)
+                                    OR (receipt.transaction_type = 'holding_adjustment'
+                                        AND receipt.product_id = OLD.product_id
+                                        AND receipt.confirmation_date = receipt.trade_date
+                                        AND receipt.confirmation_date >= OLD.trade_date
+                                        AND receipt.confirmation_nav IS NOT NULL
+                                        AND EXISTS (SELECT 1 FROM fund_dividend_events event
+                                            WHERE event.dividend_transaction_id = OLD.id
+                                              AND event.mode = 'reinvest'
+                                              AND event.reinvest_confirmation_date = receipt.confirmation_date))))))
             )
             OR
             (
-                (OLD.settlement_status IS NULL
+                OLD.transaction_type = 'manual_redemption'
+                AND (OLD.settlement_status IS NULL
                  OR OLD.settlement_status = 'pending')
                 AND NEW.settlement_status = 'pending'
                 AND NEW.settled_at IS OLD.settled_at
@@ -663,6 +686,9 @@ class PortfolioDatabase:
                         f"{sorted(versions)}"
                     )
             self._ensure_sip_deleted_at_column(conn)
+            _execute_sql_script(conn, V7_SCHEMA_SQL)
+            from src.portfolio_dividends import ensure_dividend_schema
+            ensure_dividend_schema(conn)
             self._correct_known_sip_fee_rate(conn)
         except BaseException:
             conn.rollback()

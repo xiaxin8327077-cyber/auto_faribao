@@ -191,8 +191,9 @@ def test_migration_failure_keeps_runtime_read_only(tmp_path, monkeypatch):
 
 
 def test_monthly_sip_persists_executes_and_appears_in_dashboard(tmp_path):
-    runtime, _cfg = _seed_runtime(tmp_path)
+    runtime, _cfg = _seed_runtime(tmp_path, with_legacy=False)
     repo = runtime.repository
+    cash = _seed_cash(repo)
     _add_product(
         repo, "fund", "changsheng_fund", "003103",
         "长盛盛裕纯债C", ProductType.PUBLIC_FUND,
@@ -202,7 +203,7 @@ def test_monthly_sip_persists_executes_and_appears_in_dashboard(tmp_path):
         product_id="fund",
         daily_amount="100",
         purchase_fee_rate="0",
-        source_cash_product_id=WALLET_PRODUCT_ID,
+        source_cash_product_id=cash,
         start_date=date(2026, 9, 1),
         frequency=SipFrequency.MONTHLY,
         schedule_day=30,
@@ -311,8 +312,9 @@ def test_monthly_pause_and_resume_do_not_backfill_missed_period(tmp_path):
 
 
 def test_sip_same_trade_date_is_idempotent_on_repeated_backfill(tmp_path):
-    runtime, _cfg = _seed_runtime(tmp_path)
+    runtime, _cfg = _seed_runtime(tmp_path, with_legacy=False)
     repo = runtime.repository
+    cash = _seed_cash(repo)
     _add_product(
         repo, "fund", "changsheng_fund", "003103",
         "长盛盛裕纯债C", ProductType.PUBLIC_FUND,
@@ -322,7 +324,7 @@ def test_sip_same_trade_date_is_idempotent_on_repeated_backfill(tmp_path):
         product_id="fund",
         daily_amount="100",
         purchase_fee_rate="0",
-        source_cash_product_id=WALLET_PRODUCT_ID,
+        source_cash_product_id=cash,
         start_date=date(2026, 9, 1),
         frequency=SipFrequency.MONTHLY,
         schedule_day=30,

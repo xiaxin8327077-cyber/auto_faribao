@@ -400,6 +400,99 @@ def test_position_detail_opens_a_real_dialog():
     assert "$('productDetailContent').innerHTML = `<div class=\"product-history\">" in html
 
 
+def test_dividend_action_is_fund_only_and_follows_product_detail():
+    html = _read_page()
+    positions = html[
+        html.index("function renderPositions()"):
+        html.index("function normalStatus(value)")
+    ]
+
+    assert "const dividendAction = group === 'public_fund'" in positions
+    assert "rowValue(row, 'dividend_upcoming_count')" in positions
+    assert 'class="dividend-alert-dot"' in positions
+    assert 'data-view-product="${esc(id)}">详情</button>${dividendAction}' in positions
+    assert 'data-view-dividends="${esc(id)}"' in positions
+
+
+def test_dividend_panel_shows_modes_events_and_uses_safe_rendering():
+    html = _read_page()
+
+    assert 'id="fundDividendDialog"' in html
+    assert 'type="radio" name="dividend_mode" value="cash" checked' in html
+    assert 'type="radio" name="dividend_mode" value="reinvest"' in html
+    assert "现金分红" in html
+    assert "红利再投" in html
+    assert "仅影响尚未登记的分红记录" in html
+    assert "不会向银行或基金销售平台发送真实分红指令" in html
+    assert "async function openFundDividends(productId)" in html
+    assert "encodeURIComponent(productId)}/dividends" in html
+    assert "encodeURIComponent(productId)}/dividend-mode" in html
+    assert "function safeExternalUrl(value)" in html
+    assert "parsed.protocol !== 'http:' && parsed.protocol !== 'https:'" in html
+    assert "['登记日', rowValue(event, 'record_date')]" in html
+    assert "[isReinvest ? '确认日' : '派现日', rowValue(event, isReinvest ? 'reinvest_confirmation_date' : 'payment_date')]" in html
+    assert "fundDividendField(value)" in html
+    assert "${esc(error.message || '读取分红记录失败')}" in html
+    assert ".fund-dividend-list" in html
+
+
+def test_dividend_panel_separates_historical_records_and_uses_mode_specific_date():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for JavaScript behavior checks")
+    html = _read_page()
+    event_renderer = html[
+        html.index("function renderFundDividendEvent("):
+        html.index("function renderFundDividendRecords(")
+    ]
+    records_renderer = html[
+        html.index("function renderFundDividendRecords("):
+        html.index("async function loadFundDividendRecords(")
+    ]
+    script = r"""
+const assert = require('assert');
+const dom = {fundDividendContent: {innerHTML: ''}};
+const $ = id => dom[id] || (dom[id] = {});
+const rowValue = (row, ...keys) => {
+  for (const key of keys) if (row?.[key] !== undefined && row[key] !== null) return row[key];
+  return '';
+};
+const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const safeExternalUrl = () => '';
+const fundDividendField = value => value === undefined || value === null || value === '' ? '--' : esc(value);
+const setFundDividendStatus = () => {};
+""" + event_renderer + records_renderer + r"""
+const reinvest = renderFundDividendEvent({mode:'reinvest', status:'announced', payment_date:'2030-01-15', reinvest_confirmation_date:null});
+assert.match(reinvest, /确认日/);
+assert.match(reinvest, /<b>--<\/b>/);
+assert.doesNotMatch(reinvest, /派现日|2030-01-15/);
+const reinvestConfirmed = renderFundDividendEvent({mode:'reinvest', status:'announced', payment_date:'2030-01-15', reinvest_confirmation_date:'2030-01-18'});
+assert.match(reinvestConfirmed, /确认日/);
+assert.match(reinvestConfirmed, /2030-01-18/);
+assert.doesNotMatch(reinvestConfirmed, /派现日|2030-01-15/);
+const cash = renderFundDividendEvent({mode:'cash', status:'announced', payment_date:'2030-01-15'});
+assert.match(cash, /派现日/);
+assert.match(cash, /2030-01-15/);
+renderFundDividendRecords({events:[
+  {status:'announced', is_upcoming:true, historical:false, amount:'101', mode:'cash'},
+  {status:'blocked', is_upcoming:false, historical:true, amount:'202', mode:'reinvest', error:'历史公告'},
+  {status:'settled', is_upcoming:false, historical:true, amount:'303', mode:'reinvest'}
+]});
+const html = $('fundDividendContent').innerHTML;
+const upcoming = html.slice(html.indexOf('即将开始'), html.indexOf('历史待核实'));
+const historical = html.slice(html.indexOf('历史待核实'), html.indexOf('已完成'));
+const completed = html.slice(html.indexOf('已完成'));
+assert.match(upcoming, /101/);
+assert.doesNotMatch(upcoming, /202|303/);
+assert.match(historical, /202/);
+assert.doesNotMatch(historical, /101|303/);
+assert.match(completed, /303/);
+assert.doesNotMatch(completed, /101|202/);
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+
+
 def test_stale_product_detail_request_cannot_overwrite_newer_dialog():
     html = _read_page()
 

@@ -32,6 +32,13 @@ _NAV_REDEMPTION_TYPES = {
 }
 
 
+def _recognized_dividends(transactions):
+    neutralized = PositionProjector._linked_reversal_pair_ids(transactions)
+    return [tx for tx in transactions if tx.transaction_type is TransactionType.CASH_DIVIDEND
+            and tx.status in {TransactionStatus.CONFIRMED, TransactionStatus.REVERSED}
+            and tx.id not in neutralized]
+
+
 def _nav_earning_shares(
     repository,
     product_id,
@@ -41,6 +48,7 @@ def _nav_earning_shares(
     *,
     product=None,
     transactions=None,
+    current_nav=None,
 ):
     """Shares that earn the NAV change between two disclosure dates.
 
@@ -48,8 +56,9 @@ def _nav_earning_shares(
     - add purchases traded by that date but confirmed in (prev, curr]
     - subtract redemptions / transfer-outs confirmed in (prev, curr]
 
-    A redemption confirmed on the current NAV date therefore does not earn
-    that disclosure segment. *product* / *transactions* allow callers on the
+    A redemption priced at an earlier NAV does not earn that segment. A
+    public-fund redemption applied and priced at the current NAV still bears
+    that day's NAV movement. *product* / *transactions* allow callers on the
     dashboard hot path to reuse preloaded rows instead of re-querying.
     """
     projector = PositionProjector(repository)
@@ -66,6 +75,15 @@ def _nav_earning_shares(
             product_id=product_id,
             conn=conn,
         )
+    dividends = {tx.id: tx for tx in transactions if tx.transaction_type is TransactionType.CASH_DIVIDEND}
+    neutralized = PositionProjector._linked_reversal_pair_ids(transactions)
+    reinvested_from_previous_nav = sum((tx.shares or ZERO for tx in transactions
+        if tx.status in {TransactionStatus.CONFIRMED,TransactionStatus.REVERSED}
+        and tx.id not in neutralized
+        and tx.transaction_type is TransactionType.HOLDING_ADJUSTMENT
+        and tx.linked_transaction_id in dividends
+        and dividends[tx.linked_transaction_id].trade_date <= previous_quote_date
+        and previous_quote_date < (tx.confirmation_date or tx.trade_date) <= current_quote_date), ZERO)
     confirmed_from_previous_nav = sum(
         (
             transaction.shares or ZERO
@@ -88,6 +106,15 @@ def _nav_earning_shares(
             if (
                 transaction.status is TransactionStatus.CONFIRMED
                 and transaction.transaction_type in _NAV_REDEMPTION_TYPES
+                and not (
+                    product is not None
+                    and product.product_type is ProductType.PUBLIC_FUND
+                    and transaction.transaction_type is TransactionType.MANUAL_REDEMPTION
+                    and transaction.trade_date == current_quote_date
+                    and transaction.confirmation_date == current_quote_date
+                    and current_nav is not None
+                    and transaction.confirmation_nav == current_nav
+                )
                 and previous_quote_date
                 < (transaction.confirmation_date or transaction.trade_date)
                 <= current_quote_date
@@ -99,6 +126,7 @@ def _nav_earning_shares(
         ZERO,
         opening_position.total_shares
         + confirmed_from_previous_nav
+        + reinvested_from_previous_nav
         - redeemed_before_or_on_current_nav,
     )
 
@@ -132,12 +160,14 @@ def calculate_holding_profit(
         if since is not None and tx_date < since:
             return False
         return True
+    recognized_ids = {tx.id for tx in _recognized_dividends(transactions)}
     profit = sum(
         (
             transaction.amount or ZERO
             for transaction in transactions
             if (
-                transaction.status is TransactionStatus.CONFIRMED
+                (transaction.status is TransactionStatus.CONFIRMED or transaction.id in recognized_ids)
+                and (transaction.transaction_type is not TransactionType.CASH_DIVIDEND or transaction.id in recognized_ids)
                 and transaction.transaction_type in cash_types
                 and tx_in_range(transaction)
             )
@@ -165,6 +195,8 @@ def calculate_holding_profit(
             previous.quote_date,
             current.quote_date,
             conn=conn,
+            product=product,
+            current_nav=current.unit_nav,
         )
         profit += shares * (current.unit_nav - previous.unit_nav)
     return profit
@@ -241,8 +273,10 @@ def calculate_latest_profit(
             on_or_before=as_of,
             conn=conn,
         )
+    dividends = [tx for tx in _recognized_dividends(transactions) if tx.trade_date <= as_of]
     if latest is None or latest.unit_nav is None:
         return None, None
+    dividend_amount = sum((tx.amount or ZERO for tx in dividends if tx.trade_date == latest.quote_date), ZERO)
     if quotes is not None:
         earlier = [
             quote
@@ -266,6 +300,7 @@ def calculate_latest_profit(
         conn=conn,
         product=product,
         transactions=transactions,
+        current_nav=latest.unit_nav,
     )
     adjustment = sum(
         (
@@ -282,7 +317,7 @@ def calculate_latest_profit(
     )
     return (
         latest.quote_date,
-        shares * (latest.unit_nav - previous.unit_nav) + adjustment,
+        shares * (latest.unit_nav - previous.unit_nav) + adjustment + dividend_amount,
     )
 
 

@@ -34,7 +34,7 @@ def transit_assets(products, transactions):
     by_id = {tx.id: tx for tx in transactions}
     pending_buy = ZERO
     pending_redemption = ZERO
-    for tx in transactions:
+    for tx in _active(transactions):
         if tx.status in PENDING and tx.transaction_type in PURCHASES:
             if pending_purchase_is_in_current_position(products[tx.product_id], tx):
                 continue
@@ -45,6 +45,10 @@ def transit_assets(products, transactions):
             pending_buy += tx.amount or ZERO
         elif (tx.transaction_type is Kind.MANUAL_REDEMPTION
               and tx.status is Status.CONFIRMED
+              and tx.settlement_status is Settlement.PENDING):
+            pending_redemption += tx.amount or ZERO
+        elif (tx.transaction_type is Kind.CASH_DIVIDEND
+              and tx.status in {Status.CONFIRMED,Status.REVERSED}
               and tx.settlement_status is Settlement.PENDING):
             pending_redemption += tx.amount or ZERO
     # Pending redemption shares are locked, not removed, so do not subtract them.
@@ -68,6 +72,7 @@ def _active(transactions):
 def _instruction_value(transactions, products, prices):
     """Net value implied by primary trades, independent of cash-leg amounts."""
     total = ZERO
+    by_id = {tx.id: tx for tx in transactions}
     for tx in _active(transactions):
         applied = tx.status in {Status.CONFIRMED, Status.REVERSED}
         pending = tx.status in PENDING
@@ -90,7 +95,8 @@ def _instruction_value(transactions, products, prices):
             )
             total += (amount if internal_or_receivable else ZERO) - shares * price
         elif kind is Kind.CASH_DIVIDEND and applied:
-            if tx.linked_transaction_id:
+            linked = by_id.get(tx.linked_transaction_id)
+            if (linked is not None and linked.transaction_type is Kind.CASH_TRANSFER_IN) or tx.settlement_status is Settlement.PENDING:
                 total += amount
         elif kind in {Kind.OPENING_POSITION, Kind.INCOME_ACCRUAL,
                       Kind.HOLDING_ADJUSTMENT, Kind.LATEST_PROFIT_ADJUSTMENT} and applied:
@@ -118,7 +124,7 @@ def _validate_cash_receipt(tx, by_id, products):
     if parent.transaction_type in {Kind.CASH_DIVIDEND, Kind.MANUAL_REDEMPTION}:
         valid_link = parent.linked_transaction_id == tx.id
         expected_status = parent.status
-        confirmation_date = parent.confirmation_date
+        confirmation_date = ((parent.settlement_date or parent.trade_date) if parent.transaction_type is Kind.CASH_DIVIDEND else parent.confirmation_date)
         actor = parent.created_by
     elif parent.transaction_type is Kind.CASH_TRANSFER_OUT:
         purchase = by_id.get(parent.linked_transaction_id)
@@ -136,7 +142,7 @@ def _validate_cash_receipt(tx, by_id, products):
         _fail(f"到账流水关联类型错误 {tx.id}")
     if (not valid_link or tx.status is not expected_status
         or tx.amount != parent.amount or tx.shares != parent.amount
-        or tx.trade_date != parent.trade_date or tx.plan_id != parent.plan_id
+        or tx.trade_date != ((parent.settlement_date or parent.trade_date) if parent.transaction_type is Kind.CASH_DIVIDEND else parent.trade_date) or tx.plan_id != parent.plan_id
         or tx.created_by != actor or tx.fee_amount is not None or tx.fee_rate is not None
         or (tx.status in {Status.CONFIRMED, Status.REVERSED}
             and (tx.confirmation_nav != ONE or tx.confirmation_date != confirmation_date))):

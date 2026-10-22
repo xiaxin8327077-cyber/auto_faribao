@@ -1,6 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from decimal import Decimal
+import json
+import sys
+from types import ModuleType
 from types import SimpleNamespace
 
 import pytest
@@ -193,6 +196,146 @@ def test_product_history_route_returns_not_found_for_unknown_product(client):
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "product_not_found"
+
+
+def test_fund_dividend_mode_rejects_invalid_modes_and_non_fund_products(client):
+    invalid_mode = client.post(
+        "/api/portfolio/products/fund/dividend-mode",
+        headers=write_headers(idem="dividend-invalid-mode"),
+        json={"mode": "BANK"},
+    )
+    unhashable_mode = client.post(
+        "/api/portfolio/products/fund/dividend-mode",
+        headers=write_headers(idem="dividend-unhashable-mode"),
+        json={"mode": []},
+    )
+    cash_mode = client.post(
+        "/api/portfolio/products/cash/dividend-mode",
+        headers=write_headers(idem="dividend-cash-product"),
+        json={"mode": "cash"},
+    )
+
+    assert invalid_mode.status_code == 400
+    assert invalid_mode.get_json()["error"] == "validation_error"
+    assert unhashable_mode.status_code == 400
+    assert unhashable_mode.get_json()["error"] == "validation_error"
+    assert cash_mode.status_code == 400
+    assert cash_mode.get_json()["error"] == "validation_error"
+
+
+def test_fund_dividend_mode_merges_metadata_and_replays_idempotently(api_setup):
+    client, _, repository, _ = api_setup
+    with repository.database.transaction() as conn:
+        conn.execute(
+            "UPDATE products SET metadata_json = ? WHERE id = ?",
+            ('{"provider_note":"keep me"}', "fund"),
+        )
+    body = {"mode": "reinvest"}
+
+    first = client.post(
+        "/api/portfolio/products/fund/dividend-mode",
+        headers=write_headers(idem="dividend-reinvest"),
+        json=body,
+    )
+    replay = client.post(
+        "/api/portfolio/products/fund/dividend-mode",
+        headers=write_headers(idem="dividend-reinvest"),
+        json=body,
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.get_json() == {
+        "product_id": "fund",
+        "dividend_mode": "reinvest",
+    }
+    assert replay.get_json() == first.get_json()
+    metadata = json.loads(repository.require_product("fund").metadata_json)
+    assert metadata == {
+        "provider_note": "keep me",
+        "dividend_mode": "reinvest",
+    }
+    with repository.database.connection() as conn:
+        actions = conn.execute(
+            "SELECT action FROM audit_logs WHERE action = ?",
+            ("portfolio_dividend_mode",),
+        ).fetchall()
+    assert len(actions) == 1
+
+
+def test_fund_dividend_mode_rolls_back_when_audit_write_fails(api_setup, monkeypatch):
+    client, _, repository, _ = api_setup
+    with repository.database.transaction() as conn:
+        conn.execute(
+            "UPDATE products SET metadata_json = ? WHERE id = ?",
+            ('{"other":"preserve"}', "fund"),
+        )
+
+    def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("audit storage unavailable")
+
+    monkeypatch.setattr(repository, "append_audit", fail_audit)
+    response = client.post(
+        "/api/portfolio/products/fund/dividend-mode",
+        headers=write_headers(idem="dividend-audit-failure"),
+        json={"mode": "cash"},
+    )
+
+    assert response.status_code == 500
+    assert response.get_json()["error"] == "portfolio_write_failed"
+    assert json.loads(repository.require_product("fund").metadata_json) == {
+        "other": "preserve",
+    }
+
+
+def test_fund_dividends_route_is_authenticated_read_only_and_uses_records(
+    api_setup, monkeypatch
+):
+    client, runtime, repository, _ = api_setup
+    record_payload = {
+        "product_id": "fund",
+        "dividend_mode": "cash",
+        "events": [
+            {
+                "id": "event-1",
+                "record_date": "2026-10-20",
+                "ex_dividend_date": "2026-10-20",
+                "payment_date": "2026-10-22",
+                "per_share": "0.0082",
+                "amount": "821.94",
+                "mode": "cash",
+                "status": "settled",
+                "reinvest_shares": None,
+                "source_url": "https://fund.example/dividends/1",
+                "error": "",
+            }
+        ],
+        "error": "",
+    }
+    calls = []
+    dividend_module = ModuleType("src.portfolio_dividends")
+
+    def dividend_records(repo, product_id):
+        calls.append((repo, product_id))
+        return record_payload
+
+    dividend_module.dividend_records = dividend_records
+    monkeypatch.setitem(sys.modules, "src.portfolio_dividends", dividend_module)
+    runtime.write_enabled = False
+    before_metadata = repository.require_product("fund").metadata_json
+    with repository.database.connection() as conn:
+        before_audits = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+
+    path = "/api/portfolio/products/fund/dividends"
+    assert client.get(path).status_code == 403
+    response = client.get(path, headers={"X-Nav-Dashboard-Key": "secret"})
+
+    assert response.status_code == 200
+    assert response.get_json() == record_payload
+    assert calls == [(repository, "fund")]
+    assert repository.require_product("fund").metadata_json == before_metadata
+    with repository.database.connection() as conn:
+        after_audits = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+    assert after_audits == before_audits
 
 
 def test_product_search_returns_external_candidates_for_partial_input(

@@ -1,4 +1,5 @@
 from dataclasses import replace
+from contextlib import nullcontext
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 import json
@@ -413,6 +414,9 @@ class PortfolioTransactionService:
         idempotency_key,
         destination_cash_product_id="",
         actor="web",
+        payment_date=None,
+        as_of_date=None,
+        conn=None,
     ) -> Transaction:
         idempotency_key = self._nonempty_text(
             idempotency_key, "idempotency_key"
@@ -420,6 +424,10 @@ class PortfolioTransactionService:
         amount = self._positive_decimal(amount, "amount")
         actor = self._nonempty_text(actor, "actor")
         destination_cash_product_id = destination_cash_product_id or ""
+        payment_date = payment_date or dividend_date
+        if payment_date < dividend_date:
+            raise ValueError("payment_date must not precede dividend_date")
+        as_of_date = as_of_date or date.today()
         request = {
             "actor": actor,
             "amount": self._decimal_audit_text(amount),
@@ -427,8 +435,11 @@ class PortfolioTransactionService:
             "dividend_date": dividend_date.isoformat(),
             "product_id": product_id,
         }
+        # Preserve the exact old audit shape for legacy same-day retries.
+        if payment_date != dividend_date:
+            request["payment_date"] = payment_date.isoformat()
 
-        with reconciled_transaction(self.repository, "manual_transaction") as conn:
+        with (nullcontext(conn) if conn is not None else reconciled_transaction(self.repository, "manual_transaction")) as conn:
             retry = self._operation_retry(
                 idempotency_key,
                 "record_cash_dividend",
@@ -451,6 +462,7 @@ class PortfolioTransactionService:
                     destination_cash_product_id,
                     actor,
                     conn,
+                    payment_date,
                 ):
                     raise ValueError(
                         "idempotency key conflicts with existing request"
@@ -487,8 +499,11 @@ class PortfolioTransactionService:
                 shares=ZERO,
                 confirmation_date=dividend_date,
                 created_by=actor,
+                settlement_date=payment_date if payment_date != dividend_date or payment_date > as_of_date else None,
+                destination_cash_product_id=destination_cash_product_id,
+                settlement_status=(RedemptionSettlementStatus.PENDING if payment_date > as_of_date else (RedemptionSettlementStatus.SETTLED if destination is not None else None)),
             )
-            if destination is None:
+            if destination is None or payment_date > as_of_date:
                 dividend = self.repository.create_transaction(dividend, conn)
             else:
                 dividend = self._create_linked_pair(
@@ -498,12 +513,12 @@ class PortfolioTransactionService:
                         product_id=destination.id,
                         transaction_type=TransactionType.CASH_TRANSFER_IN,
                         status=TransactionStatus.CONFIRMED,
-                        trade_date=dividend_date,
+                        trade_date=payment_date,
                         idempotency_key=f"linked:{dividend.id}",
                         amount=amount,
                         shares=amount,
                         confirmation_nav=ONE,
-                        confirmation_date=dividend_date,
+                        confirmation_date=payment_date,
                         linked_transaction_id=dividend.id,
                         created_by=actor,
                     ),
@@ -529,6 +544,40 @@ class PortfolioTransactionService:
                 conn,
             )
             return dividend
+
+    def settle_cash_dividends(self, as_of_date, conn=None, transaction_id=None):
+        """Move due dividend receivables to cash; this creates no second income."""
+        settled = []
+        with (nullcontext(conn) if conn is not None else reconciled_transaction(self.repository, "dividend_settlement")) as conn:
+            for dividend in self.repository.list_transactions(conn=conn):
+                if transaction_id is not None and dividend.id != transaction_id:
+                    continue
+                if (dividend.transaction_type is not TransactionType.CASH_DIVIDEND
+                    or dividend.status is not TransactionStatus.CONFIRMED
+                    or dividend.settlement_status is not RedemptionSettlementStatus.PENDING
+                    or not dividend.destination_cash_product_id
+                    or dividend.settlement_date is None or dividend.settlement_date > as_of_date):
+                    continue
+                event = conn.execute("SELECT mode,status,error FROM fund_dividend_events WHERE dividend_transaction_id=?", (dividend.id,)).fetchone()
+                if event is not None and (event["mode"] != "cash" or event["status"] != "receivable" or "冲突" in event["error"]):
+                    continue
+                cash = self.repository.create_transaction(Transaction(
+                    id=str(uuid4()), product_id=dividend.destination_cash_product_id,
+                    transaction_type=TransactionType.CASH_TRANSFER_IN,
+                    status=TransactionStatus.CONFIRMED,
+                    trade_date=dividend.settlement_date,
+                    confirmation_date=dividend.settlement_date,
+                    idempotency_key=f"linked:{dividend.id}", amount=dividend.amount,
+                    shares=dividend.amount, confirmation_nav=ONE,
+                    linked_transaction_id=dividend.id, created_by=dividend.created_by,
+                ), conn)
+                conn.execute("UPDATE transactions SET linked_transaction_id=?, settlement_status='settled', settled_at=CURRENT_TIMESTAMP WHERE id=?", (cash.id, dividend.id))
+                self._rebuild_positions({cash.product_id}, conn)
+                self.repository.append_audit(str(uuid4()), "settle_cash_dividend", "transaction", dividend.id,
+                    after_json=json.dumps({"cash_transaction_id": cash.id, "payment_date": dividend.settlement_date.isoformat()}),
+                    source=dividend.created_by, conn=conn)
+                settled.append(self.repository.get_transaction_by_id(dividend.id, conn=conn))
+        return settled
 
     def confirm_pending(
         self, transaction_id, quote, as_of_date=None
@@ -1721,6 +1770,9 @@ class PortfolioTransactionService:
         ]
 
     def _reversal_business_group(self, transaction, conn):
+        if (transaction.transaction_type is TransactionType.HOLDING_ADJUSTMENT
+            and transaction.linked_transaction_id and transaction.idempotency_key.startswith("reinvest:fund-dividend:")):
+            return [transaction, self._manual_sibling_for_cash(transaction, conn)]
         if transaction.transaction_type in {
             TransactionType.MANUAL_PURCHASE,
             TransactionType.MANUAL_REDEMPTION,
@@ -1836,6 +1888,9 @@ class PortfolioTransactionService:
             raise ValueError("inconsistent reversal group")
 
     def _business_sibling_for_root(self, root, conn):
+        if (root.transaction_type is TransactionType.HOLDING_ADJUSTMENT
+            and root.linked_transaction_id and root.idempotency_key.startswith("reinvest:fund-dividend:")):
+            return self._manual_sibling_for_cash(root, conn)
         if root.transaction_type in {
             TransactionType.MANUAL_PURCHASE,
             TransactionType.MANUAL_REDEMPTION,
@@ -2019,6 +2074,7 @@ class PortfolioTransactionService:
         destination_cash_product_id,
         actor,
         conn,
+        payment_date=None,
     ):
         if (
             dividend is None
@@ -2037,6 +2093,7 @@ class PortfolioTransactionService:
             or dividend.shares != ZERO
             or dividend.trade_date != dividend_date
             or dividend.confirmation_date != dividend_date
+            or (dividend.settlement_date or dividend.trade_date) != (payment_date or dividend_date)
             or dividend.confirmation_nav is not None
             or dividend.fee_amount is not None
             or dividend.fee_rate is not None
@@ -2054,9 +2111,12 @@ class PortfolioTransactionService:
                 and dividend.linked_transaction_id == ""
                 and linked_id == ""
             )
+        if (linked is None and dividend.destination_cash_product_id == destination_cash_product_id
+            and dividend.settlement_status is RedemptionSettlementStatus.PENDING):
+            return True
         return (
             linked is not None
-            and linked.id == linked_id
+            and (linked.id == linked_id or (not linked_id and dividend.settlement_date is not None))
             and linked.product_id == destination_cash_product_id
         )
 
@@ -2461,6 +2521,17 @@ class PortfolioTransactionService:
             TransactionType.CASH_DIVIDEND,
         }:
             raise ValueError("inconsistent linked transaction")
+        if transaction.transaction_type is TransactionType.CASH_DIVIDEND and transaction.linked_transaction_id:
+            reinvestment = self.repository.get_transaction_by_id(transaction.linked_transaction_id, conn=conn)
+            if reinvestment is not None and reinvestment.transaction_type is TransactionType.HOLDING_ADJUSTMENT:
+                if (reinvestment.linked_transaction_id != transaction.id or reinvestment.product_id != transaction.product_id
+                    or reinvestment.status is not transaction.status or reinvestment.amount != transaction.amount
+                    or reinvestment.created_by != transaction.created_by or not reinvestment.confirmation_nav
+                    or reinvestment.shares != transaction.amount / reinvestment.confirmation_nav
+                    or reinvestment.trade_date != reinvestment.confirmation_date
+                    or reinvestment.idempotency_key != f"reinvest:{transaction.idempotency_key}"):
+                    raise ValueError("inconsistent linked transaction")
+                return reinvestment
         reverse_cash_links = [
             candidate
             for candidate in self.repository.list_transactions(conn=conn)
@@ -2498,7 +2569,7 @@ class PortfolioTransactionService:
             or reverse_cash_links[0].id != linked.id
             or linked.linked_transaction_id != transaction.id
             or linked.transaction_type is not expected_type
-            or linked.trade_date != transaction.trade_date
+            or linked.trade_date != (transaction.settlement_date or transaction.trade_date if transaction.transaction_type is TransactionType.CASH_DIVIDEND else transaction.trade_date)
             or linked.created_by != transaction.created_by
             or linked.plan_id != transaction.plan_id
             or (
@@ -2566,7 +2637,7 @@ class PortfolioTransactionService:
             and linked.shares == transaction.amount
             and linked.idempotency_key == f"linked:{transaction.id}"
             and linked.confirmation_nav == ONE
-            and linked.confirmation_date == transaction.trade_date
+            and linked.confirmation_date == (transaction.settlement_date or transaction.trade_date)
         )
 
     @classmethod

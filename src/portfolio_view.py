@@ -409,6 +409,11 @@ def _product_row(
         "quote_status": "ready" if market_value is not None else "pending",
         "quote": quote_payload,
     }
+    if product.product_type is ProductType.PUBLIC_FUND:
+        from src.portfolio_dividends import dividend_records, dividend_upcoming_count
+        records = dividend_records(repository, product.id, conn=conn)
+        row["dividend_mode"] = records["dividend_mode"]
+        row["dividend_upcoming_count"] = dividend_upcoming_count(repository,product.id,conn=conn)
     if product.product_type is ProductType.CASH_MANAGEMENT:
         row.update(
             {

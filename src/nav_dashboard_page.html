@@ -415,6 +415,37 @@
     .position-stat-grid .manage-stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
     .row-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
     .row-action { min-height: 31px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--blue); font-size: 12px; font-weight: 750; cursor: pointer; }
+    .dividend-action { position: relative; padding-right: 13px; }
+    .dividend-alert-dot { position: absolute; top: 3px; right: 4px; width: 7px; height: 7px; border: 1px solid #fff; border-radius: 50%; background: #e5484d; }
+    .fund-dividend-mode-list { display: grid; gap: 8px; margin: 4px 0 10px; padding: 0; border: 0; }
+    .fund-dividend-mode-list legend { margin-bottom: 7px; color: var(--text); font-size: 13px; font-weight: 800; }
+    .fund-dividend-mode-option { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); cursor: pointer; }
+    .fund-dividend-mode-option:has(input:checked) { border-color: var(--blue); background: var(--blue-soft); }
+    .fund-dividend-mode-option input { flex: 0 0 auto; width: 17px; height: 17px; accent-color: var(--blue); }
+    .fund-dividend-mode-copy { display: grid; gap: 2px; min-width: 0; }
+    .fund-dividend-mode-copy b { color: var(--text); font-size: 13px; }
+    .fund-dividend-mode-copy small { color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .fund-dividend-note { margin: 0 0 12px; padding: 9px 10px; border-radius: 7px; background: var(--blue-soft); color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .fund-dividend-status { min-height: 17px; margin: 0 0 8px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .fund-dividend-status.error { color: var(--negative); }
+    .fund-dividend-content { display: grid; gap: 12px; }
+    .fund-dividend-list { display: grid; gap: 8px; max-height: min(40vh, 330px); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 1px 2px 2px 0; }
+    .fund-dividend-section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; color: var(--text); font-size: 13px; font-weight: 850; }
+    .fund-dividend-section-title small { color: var(--muted); font-size: 10px; font-weight: 600; }
+    .fund-dividend-event { display: grid; gap: 7px; min-width: 0; padding: 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel); }
+    .fund-dividend-event-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .fund-dividend-event-title { color: var(--text); font-size: 12px; font-weight: 850; }
+    .fund-dividend-status-tag { flex: 0 0 auto; padding: 3px 7px; border-radius: 10px; background: var(--blue-soft); color: var(--blue); font-size: 10px; font-weight: 750; }
+    .fund-dividend-dates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+    .fund-dividend-date { min-width: 0; padding: 6px; border-radius: 6px; background: var(--bg); }
+    .fund-dividend-date span, .fund-dividend-metric span { display: block; color: var(--muted); font-size: 9px; line-height: 1.35; }
+    .fund-dividend-date b { display: block; margin-top: 3px; color: var(--text); font-size: 10px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .fund-dividend-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+    .fund-dividend-metric { min-width: 0; padding: 6px; border-radius: 6px; background: var(--bg); }
+    .fund-dividend-metric b { display: block; margin-top: 3px; color: var(--text); font-size: 11px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .fund-dividend-error { color: var(--negative); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+    .fund-dividend-source { color: var(--blue); font-size: 10px; font-weight: 700; text-decoration: none; }
+    .fund-dividend-source:focus-visible { outline: 2px solid rgba(31, 111, 209, .35); outline-offset: 2px; }
     .transaction-filters { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; padding-bottom: 2px; }
     .transaction-filter-row { display: flex; flex-wrap: wrap; gap: 7px; }
     .transaction-filter { flex: 0 0 auto; min-height: 31px; padding: 0 10px; border: 1px solid var(--line); border-radius: 15px; background: var(--panel); color: var(--muted); font-size: 12px; font-weight: 750; cursor: pointer; }
@@ -450,6 +481,13 @@
     #tradeDialog .dialog-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
     #tradeDialog .dialog-actions { flex: 0 0 auto; margin: 0; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--panel); }
     #tradeDialog .dialog-actions .action-button { min-height: 44px; }
+    #fundDividendDialog { width: min(calc(100% - 20px), 520px); height: min(calc(100dvh - 24px), 720px); max-height: min(calc(100dvh - 24px), 720px); overflow: hidden; }
+    #fundDividendDialog[open] { display: flex; flex-direction: column; }
+    #fundDividendForm { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; width: 100%; }
+    #fundDividendDialog .dialog-head { flex: 0 0 auto; }
+    #fundDividendDialog .dialog-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+    #fundDividendDialog .dialog-actions { flex: 0 0 auto; margin: 0; padding: 11px 16px max(11px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--panel); }
+    #fundDividendDialog .dialog-actions .action-button { min-height: 42px; }
     dialog.management-dialog::backdrop { background: rgba(13, 29, 50, .44); }
     .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
     .dialog-head h2 { font-size: 19px; }
@@ -787,6 +825,24 @@
     <div class="dialog-body"><div class="preview-result" id="productDetailContent"></div><div class="dialog-actions"><button class="action-button" type="button" data-close-dialog="productDetailDialog">关闭</button></div></div>
   </dialog>
 
+  <dialog class="management-dialog" id="fundDividendDialog" aria-labelledby="fundDividendDialogTitle">
+    <form id="fundDividendForm">
+      <header class="dialog-head"><h2 id="fundDividendDialogTitle">基金分红</h2><button class="icon-button" type="button" data-close-dialog="fundDividendDialog" aria-label="关闭">×</button></header>
+      <div class="dialog-body">
+        <div class="form-field"><span>当前基金</span><strong id="fundDividendProductName">--</strong></div>
+        <fieldset class="fund-dividend-mode-list">
+          <legend>分红方式（本系统记账设置）</legend>
+          <label class="fund-dividend-mode-option"><input type="radio" name="dividend_mode" value="cash" checked><span class="fund-dividend-mode-copy"><b>现金分红</b><small>现金在公开派现日记入钱包 Plus</small></span></label>
+          <label class="fund-dividend-mode-option"><input type="radio" name="dividend_mode" value="reinvest"><span class="fund-dividend-mode-copy"><b>红利再投</b><small>按公开确认信息记录新增份额</small></span></label>
+        </fieldset>
+        <p class="fund-dividend-note">此设置仅影响尚未登记的分红记录；现金按公开派现日记入钱包 Plus。系统不会向银行或基金销售平台发送真实分红指令。</p>
+        <div class="fund-dividend-status" id="fundDividendStatus" role="status" aria-live="polite">正在读取分红记录...</div>
+        <div class="fund-dividend-content" id="fundDividendContent"><div class="empty">正在读取分红记录...</div></div>
+      </div>
+      <footer class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="fundDividendDialog">关闭</button><button class="action-button" id="fundDividendSaveButton" type="submit">保存分红方式</button></footer>
+    </form>
+  </dialog>
+
   <div id="toast" role="status" aria-live="polite" hidden></div>
 
   <script>
@@ -870,6 +926,10 @@
     let transactionFilter = 'all';
     let managementSwipeStart = null;
     let productDetailRequestId = 0;
+    let fundDividendRequestId = 0;
+    let fundDividendProductId = '';
+    let fundDividendCurrentMode = 'cash';
+    let fundDividendSaving = false;
     const INTERNAL_TRANSACTION_TYPES = new Set([
       'opening_position',
       'cash_transfer_in',
@@ -1556,13 +1616,17 @@
           const cashYield = rowValue(row, 'per_10k_yield', 'per_ten_thousand_yield');
           const sevenDay = rowValue(row, 'seven_day_yield', 'seven_day_annualized_yield');
           const sevenDayDisplay = sevenDay === '' ? '--' : `${(number(sevenDay) * 100).toFixed(2)}%`;
+          const dividendUpcomingCount = number(rowValue(row, 'dividend_upcoming_count'));
+          const dividendAction = group === 'public_fund'
+            ? `<button class="row-action dividend-action" type="button" data-view-dividends="${esc(id)}" aria-label="分红${dividendUpcomingCount > 0 ? '，有未完成分红' : ''}">分红${dividendUpcomingCount > 0 ? '<span class="dividend-alert-dot" aria-label="有即将开始或未完成分红"></span>' : ''}</button>`
+            : '';
           const shareStats = `<div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div><div class="manage-stat"><span>可用份额</span><b>${esc(availableSharesDisplay || '--')}</b></div><div class="manage-stat"><span>在途资金</span><b>${money(inTransitAmount || 0)} 元</b></div>`;
           const navStat = group === 'cash_management'
             ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b></div>`
             : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b><small class="manage-subvalue">${esc(shortDate(quoteDate) || '--')} · <span class="change-value ${tone(changePct)}">${changePct === '' ? '--' : esc(signedPercent(changePct))}</span></small></div>`;
           const latestProfitStat = `<div class="manage-stat"><span>最新收益</span><b>${latestProfit === '' ? '--' : signedMoney(latestProfit) + ' 元'}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
-          return `<article class="manage-card"><div class="manage-title-row"><div class="manage-name">${esc(name)}</div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${latestProfitStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申/赎</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准持仓</button><button class="row-action" type="button" data-write-operation="adjust-latest-profit" data-product-id="${esc(id)}">校准最新收益</button><button class="row-action" type="button" data-view-product="${esc(id)}">详情</button></div></article>`;
+          return `<article class="manage-card"><div class="manage-title-row"><div class="manage-name">${esc(name)}</div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${latestProfitStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申/赎</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准持仓</button><button class="row-action" type="button" data-write-operation="adjust-latest-profit" data-product-id="${esc(id)}">校准最新收益</button><button class="row-action" type="button" data-view-product="${esc(id)}">详情</button>${dividendAction}</div></article>`;
         }).join('')}</div></section>`;
       }).join('') || '<div class="empty">暂无可展示的分类持仓。</div>';
     }
@@ -2550,6 +2614,165 @@
       syncSipStartDate();
       dialogOpen('sipDialog');
     }
+    function safeExternalUrl(value) {
+      try {
+        const parsed = new URL(String(value || ''), location.href);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+        return parsed.href;
+      } catch (_error) {
+        return '';
+      }
+    }
+    function fundDividendField(value) {
+      return value === undefined || value === null || value === ''
+        ? '--'
+        : esc(value);
+    }
+    function setFundDividendMode(mode) {
+      const selected = mode === 'reinvest' ? 'reinvest' : 'cash';
+      document.querySelectorAll('#fundDividendForm input[name="dividend_mode"]').forEach(input => {
+        input.checked = input.value === selected;
+      });
+    }
+    function setFundDividendControlsDisabled(disabled) {
+      const locked = disabled || fundDividendSaving || !state.writeEnabled;
+      document.querySelectorAll('#fundDividendForm input[name="dividend_mode"]').forEach(input => {
+        input.disabled = locked;
+      });
+      $('fundDividendSaveButton').disabled = locked;
+    }
+    function setFundDividendStatus(message, isError = false) {
+      const status = $('fundDividendStatus');
+      status.textContent = message || '';
+      status.classList.toggle('error', Boolean(isError));
+    }
+    function renderFundDividendEvent(event) {
+      const status = String(rowValue(event, 'status'));
+      const statusLabels = {
+        announced: '即将开始',
+        receivable: '待到账',
+        settled: '已完成',
+        blocked: '待处理',
+      };
+      const isReinvest = rowValue(event, 'mode') === 'reinvest';
+      const mode = isReinvest ? '红利再投' : '现金分红';
+      const sourceUrl = safeExternalUrl(rowValue(event, 'source_url'));
+      const eventError = rowValue(event, 'error');
+      const isHistorical = rowValue(event, 'historical') === true && status !== 'settled';
+      const statusLabel = status === 'settled'
+        ? statusLabels.settled
+        : (isHistorical ? '历史待核实' : (statusLabels[status] || '待处理'));
+      const dates = [
+        ['登记日', rowValue(event, 'record_date')],
+        ['除息日', rowValue(event, 'ex_dividend_date')],
+        [isReinvest ? '确认日' : '派现日', rowValue(event, isReinvest ? 'reinvest_confirmation_date' : 'payment_date')],
+      ].map(([label, value]) => `<div class="fund-dividend-date"><span>${label}</span><b>${fundDividendField(value)}</b></div>`).join('');
+      const details = [
+        ['每份分红', rowValue(event, 'per_share')],
+        ['分红金额', rowValue(event, 'amount')],
+        ['再投份额', rowValue(event, 'reinvest_shares')],
+        ['登记方式', mode],
+      ].map(([label, value]) => `<div class="fund-dividend-metric"><span>${label}</span><b>${fundDividendField(value)}</b></div>`).join('');
+      return `<article class="fund-dividend-event"><div class="fund-dividend-event-head"><span class="fund-dividend-event-title">${mode}</span><span class="fund-dividend-status-tag">${esc(statusLabel)}</span></div><div class="fund-dividend-dates">${dates}</div><div class="fund-dividend-metrics">${details}</div>${eventError ? `<div class="fund-dividend-error">${esc(eventError)}</div>` : ''}${sourceUrl ? `<a class="fund-dividend-source" href="${esc(sourceUrl)}" target="_blank" rel="noopener noreferrer">查看公开来源</a>` : ''}</article>`;
+    }
+    function renderFundDividendRecords(payload) {
+      const events = Array.isArray(payload?.events) ? payload.events : [];
+      const completed = events.filter(event => rowValue(event, 'status') === 'settled');
+      const historical = events.filter(event => rowValue(event, 'status') !== 'settled' && rowValue(event, 'historical') === true);
+      const upcoming = events.filter(event => rowValue(event, 'status') !== 'settled'
+        && rowValue(event, 'historical') !== true && rowValue(event, 'is_upcoming') !== false);
+      const renderSection = (title, rows) => `<section><h3 class="fund-dividend-section-title">${title}<small>${rows.length} 笔</small></h3><div class="fund-dividend-list">${rows.map(renderFundDividendEvent).join('') || '<div class="empty">暂无记录</div>'}</div></section>`;
+      $('fundDividendContent').innerHTML = `${renderSection('即将开始', upcoming)}${renderSection('历史待核实', historical)}${renderSection('已完成', completed)}`;
+      const serviceError = String(payload?.error || '').trim();
+      setFundDividendStatus(serviceError || (events.length ? '' : '暂无分红记录'), Boolean(serviceError));
+    }
+    async function loadFundDividendRecords(requestId = fundDividendRequestId) {
+      const productId = fundDividendProductId;
+      if (!productId) return;
+      setFundDividendStatus('正在读取分红记录...');
+      $('fundDividendContent').innerHTML = '<div class="empty">正在读取分红记录...</div>';
+      setFundDividendControlsDisabled(true);
+      try {
+        const response = await api(`/api/portfolio/products/${encodeURIComponent(productId)}/dividends`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || '读取分红记录失败');
+        if (requestId !== fundDividendRequestId || productId !== fundDividendProductId) return;
+        fundDividendCurrentMode = payload.dividend_mode === 'reinvest'
+          ? 'reinvest'
+          : 'cash';
+        setFundDividendMode(fundDividendCurrentMode);
+        renderFundDividendRecords(payload);
+      } catch (error) {
+        if (requestId !== fundDividendRequestId || productId !== fundDividendProductId) return;
+        $('fundDividendContent').innerHTML = `<div class="empty">${esc(error.message || '读取分红记录失败')}<div class="dialog-actions"><button class="action-button secondary" type="button" data-dividend-retry>重试</button></div></div>`;
+        setFundDividendStatus('读取失败，请检查网络后重试。', true);
+      } finally {
+        if (requestId === fundDividendRequestId && productId === fundDividendProductId) {
+          setFundDividendControlsDisabled(false);
+        }
+      }
+    }
+    async function openFundDividends(productId) {
+      const product = portfolioRows('positions', portfolioRows('products', [])).find(
+        row => String(rowValue(row, 'product_id', 'id', 'code')) === String(productId)
+      );
+      const productType = rowValue(product, 'wealth_type', 'product_type', 'type', 'category');
+      if (!product || productType !== 'public_fund') return;
+      const requestId = ++fundDividendRequestId;
+      fundDividendProductId = String(productId);
+      fundDividendCurrentMode = rowValue(product, 'dividend_mode') === 'reinvest'
+        ? 'reinvest'
+        : 'cash';
+      $('fundDividendProductName').textContent = rowValue(product, 'name', 'product_name', 'code') || '公募基金';
+      setFundDividendMode(fundDividendCurrentMode);
+      setFundDividendStatus('正在读取分红记录...');
+      $('fundDividendContent').innerHTML = '<div class="empty">正在读取分红记录...</div>';
+      dialogOpen('fundDividendDialog');
+      await loadFundDividendRecords(requestId);
+    }
+    async function saveFundDividendMode(event) {
+      event.preventDefault();
+      if (!state.writeEnabled || fundDividendSaving || !fundDividendProductId) return;
+      const productId = fundDividendProductId;
+      const requestId = fundDividendRequestId;
+      const selectedMode = $('fundDividendForm').querySelector('input[name="dividend_mode"]:checked')?.value;
+      if (!['cash', 'reinvest'].includes(selectedMode)) return;
+      fundDividendSaving = true;
+      setFundDividendControlsDisabled(true);
+      $('fundDividendSaveButton').textContent = '保存中...';
+      setFundDividendStatus('正在保存分红方式...');
+      try {
+        const response = await api(`/api/portfolio/products/${encodeURIComponent(productId)}/dividend-mode`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Portfolio-Request': '1',
+            'Idempotency-Key': newIdempotencyKey(),
+          },
+          body: JSON.stringify({mode: selectedMode}),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || '保存分红方式失败');
+        if (requestId !== fundDividendRequestId || productId !== fundDividendProductId) return;
+        fundDividendCurrentMode = payload.dividend_mode === 'reinvest'
+          ? 'reinvest'
+          : selectedMode;
+        setFundDividendMode(fundDividendCurrentMode);
+        setFundDividendStatus('分红方式已保存，仅适用于尚未登记的分红。');
+        showToast('分红方式已保存。');
+      } catch (error) {
+        if (requestId !== fundDividendRequestId || productId !== fundDividendProductId) return;
+        setFundDividendMode(fundDividendCurrentMode);
+        setFundDividendStatus(error.message || '保存分红方式失败，请重试。', true);
+        showToast('保存分红方式失败，请重试。');
+      } finally {
+        fundDividendSaving = false;
+        if (requestId === fundDividendRequestId && productId === fundDividendProductId) {
+          $('fundDividendSaveButton').textContent = '保存分红方式';
+          setFundDividendControlsDisabled(false);
+        }
+      }
+    }
     async function openProductDetail(productId) {
       const requestId = ++productDetailRequestId;
       const product = portfolioRows('positions', portfolioRows('products', [])).find(
@@ -2898,10 +3121,21 @@
       openProductDetail(view.dataset.viewProduct);
     });
     document.addEventListener('click', event => {
+      const view = event.target.closest('[data-view-dividends]');
+      if (!view) return;
+      openFundDividends(view.dataset.viewDividends);
+    });
+    document.addEventListener('click', event => {
+      const retry = event.target.closest('[data-dividend-retry]');
+      if (!retry) return;
+      loadFundDividendRecords(fundDividendRequestId);
+    });
+    document.addEventListener('click', event => {
       const view = event.target.closest('[data-view-sip-records]');
       if (!view) return;
       openSipRecords(view.dataset.viewSipRecords);
     });
+    $('fundDividendForm').addEventListener('submit', saveFundDividendMode);
     $('tradeForm').addEventListener('submit', async event => {
       event.preventDefault();
       try {
