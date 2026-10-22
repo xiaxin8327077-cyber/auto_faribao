@@ -415,6 +415,7 @@
     .position-stat-grid .manage-stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
     .row-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
     .row-action { min-height: 31px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--blue); font-size: 12px; font-weight: 750; cursor: pointer; }
+    .stat-more { padding: 0; border: 0; background: none; color: var(--blue); font-size: 10px; font-weight: 750; cursor: pointer; }
     .dividend-action { position: relative; padding-right: 13px; }
     .dividend-alert-dot { position: absolute; top: 3px; right: 4px; width: 7px; height: 7px; border: 1px solid #fff; border-radius: 50%; background: #e5484d; }
     .fund-dividend-mode-list { display: grid; gap: 8px; margin: 4px 0 10px; padding: 0; border: 0; }
@@ -1621,12 +1622,13 @@
             ? `<button class="row-action dividend-action" type="button" data-view-dividends="${esc(id)}" aria-label="分红${dividendUpcomingCount > 0 ? '，有未完成分红' : ''}">分红${dividendUpcomingCount > 0 ? '<span class="dividend-alert-dot" aria-label="有即将开始或未完成分红"></span>' : ''}</button>`
             : '';
           const shareStats = `<div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div><div class="manage-stat"><span>可用份额</span><b>${esc(availableSharesDisplay || '--')}</b></div><div class="manage-stat"><span>在途资金</span><b>${money(inTransitAmount || 0)} 元</b></div>`;
+          const moreAction = `<button class="stat-more" type="button" data-view-product="${esc(id)}" aria-label="更多，查看持仓详情">更多</button>`;
           const navStat = group === 'cash_management'
-            ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b></div>`
-            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b><small class="manage-subvalue">${esc(shortDate(quoteDate) || '--')} · <span class="change-value ${tone(changePct)}">${changePct === '' ? '--' : esc(signedPercent(changePct))}</span></small></div>`;
+            ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b><small class="manage-subvalue">${moreAction}</small></div>`
+            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b><small class="manage-subvalue">${esc(shortDate(quoteDate) || '--')} · <span class="change-value ${tone(changePct)}">${changePct === '' ? '--' : esc(signedPercent(changePct))}</span> · ${moreAction}</small></div>`;
           const latestProfitStat = `<div class="manage-stat"><span>最新收益</span><b>${latestProfit === '' ? '--' : signedMoney(latestProfit) + ' 元'}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
-          return `<article class="manage-card"><div class="manage-title-row"><div class="manage-name">${esc(name)}</div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${latestProfitStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申/赎</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准持仓</button><button class="row-action" type="button" data-write-operation="adjust-latest-profit" data-product-id="${esc(id)}">校准最新收益</button><button class="row-action" type="button" data-view-product="${esc(id)}">详情</button>${dividendAction}</div></article>`;
+          return `<article class="manage-card"><div class="manage-title-row"><div class="manage-name">${esc(name)}</div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${latestProfitStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申/赎</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准持仓</button><button class="row-action" type="button" data-write-operation="adjust-latest-profit" data-product-id="${esc(id)}">校准最新收益</button>${dividendAction}</div></article>`;
         }).join('')}</div></section>`;
       }).join('') || '<div class="empty">暂无可展示的分类持仓。</div>';
     }

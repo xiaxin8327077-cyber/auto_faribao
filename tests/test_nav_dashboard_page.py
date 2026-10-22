@@ -377,7 +377,9 @@ def test_position_detail_opens_a_real_dialog():
 
     assert 'id="productDetailDialog"' in html
     assert 'id="productDetailContent"' in html
-    assert 'data-view-product="${esc(id)}">详情</button>' in html
+    # 详情入口位于净值显示模块，以“更多”文字链呈现；操作行不再保留详情按钮。
+    assert 'class="stat-more" type="button" data-view-product="${esc(id)}" aria-label="更多，查看持仓详情">更多</button>' in html
+    assert 'data-view-product="${esc(id)}">详情</button>' not in html
     assert "async function openProductDetail(productId)" in html
     assert "`/api/portfolio/products/${encodeURIComponent(productId)}/history`" in html
     assert "净值日期" in html
@@ -400,7 +402,7 @@ def test_position_detail_opens_a_real_dialog():
     assert "$('productDetailContent').innerHTML = `<div class=\"product-history\">" in html
 
 
-def test_dividend_action_is_fund_only_and_follows_product_detail():
+def test_dividend_action_is_fund_only_and_follows_product_actions():
     html = _read_page()
     positions = html[
         html.index("function renderPositions()"):
@@ -410,7 +412,10 @@ def test_dividend_action_is_fund_only_and_follows_product_detail():
     assert "const dividendAction = group === 'public_fund'" in positions
     assert "rowValue(row, 'dividend_upcoming_count')" in positions
     assert 'class="dividend-alert-dot"' in positions
-    assert 'data-view-product="${esc(id)}">详情</button>${dividendAction}' in positions
+    # 详情入口已移到净值显示模块的“更多”文字链，操作行末位是分红按钮。
+    assert '校准最新收益</button>${dividendAction}</div>' in positions
+    assert 'data-view-product="${esc(id)}">详情</button>' not in positions
+    assert 'class="stat-more" type="button" data-view-product="${esc(id)}"' in positions
     assert 'data-view-dividends="${esc(id)}"' in positions
 
 
