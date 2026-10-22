@@ -689,6 +689,8 @@ class PortfolioDatabase:
             _execute_sql_script(conn, V7_SCHEMA_SQL)
             from src.portfolio_dividends import ensure_dividend_schema
             ensure_dividend_schema(conn)
+            from src.bond_barometer import ensure_barometer_schema
+            ensure_barometer_schema(conn)
             self._correct_known_sip_fee_rate(conn)
         except BaseException:
             conn.rollback()

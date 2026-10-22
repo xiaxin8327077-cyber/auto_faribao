@@ -110,33 +110,62 @@ def test_build_barometer_reports_unavailable_when_no_data():
     result = build_barometer(date(2026, 10, 22), fetch=lambda day: {})
     assert result == {"as_of": "2026-10-22", "available": False}
 
-def test_latest_barometer_refreshes_only_during_trading_window(monkeypatch):
-    import time
+def test_latest_barometer_uses_database_snapshot_with_dedup_and_retention(monkeypatch):
+    import sqlite3
     from datetime import datetime
-
     import src.bond_barometer as module
 
     calls = []
 
-    def fake_build(day):
+    def fake_build(day, fetch=None):
         calls.append(day)
         return {"as_of": day.isoformat(), "available": True, "n": len(calls)}
 
     monkeypatch.setattr(module, "build_barometer", fake_build)
-    module._cache.clear()
+    conn = sqlite3.connect(":memory:")
+    module.ensure_barometer_schema(conn)
     day = date(2026, 10, 22)
 
-    key = day.isoformat()
-    assert module.latest_barometer(day=day, now=datetime(2026, 10, 22, 10, 0))["n"] == 1
-    # 30 分钟内的交易时段复用缓存
-    assert module.latest_barometer(day=day, now=datetime(2026, 10, 22, 10, 20))["n"] == 1
-    # 缓存超过 30 分钟且仍在交易时段：自动刷新
-    module._cache[key] = (time.monotonic() - 1900, module._cache[key][1])
-    assert module.latest_barometer(day=day, now=datetime(2026, 10, 22, 10, 40))["n"] == 2
-    # 非交易时段：即使缓存过期也不自动刷新
-    module._cache[key] = (time.monotonic() - 7200, module._cache[key][1])
-    assert module.latest_barometer(day=day, now=datetime(2026, 10, 22, 19, 0))["n"] == 2
-    # 手动刷新随时有效
-    assert module.latest_barometer(day=day, now=datetime(2026, 10, 22, 19, 0), force=True)["n"] == 3
-    # 周末不自动刷新（缓存仍有效）
-    assert module.latest_barometer(day=day, now=datetime(2026, 10, 24, 10, 0))["n"] == 3
+    # 无快照：抓取并落库
+    first = module.latest_barometer(day=day, now=datetime(2026, 10, 22, 10, 0), conn=conn)
+    assert first["n"] == 1
+    assert first["snapshot_at"] == "2026-10-22T10:00:00"
+    # 交易时段 30 分钟内：直接读快照
+    second = module.latest_barometer(day=day, now=datetime(2026, 10, 22, 10, 20), conn=conn)
+    assert second["n"] == 1
+    # 交易时段超过 30 分钟：重新抓取
+    third = module.latest_barometer(day=day, now=datetime(2026, 10, 22, 10, 40), conn=conn)
+    assert third["n"] == 2
+    # 非交易时段：直接用快照
+    fourth = module.latest_barometer(day=day, now=datetime(2026, 10, 22, 19, 0), conn=conn)
+    assert fourth["n"] == 2
+    # 强制刷新
+    fifth = module.latest_barometer(day=day, now=datetime(2026, 10, 22, 19, 5), force=True, conn=conn)
+    assert fifth["n"] == 3
+    # 当天内容一致：不新增行，刷新时间更新为最新
+    before = conn.execute("SELECT COUNT(*) FROM bond_barometer_snapshots").fetchone()[0]
+    module.write_snapshot(conn, {"as_of": "2026-10-22", "available": True, "n": 3}, datetime(2026, 10, 22, 19, 30))
+    module.write_snapshot(conn, {"as_of": "2026-10-22", "available": True, "n": 3}, datetime(2026, 10, 22, 20, 0))
+    rows = conn.execute(
+        "SELECT payload, fetched_at, first_fetched_at FROM bond_barometer_snapshots ORDER BY id"
+    ).fetchall()
+    # 相同内容不新增行：首次时间保留（19:05 首次写入），最新刷新时间更新
+    assert len(rows) == before
+    assert rows[-1][1] == "2026-10-22T20:00:00"
+    assert rows[-1][2] == "2026-10-22T19:05:00"
+    assert '"n": 3' in rows[-1][0]
+    fetched = module.latest_barometer(day=day, now=datetime(2026, 10, 22, 20, 5), conn=conn)
+    assert fetched["snapshot_at"] == "2026-10-22T20:00:00"
+    assert fetched["first_snapshot_at"] == "2026-10-22T19:05:00"
+    # 内容变化：同一天保留新的一条
+    module.write_snapshot(conn, {"as_of": "2026-10-22", "available": True, "n": 4}, datetime(2026, 10, 22, 21, 0))
+    assert conn.execute("SELECT COUNT(*) FROM bond_barometer_snapshots").fetchone()[0] == before + 1
+    # 30 天保留：超期快照被清理
+    conn.execute(
+        "INSERT INTO bond_barometer_snapshots(payload, as_of, fetched_at, fingerprint) VALUES(?,?,?,?)",
+        ('{}', '', '2026-09-01T08:00:00', 'old'),
+    )
+    module.write_snapshot(conn, {"as_of": "2026-10-22", "available": True, "n": 5}, datetime(2026, 10, 22, 22, 0))
+    kept = [row[0] for row in conn.execute("SELECT fetched_at FROM bond_barometer_snapshots")]
+    assert "2026-09-01T08:00:00" not in kept
+    assert all(value >= "2026-09-22T22:00:00" for value in kept)

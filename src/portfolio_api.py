@@ -1902,7 +1902,8 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
 
         force = request.args.get("refresh") == "1"
         try:
-            return jsonify(latest_barometer(force=force))
+            with repository().database.connection() as conn:
+                return jsonify(latest_barometer(force=force, conn=conn))
         except Exception as exc:
             return _error(
                 "portfolio_bond_barometer",

@@ -2191,7 +2191,7 @@ def test_bond_barometer_api_returns_payload_and_supports_force_refresh(
     client, _, _, _ = api_setup
     calls = []
 
-    def fake_latest(force=False):
+    def fake_latest(force=False, conn=None):
         calls.append(force)
         return {
             "available": True,

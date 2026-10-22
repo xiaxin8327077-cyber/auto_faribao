@@ -14,7 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time as clock_time, timedelta
 from decimal import Decimal
-import threading
+import hashlib
+import json
 import time
 
 import requests
@@ -28,7 +29,8 @@ _TIMEOUT = (10, 25)
 _ATTEMPTS = 3
 # 变动绝对值不超过 0.0005（0.05bp）视为持平，避免微小抖动上色。
 _FLAT_THRESHOLD = Decimal("0.0005")
-_CACHE_TTL_SECONDS = 1800
+_SNAPSHOT_TTL_SECONDS = 1800
+_SNAPSHOT_RETENTION_DAYS = 30
 # 仅银行间交易时段（工作日 9:00-17:30）内自动刷新；其余时间沿用缓存。
 _TRADING_START = clock_time(9, 0)
 _TRADING_END = clock_time(17, 30)
@@ -64,8 +66,82 @@ _CREDIT_ROW_LABELS = {
     "credit_aa": "AA",
 }
 
-_cache_lock = threading.Lock()
-_cache = {}
+_SNAPSHOT_SQL = """
+CREATE TABLE IF NOT EXISTS bond_barometer_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payload TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    first_fetched_at TEXT NOT NULL DEFAULT '',
+    fingerprint TEXT NOT NULL DEFAULT ''
+)
+"""
+
+
+def ensure_barometer_schema(conn):
+    conn.execute(_SNAPSHOT_SQL)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(bond_barometer_snapshots)")}
+    if "fingerprint" not in columns:
+        conn.execute("ALTER TABLE bond_barometer_snapshots ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''")
+
+
+def read_snapshot(conn):
+    """读取最近一次落库的行情快照；无快照返回 None。"""
+    if conn is None:
+        return None
+    row = conn.execute(
+        "SELECT payload, fetched_at, first_fetched_at FROM bond_barometer_snapshots ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    payload["snapshot_at"] = row[1]
+    payload["first_snapshot_at"] = row[2] or row[1]
+    return {"payload": payload, "fetched_at": row[1]}
+
+
+def _fingerprint(payload) -> str:
+    """数据指纹：忽略生成时间等易变字段，判断行情内容是否变化。"""
+    core = {key: value for key, value in payload.items() if key not in {"generated_at", "snapshot_at"}}
+    canonical = json.dumps(core, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def write_snapshot(conn, payload, fetched_at):
+    """写入快照；当天内容一致时仅更新最新刷新时间，保留首次时间。"""
+    fingerprint = _fingerprint(payload)
+    day = fetched_at.date().isoformat()
+    stamp = fetched_at.isoformat(timespec="seconds")
+    existing = conn.execute(
+        "SELECT id, first_fetched_at FROM bond_barometer_snapshots"
+        " WHERE substr(fetched_at, 1, 10)=? AND fingerprint=? ORDER BY id DESC LIMIT 1",
+        (day, fingerprint),
+    ).fetchone()
+    if existing is not None:
+        conn.execute(
+            "UPDATE bond_barometer_snapshots SET fetched_at=? WHERE id=?",
+            (stamp, existing[0]),
+        )
+        first = existing[1] or stamp
+    else:
+        conn.execute(
+            "INSERT INTO bond_barometer_snapshots(payload, as_of, fetched_at, first_fetched_at, fingerprint) VALUES(?,?,?,?,?)",
+            (
+                json.dumps(payload, ensure_ascii=False),
+                payload.get("as_of", ""),
+                stamp,
+                stamp,
+                fingerprint,
+            ),
+        )
+        first = stamp
+    # 仅保留最近 30 天的快照。
+    cutoff = (fetched_at - timedelta(days=_SNAPSHOT_RETENTION_DAYS)).isoformat(timespec="seconds")
+    conn.execute("DELETE FROM bond_barometer_snapshots WHERE fetched_at < ?", (cutoff,))
+    return stamp, first
 
 
 def _curve_key(name: str) -> str | None:
@@ -241,34 +317,36 @@ def latest_barometer(
     *,
     force: bool = False,
     now: datetime | None = None,
+    conn=None,
+    fetch=fetch_curves,
 ) -> dict:
-    """带缓存的入口：交易时段内每 30 分钟刷新，非交易时段沿用缓存。
+    """库内快照入口：交易时段内每 30 分钟抓取一次并落库，其余时间直接读快照。
 
-    *force* 供页面“更新”按钮使用，随时强制重新抓取。
+    *force* 供刷新按钮使用，随时强制重新抓取并覆盖快照。
+    *conn* 为账本数据库连接；为 None 时退化为直接抓取（测试/命令行用）。
     周末/节假日自动回退到最近有数据的交易日。
     """
     current = now or beijing_now().replace(tzinfo=None)
+    if conn is not None and not force:
+        snapshot = read_snapshot(conn)
+        if snapshot is not None:
+            fetched_at = datetime.fromisoformat(snapshot["fetched_at"])
+            age = (current - fetched_at).total_seconds()
+            if not _in_trading_window(current) or age < _SNAPSHOT_TTL_SECONDS:
+                return snapshot["payload"]
     target = day or current.date()
-    key = target.isoformat()
-    started = time.monotonic()
-    with _cache_lock:
-        cached = _cache.get(key)
-        if cached and not force:
-            fresh = started - cached[0] < _CACHE_TTL_SECONDS
-            if fresh or not _in_trading_window(current):
-                return cached[1]
     cursor = target
     for _ in range(10):
         while cursor.weekday() >= 5:
             cursor -= timedelta(days=1)
-        result = build_barometer(cursor)
+        result = build_barometer(cursor, fetch=fetch)
         if result.get("available"):
             break
         cursor -= timedelta(days=1)
-    with _cache_lock:
-        _cache[key] = (started, result)
-        if len(_cache) > 8:
-            _cache.pop(next(iter(_cache)))
+    if conn is not None:
+        stamp, first = write_snapshot(conn, result, current)
+        result["snapshot_at"] = stamp
+        result["first_snapshot_at"] = first
     return result
 
 

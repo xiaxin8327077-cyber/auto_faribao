@@ -93,7 +93,7 @@ def _run(cfg):
         # 不阻塞定时推送；非交易时段不自动更新。
         if _barometer_due(last_barometer_slot, now):
             last_barometer_slot = _portfolio_slot(now)
-            threading.Thread(target=_warm_bond_barometer, daemon=True).start()
+            threading.Thread(target=_warm_bond_barometer, args=(runtime,), daemon=True).start()
 
         ch, cm, rh, rm, sh, sm, cch, ccm = _get_times(current_cfg)
 
@@ -170,12 +170,16 @@ def _barometer_due(last_slot, now):
     return _portfolio_slot(now) != last_slot
 
 
-def _warm_bond_barometer():
+def _warm_bond_barometer(runtime=None):
     try:
         from src.bond_barometer import latest_barometer
 
-        # 槽刚切换时缓存可能恰好未过期，强制刷新保证每 30 分钟一次。
-        latest_barometer(force=True)
+        repository = getattr(runtime, "repository", None)
+        if repository is None:
+            return
+        # 槽刚切换时快照可能恰好未过期，强制刷新保证每 30 分钟一次。
+        with repository.database.connection() as conn:
+            latest_barometer(force=True, conn=conn)
     except Exception:
         logger.warning("Bond barometer prefetch failed", exc_info=True)
 
