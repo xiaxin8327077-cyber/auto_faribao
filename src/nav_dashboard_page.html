@@ -1088,16 +1088,61 @@
       };
       content.innerHTML = `<div class="barometer-weather-row">${weatherCard('利率债', data.rate || {})}${weatherCard('信用债', data.credit || {})}</div>${grid('利率债', data.rate || {}, 5)}${grid('信用债', data.credit || {}, 6)}<p class="barometer-note">红色格子越多表示债市行情越好。数据来源：${esc(data.source || '中国债券信息网')}；与前一日相比，红=收益率下行、绿=上行、灰=变动≤0.05bp。交易时段（工作日 9:00-17:30）内每 30 分钟自动更新。</p>`;
     }
+    const BAROMETER_CACHE_KEY = 'nav-barometer-v1';
+    let barometerData = null;
+    let barometerFetchedAt = 0;
+    function restoreBarometerCache() {
+      try {
+        const raw = sessionStorage.getItem(BAROMETER_CACHE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.data) {
+          barometerData = parsed.data;
+          barometerFetchedAt = Number(parsed.fetchedAt) || 0;
+        }
+      } catch (_error) {
+        // 隐私模式禁用存储时仅影响本地缓存。
+      }
+    }
+    function saveBarometerCache() {
+      try {
+        sessionStorage.setItem(BAROMETER_CACHE_KEY, JSON.stringify({data: barometerData, fetchedAt: barometerFetchedAt}));
+      } catch (_error) {
+        // 忽略存储失败。
+      }
+    }
+    function inBarometerTradingWindow() {
+      const now = new Date();
+      // 换算为北京时间（UTC+8），与服务器刷新窗口一致。
+      const beijing = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
+      const day = beijing.getDay();
+      if (day === 0 || day === 6) return false;
+      const minutes = beijing.getHours() * 60 + beijing.getMinutes();
+      return minutes >= 9 * 60 && minutes <= 17 * 60 + 30;
+    }
+    function barometerNeedsFetch(force) {
+      if (force) return true;
+      if (!barometerData) return true;
+      // 非交易时段直接使用缓存，不重复读取。
+      if (!inBarometerTradingWindow()) return false;
+      return Date.now() - barometerFetchedAt > 30 * 60 * 1000;
+    }
     async function loadBarometer(force = false) {
-      if (barometerLoading) return;
+      // 已有缓存先立即展示，避免每次进入都显示“正在读取行情”。
+      if (barometerData) renderBarometer(barometerData);
+      if (!barometerNeedsFetch(force) || barometerLoading) return;
       barometerLoading = true;
       try {
         const response = await api(`/api/portfolio/bond-barometer${force ? '?refresh=1' : ''}`);
         if (response.status === 403) { setAccessState(false); return; }
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.message || '读取行情失败');
+        barometerData = payload;
+        barometerFetchedAt = Date.now();
+        saveBarometerCache();
         renderBarometer(payload);
       } catch (error) {
+        if (barometerData) return;
         $('barometerContent').innerHTML = `<div class="empty">${esc(error.message || '读取行情失败')}，稍后自动重试</div>`;
       } finally {
         barometerLoading = false;
@@ -3314,6 +3359,7 @@
     });
     window.addEventListener('hashchange', () => location.reload());
     window.addEventListener('resize', () => setActiveTab(state.activeTab));
+    restoreBarometerCache();
     setActiveTab(state.activeTab);
     updateWriteControls();
     loadDashboard();

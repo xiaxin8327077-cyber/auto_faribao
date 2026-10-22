@@ -1420,6 +1420,12 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert "barometerRefreshButton" not in html
     assert "async function loadBarometer(force = false)" in html
     assert "function renderBarometer(data)" in html
+    # 本地缓存：进入页面先渲染上次数据，非交易时段或 30 分钟内不重复请求。
+    assert "const BAROMETER_CACHE_KEY = 'nav-barometer-v1';" in html
+    assert "function restoreBarometerCache()" in html
+    assert "function barometerNeedsFetch(force)" in html
+    assert "if (barometerData) renderBarometer(barometerData);" in html
+    assert "restoreBarometerCache();\n    setActiveTab(state.activeTab);" in html
     assert "if (tab === 'market') loadBarometer();" in html
     assert "loadBarometer(true);\n      refreshRequestPending = true;" in html
     assert "#marketPanel .section-head { border-bottom: 0; }" in html
