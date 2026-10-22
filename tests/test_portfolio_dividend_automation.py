@@ -55,7 +55,7 @@ def test_known_event_override_is_atomic_idempotent_and_defaults_to_wallet(servic
     assert data['events'][0]['amount'] == '7.94'
 
 
-def test_discovered_events_use_record_day_rights_and_ignore_old_history(services):
+def test_discovered_events_use_record_day_rights_and_mark_old_history_display_only(services):
     from dataclasses import replace
     from src.portfolio_dividends import FundDividendService, dividend_records
     from src.portfolio_dividend_provider import FundDividend
@@ -82,12 +82,32 @@ def test_discovered_events_use_record_day_rights_and_ignore_old_history(services
     seed_quote(repo, repo.require_product('fund'), date(2026,10,20), Decimal('1'))
     service = FundDividendService(repo, lambda product: Provider())
     service.run(date(2026,10,20))
-    assert dividend_records(repo, 'fund')['events'][0]['amount'] == '10'
+    records = dividend_records(repo, 'fund')['events']
+    assert records[0]['amount'] == '10'
+    # 首次持仓之前（2026-01）的历史分红只登记展示。
+    old_row = next(e for e in records if e['ex_dividend_date'] == '2026-01-20')
+    assert old_row['display_only'] is True
     assert projector.calculate('wallet-plus').total_shares == Decimal('1000')
     repo.database.initialize()
     service.run(date(2026,10,22))
     assert projector.calculate('wallet-plus').total_shares == Decimal('1010')
     assert len([t for t in repo.list_transactions() if t.transaction_type is TransactionType.CASH_DIVIDEND]) == 1
+
+
+def test_explicit_include_turns_public_history_into_bookable_event(services):
+    from src.portfolio_dividends import FundDividend, FundDividendService, dividend_records
+    repo, _, _ = services
+    seed_product(repo, 'fund', ProductType.PUBLIC_FUND); seed_opening_position(repo, 'fund', '100')
+    event = FundDividend(date(2026,1,20), date(2026,1,20), date(2026,1,22), Decimal('.1'), 'https://official.test/old')
+    class Provider:
+        def fetch_dividends(self, product): return [event]
+    service = FundDividendService(repo, lambda product: Provider())
+    service.run(date(2026,10,22))
+    eid = service.include_event('fund', event)
+    row = next(e for e in dividend_records(repo, 'fund')['events'] if e['id'] == eid)
+    # 显式核实纳入后恢复为可入账事件，离开“公开历史”展示态。
+    assert row['display_only'] is False
+    assert row['is_upcoming'] is True
 
 
 def test_reinvest_waits_for_exact_nav_and_uses_official_confirmation_date(services):
@@ -291,14 +311,24 @@ def test_source_failure_keeps_known_dividend_and_settles_on_due_date(services):
     assert 'upstream unavailable' in dividend_records(repo,'fund')['error']
 
 
-def test_announcements_before_first_holding_are_not_shown_or_credited(services):
+def test_announcements_before_first_holding_are_public_history_only(services):
     from src.portfolio_dividends import FundDividend,FundDividendService,dividend_records
+    from src.portfolio_models import TransactionType
     repo,_,_=services
     seed_product(repo,'fund',ProductType.PUBLIC_FUND); seed_opening_position(repo,'fund','100')
     class Provider:
         def fetch_dividends(self,product): return [FundDividend(date(2026,1,20),date(2026,1,20),date(2026,1,22),Decimal('.1'),'https://official.test/old')]
     FundDividendService(repo,lambda product:Provider()).run(date(2026,10,22))
-    assert dividend_records(repo,'fund')['events']==[]
+    data=dividend_records(repo,'fund')
+    assert len(data['events'])==1
+    event=data['events'][0]
+    # 首次持仓之前的历史分红只登记展示：不进即将分红/待核实，不入账。
+    assert event['display_only'] is True
+    assert event['is_upcoming'] is False
+    assert event['historical'] is False
+    assert not [t for t in repo.list_transactions() if t.transaction_type is TransactionType.CASH_DIVIDEND]
+    row=next(r for r in build_portfolio_payload(repo,date(2026,10,22))['products'] if r['id']=='fund')
+    assert row['dividend_upcoming_count']==0
 
 def test_historical_announcements_are_visible_but_do_not_keep_red_dot_lit(services):
     from src.portfolio_dividends import FundDividend,FundDividendService,dividend_records

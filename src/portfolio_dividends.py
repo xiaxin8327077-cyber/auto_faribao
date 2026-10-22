@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS fund_dividend_events (
     amount_override TEXT, override_source TEXT NOT NULL DEFAULT '', explicitly_included INTEGER NOT NULL DEFAULT 0,
     dividend_transaction_id TEXT, settlement_transaction_id TEXT, reinvest_shares TEXT,
     reinvest_precision TEXT NOT NULL DEFAULT 'internal_decimal',
+    display_only INTEGER NOT NULL DEFAULT 0,
     error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(product_id, ex_dividend_date, per_share)
 );
@@ -41,8 +42,11 @@ def ensure_dividend_schema(conn):
     for statement in DIVIDEND_SCHEMA_SQL.split(";"):
         if statement.strip():
             conn.execute(statement)
-    if "reinvest_precision" not in {row[1] for row in conn.execute("PRAGMA table_info(fund_dividend_events)")}:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(fund_dividend_events)")}
+    if "reinvest_precision" not in columns:
         conn.execute("ALTER TABLE fund_dividend_events ADD COLUMN reinvest_precision TEXT NOT NULL DEFAULT 'internal_decimal'")
+    if "display_only" not in columns:
+        conn.execute("ALTER TABLE fund_dividend_events ADD COLUMN display_only INTEGER NOT NULL DEFAULT 0")
 
 
 def dividend_mode(product):
@@ -64,9 +68,12 @@ def dividend_records(repository, product_id, conn=None):
         keys = ("id", "record_date", "ex_dividend_date", "payment_date", "per_share", "amount", "status", "reinvest_shares", "source_url", "error", "reinvest_confirmation_date")
         events = []
         for row in rows:
-            historical = bool(state and not row["explicitly_included"] and row["ex_dividend_date"] < state["enabled_date"])
+            is_display_only = bool(row["display_only"])
+            historical = bool(state and not row["explicitly_included"] and not is_display_only
+                              and row["ex_dividend_date"] < state["enabled_date"])
             events.append({**{key: row[key] for key in keys}, "mode": row["mode"] or dividend_mode(product),
-                           "historical": historical, "is_upcoming": not historical and row["status"] != "settled"})
+                           "historical": historical, "display_only": is_display_only,
+                           "is_upcoming": not historical and not is_display_only and row["status"] != "settled"})
         return {"product_id": product_id, "dividend_mode": dividend_mode(product), "events": events, "error": state["error"] if state else ""}
 
 
@@ -74,7 +81,7 @@ def dividend_upcoming_count(repository, product_id, conn=None):
     with (nullcontext(conn) if conn is not None else repository.database.connection()) as conn:
         return conn.execute("""SELECT COUNT(*) FROM fund_dividend_events event
             JOIN fund_dividend_state state ON state.product_id=event.product_id
-            WHERE event.product_id=? AND event.status!='settled'
+            WHERE event.product_id=? AND event.status!='settled' AND event.display_only=0
               AND (event.explicitly_included=1 OR event.ex_dividend_date>=state.enabled_date)""", (product_id,)).fetchone()[0]
 
 
@@ -114,14 +121,14 @@ class FundDividendService:
                     or (mode_override is not None and row["mode"] != mode_override)):
                     raise ValueError("已入账分红事件不可改写")
                 return eid
-            conn.execute("UPDATE fund_dividend_events SET explicitly_included=1, amount_override=?, override_source=?, mode=COALESCE(?,mode) WHERE id=?",
+            conn.execute("UPDATE fund_dividend_events SET explicitly_included=1, display_only=0, status=CASE WHEN status='display_only' THEN 'announced' ELSE status END, amount_override=?, override_source=?, mode=COALESCE(?,mode) WHERE id=?",
                          (decimal_text(amount_override) if amount_override is not None else row["amount_override"], override_source or row["override_source"], mode_override, eid))
             self.repository.append_audit(str(uuid4()), "include_fund_dividend", "fund_dividend", eid,
                 after_json=json.dumps({"amount_override": decimal_text(amount_override) if amount_override is not None else None,
                                        "mode_override": mode_override, "override_source": override_source, "source_url": event.source_url}), source="fund_dividend", conn=conn)
             return eid
 
-    def _store(self, product, event, as_of, conn, explicitly_included=False):
+    def _store(self, product, event, as_of, conn, explicitly_included=False, display_only=False):
         if (not isinstance(event.per_share, Decimal) or not event.per_share.is_finite() or event.per_share <= ZERO
             or event.record_date > event.ex_dividend_date or event.payment_date < event.ex_dividend_date or not event.source_url.startswith("https://")):
             raise ValueError("公开分红日期、金额或来源不完整")
@@ -137,9 +144,12 @@ class FundDividendService:
                   event.reinvest_nav_date.isoformat() if event.reinvest_nav_date else None,
                   event.reinvest_confirmation_date.isoformat() if event.reinvest_confirmation_date else None, event.reinvest_rule_source)
         if row is None:
-            conn.execute("INSERT INTO fund_dividend_events(id,product_id,record_date,ex_dividend_date,payment_date,per_share,source_url,reinvest_nav_date,reinvest_confirmation_date,reinvest_rule_source,explicitly_included) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (eid, product.id, *values, int(explicitly_included)))
+            conn.execute(
+                "INSERT INTO fund_dividend_events(id,product_id,record_date,ex_dividend_date,payment_date,per_share,source_url,reinvest_nav_date,reinvest_confirmation_date,reinvest_rule_source,explicitly_included,display_only,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (eid, product.id, *values, int(explicitly_included), int(display_only), "display_only" if display_only else "announced"),
+            )
             enabled = conn.execute("SELECT enabled_date FROM fund_dividend_state WHERE product_id=?", (product.id,)).fetchone()[0]
-            if not explicitly_included and event.ex_dividend_date.isoformat() < enabled:
+            if not explicitly_included and not display_only and event.ex_dividend_date.isoformat() < enabled:
                 conn.execute("UPDATE fund_dividend_events SET status='blocked',error='启用日期之前的历史公告，仅展示，未自动补账' WHERE id=?", (eid,))
         else:
             old = tuple(row[key] for key in ("record_date", "ex_dividend_date", "payment_date", "per_share", "source_url", "reinvest_nav_date", "reinvest_confirmation_date", "reinvest_rule_source"))
@@ -161,18 +171,18 @@ class FundDividendService:
                     conn.execute("INSERT OR IGNORE INTO fund_dividend_state(product_id,enabled_date) VALUES(?,?)", (product.id, as_of.isoformat()))
                     for event in events:
                         holding_transactions = self.repository.list_transactions(product_id=product.id, conn=conn)
-                        if not any(tx.trade_date <= event.record_date and (tx.shares or ZERO) > ZERO
-                                   and tx.transaction_type in {Kind.OPENING_POSITION,Kind.MANUAL_PURCHASE,Kind.SIP_PURCHASE,Kind.HOLDING_ADJUSTMENT}
-                                   for tx in holding_transactions):
-                            continue
-                        self._store(product, event, as_of, conn)
+                        entitled = any(tx.trade_date <= event.record_date and (tx.shares or ZERO) > ZERO
+                                       and tx.transaction_type in {Kind.OPENING_POSITION,Kind.MANUAL_PURCHASE,Kind.SIP_PURCHASE,Kind.HOLDING_ADJUSTMENT}
+                                       for tx in holding_transactions)
+                        # 未持有的公开历史分红只登记展示，不参与入账和红点。
+                        self._store(product, event, as_of, conn, display_only=not entitled)
                     conn.execute("UPDATE fund_dividend_state SET error='' WHERE product_id=?", (product.id,))
             except Exception as exc:
                 with self.repository.database.transaction() as conn:
                     conn.execute("INSERT OR IGNORE INTO fund_dividend_state(product_id,enabled_date) VALUES(?,?)", (product.id, as_of.isoformat()))
                     conn.execute("UPDATE fund_dividend_state SET error=? WHERE product_id=?", (f"分红抓取失败：{exc}"[:500], product.id))
                     if isinstance(exc, DividendSourceConflict):
-                        conn.execute("UPDATE fund_dividend_events SET status='blocked',error=? WHERE product_id=? AND status!='settled'",
+                        conn.execute("UPDATE fund_dividend_events SET status='blocked',error=? WHERE product_id=? AND status!='settled' AND display_only=0",
                                      (f"公开来源冲突，暂停自动结算：{exc}"[:500],product.id))
             with self.repository.database.connection() as conn:
                 ids = [row[0] for row in conn.execute("SELECT id FROM fund_dividend_events WHERE product_id=?", (product.id,))]
@@ -214,6 +224,8 @@ class FundDividendService:
             row = conn.execute("SELECT * FROM fund_dividend_events WHERE id=?", (event_id,)).fetchone()
             if row is None:
                 raise ValueError("分红事件不存在")
+            if row["display_only"]:
+                return False
             if row["dividend_transaction_id"]:
                 rows=self.repository.list_transactions(product_id=row["product_id"],conn=conn)
                 if row["dividend_transaction_id"] in PositionProjector._linked_reversal_pair_ids(rows):

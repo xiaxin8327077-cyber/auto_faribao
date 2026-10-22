@@ -492,6 +492,7 @@
     dialog.management-dialog::backdrop { background: rgba(13, 29, 50, .44); }
     .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
     .dialog-head h2 { font-size: 19px; }
+    .dialog-head h2 small { margin-left: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
     .dialog-body { padding: 15px 16px 18px; overflow-y: auto; }
     .form-field { display: grid; gap: 6px; margin-bottom: 12px; color: var(--muted); font-size: 12px; font-weight: 700; }
     .form-field[hidden] { display: none; }
@@ -828,9 +829,8 @@
 
   <dialog class="management-dialog" id="fundDividendDialog" aria-labelledby="fundDividendDialogTitle">
     <form id="fundDividendForm">
-      <header class="dialog-head"><h2 id="fundDividendDialogTitle">基金分红</h2><button class="icon-button" type="button" data-close-dialog="fundDividendDialog" aria-label="关闭">×</button></header>
+      <header class="dialog-head"><h2 id="fundDividendDialogTitle">基金分红 <small id="fundDividendProductName">--</small></h2><button class="icon-button" type="button" data-close-dialog="fundDividendDialog" aria-label="关闭">×</button></header>
       <div class="dialog-body">
-        <div class="form-field"><span>当前基金</span><strong id="fundDividendProductName">--</strong></div>
         <fieldset class="fund-dividend-mode-list">
           <legend>分红方式（本系统记账设置）</legend>
           <label class="fund-dividend-mode-option"><input type="radio" name="dividend_mode" value="cash" checked><span class="fund-dividend-mode-copy"><b>现金分红</b><small>现金在公开派现日记入钱包 Plus</small></span></label>
@@ -1619,7 +1619,7 @@
           const sevenDayDisplay = sevenDay === '' ? '--' : `${(number(sevenDay) * 100).toFixed(2)}%`;
           const dividendUpcomingCount = number(rowValue(row, 'dividend_upcoming_count'));
           const dividendAction = group === 'public_fund'
-            ? `<button class="row-action dividend-action" type="button" data-view-dividends="${esc(id)}" aria-label="分红${dividendUpcomingCount > 0 ? '，有未完成分红' : ''}">分红${dividendUpcomingCount > 0 ? '<span class="dividend-alert-dot" aria-label="有即将开始或未完成分红"></span>' : ''}</button>`
+            ? `<button class="row-action dividend-action" type="button" data-view-dividends="${esc(id)}" aria-label="分红${dividendUpcomingCount > 0 ? '，有未完成分红' : ''}">分红${dividendUpcomingCount > 0 ? '<span class="dividend-alert-dot" aria-label="有即将分红或未完成分红"></span>' : ''}</button>`
             : '';
           const shareStats = `<div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div><div class="manage-stat"><span>可用份额</span><b>${esc(availableSharesDisplay || '--')}</b></div><div class="manage-stat"><span>在途资金</span><b>${money(inTransitAmount || 0)} 元</b></div>`;
           const moreAction = `<button class="stat-more" type="button" data-view-product="${esc(id)}" aria-label="更多，查看持仓详情">更多</button>`;
@@ -1797,7 +1797,6 @@
       updateWriteControls();
     }
     function renderManagement(data) {
-      state.data = data || {};
       state.writeEnabled = state.data.write_enabled === true || state.data.portfolio?.write_enabled === true;
       const positions = portfolioRows('positions', portfolioRows('products', []));
       const transactions = portfolioRows('transactions');
@@ -2025,6 +2024,9 @@
       if (refreshIsRunning) refreshPollTimer = setTimeout(loadDashboard, 2000);
     }
     function render(data) {
+      // 必须先于任何 portfolioRows 读取：否则刷新后的首次渲染拿不到
+      // positions/transactions，0 份额的在途申购产品会被过滤掉。
+      state.data = data || {};
       const cumulative = number(data.cumulative_profit);
       const latestProfit = number(data.latest_profit);
       const currentMonthProfit = number(data.current_month_profit);
@@ -2651,19 +2653,30 @@
     function renderFundDividendEvent(event) {
       const status = String(rowValue(event, 'status'));
       const statusLabels = {
-        announced: '即将开始',
+        announced: '即将分红',
         receivable: '待到账',
         settled: '已完成',
         blocked: '待处理',
       };
-      const isReinvest = rowValue(event, 'mode') === 'reinvest';
-      const mode = isReinvest ? '红利再投' : '现金分红';
+      const isDisplayOnly = rowValue(event, 'display_only') === true;
       const sourceUrl = safeExternalUrl(rowValue(event, 'source_url'));
       const eventError = rowValue(event, 'error');
+      // 未在本平台入账的公开历史：只展示日期和每份分红，不显示金额/再投份额/登记方式。
+      if (isDisplayOnly) {
+        const perTen = number(rowValue(event, 'per_share')) * 10;
+        const publicDates = [
+          ['登记日', rowValue(event, 'record_date')],
+          ['除息日', rowValue(event, 'ex_dividend_date')],
+          ['派息日', rowValue(event, 'payment_date')],
+        ].map(([label, value]) => `<div class="fund-dividend-date"><span>${label}</span><b>${fundDividendField(value)}</b></div>`).join('');
+        return `<article class="fund-dividend-event"><div class="fund-dividend-event-head"><span class="fund-dividend-event-title">${perTen ? `10派¥${perTen.toFixed(4)}` : '公开分红'}</span><span class="fund-dividend-status-tag">公开历史</span></div><div class="fund-dividend-dates">${publicDates}</div>${eventError ? `<div class="fund-dividend-error">${esc(eventError)}</div>` : ''}${sourceUrl ? `<a class="fund-dividend-source" href="${esc(sourceUrl)}" target="_blank" rel="noopener noreferrer">查看公开来源</a>` : ''}</article>`;
+      }
+      const isReinvest = rowValue(event, 'mode') === 'reinvest';
+      const mode = isReinvest ? '红利再投' : '现金分红';
       const isHistorical = rowValue(event, 'historical') === true && status !== 'settled';
       const statusLabel = status === 'settled'
         ? statusLabels.settled
-        : (isHistorical ? '历史待核实' : (statusLabels[status] || '待处理'));
+        : (isHistorical ? '待核实' : (statusLabels[status] || '待处理'));
       const dates = [
         ['登记日', rowValue(event, 'record_date')],
         ['除息日', rowValue(event, 'ex_dividend_date')],
@@ -2679,12 +2692,20 @@
     }
     function renderFundDividendRecords(payload) {
       const events = Array.isArray(payload?.events) ? payload.events : [];
-      const completed = events.filter(event => rowValue(event, 'status') === 'settled');
-      const historical = events.filter(event => rowValue(event, 'status') !== 'settled' && rowValue(event, 'historical') === true);
+      const completed = events.filter(event => rowValue(event, 'status') === 'settled' || rowValue(event, 'display_only') === true);
+      const historical = events.filter(event => rowValue(event, 'status') !== 'settled'
+        && rowValue(event, 'display_only') !== true && rowValue(event, 'historical') === true);
       const upcoming = events.filter(event => rowValue(event, 'status') !== 'settled'
+        && rowValue(event, 'display_only') !== true
         && rowValue(event, 'historical') !== true && rowValue(event, 'is_upcoming') !== false);
-      const renderSection = (title, rows) => `<section><h3 class="fund-dividend-section-title">${title}<small>${rows.length} 笔</small></h3><div class="fund-dividend-list">${rows.map(renderFundDividendEvent).join('') || '<div class="empty">暂无记录</div>'}</div></section>`;
-      $('fundDividendContent').innerHTML = `${renderSection('即将开始', upcoming)}${renderSection('历史待核实', historical)}${renderSection('已完成', completed)}`;
+      const renderSection = (title, rows) => rows.length ? `<section><h3 class="fund-dividend-section-title">${title}<small>${rows.length} 笔</small></h3><div class="fund-dividend-list">${rows.map(renderFundDividendEvent).join('')}</div></section>` : '';
+      // 空区块不占位；全部为空时只显示一行“暂无分红记录”。
+      const sections = [
+        renderSection('即将分红', upcoming),
+        renderSection('待核实', historical),
+        renderSection('历史分红', completed),
+      ].filter(Boolean);
+      $('fundDividendContent').innerHTML = sections.join('') || '<div class="empty">暂无分红记录</div>';
       const serviceError = String(payload?.error || '').trim();
       setFundDividendStatus(serviceError || (events.length ? '' : '暂无分红记录'), Boolean(serviceError));
     }

@@ -423,6 +423,10 @@ def test_dividend_panel_shows_modes_events_and_uses_safe_rendering():
     html = _read_page()
 
     assert 'id="fundDividendDialog"' in html
+    # 基金名称以标题栏小字呈现，正文不再保留“当前基金”块。
+    assert 'id="fundDividendDialogTitle">基金分红 <small id="fundDividendProductName">' in html
+    assert "当前基金" not in html
+    assert ".dialog-head h2 small { margin-left: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }" in html
     assert 'type="radio" name="dividend_mode" value="cash" checked' in html
     assert 'type="radio" name="dividend_mode" value="reinvest"' in html
     assert "现金分红" in html
@@ -465,6 +469,7 @@ const rowValue = (row, ...keys) => {
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const safeExternalUrl = () => '';
 const fundDividendField = value => value === undefined || value === null || value === '' ? '--' : esc(value);
+const number = value => { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : 0; };
 const setFundDividendStatus = () => {};
 """ + event_renderer + records_renderer + r"""
 const reinvest = renderFundDividendEvent({mode:'reinvest', status:'announced', payment_date:'2030-01-15', reinvest_confirmation_date:null});
@@ -478,21 +483,40 @@ assert.doesNotMatch(reinvestConfirmed, /派现日|2030-01-15/);
 const cash = renderFundDividendEvent({mode:'cash', status:'announced', payment_date:'2030-01-15'});
 assert.match(cash, /派现日/);
 assert.match(cash, /2030-01-15/);
+// 未在本平台入账的公开历史：只保留日期与每份分红，不含金额/再投份额/登记方式。
+const publicHistory = renderFundDividendEvent({mode:'cash', status:'display_only', display_only:true, per_share:'0.0082', record_date:'2026-01-20', ex_dividend_date:'2026-01-20', payment_date:'2026-01-22'});
+assert.match(publicHistory, /10派¥0\.0820/);
+assert.match(publicHistory, /公开历史/);
+assert.match(publicHistory, /2026-01-20/);
+assert.doesNotMatch(publicHistory, /分红金额|再投份额|登记方式/);
 renderFundDividendRecords({events:[
   {status:'announced', is_upcoming:true, historical:false, amount:'101', mode:'cash'},
   {status:'blocked', is_upcoming:false, historical:true, amount:'202', mode:'reinvest', error:'历史公告'},
-  {status:'settled', is_upcoming:false, historical:true, amount:'303', mode:'reinvest'}
+  {status:'settled', is_upcoming:false, historical:true, amount:'303', mode:'reinvest'},
+  {status:'display_only', display_only:true, historical:false, per_share:'0.0082', record_date:'2026-01-20', ex_dividend_date:'2026-01-20', payment_date:'2026-01-22'}
 ]});
 const html = $('fundDividendContent').innerHTML;
-const upcoming = html.slice(html.indexOf('即将开始'), html.indexOf('历史待核实'));
-const historical = html.slice(html.indexOf('历史待核实'), html.indexOf('已完成'));
-const completed = html.slice(html.indexOf('已完成'));
-assert.match(upcoming, /101/);
-assert.doesNotMatch(upcoming, /202|303/);
-assert.match(historical, /202/);
-assert.doesNotMatch(historical, /101|303/);
-assert.match(completed, /303/);
-assert.doesNotMatch(completed, /101|202/);
+const upcoming = html.slice(html.indexOf('即将分红'), html.indexOf('待核实'));
+const historical = html.slice(html.indexOf('待核实'), html.indexOf('历史分红'));
+const completed = html.slice(html.indexOf('历史分红'));
+assert.match(upcoming, /<b>101<\/b>/);
+assert.doesNotMatch(upcoming, /<b>202<\/b>|<b>303<\/b>|公开历史/);
+assert.match(historical, /<b>202<\/b>/);
+assert.doesNotMatch(historical, /<b>101<\/b>|<b>303<\/b>|公开历史/);
+assert.match(completed, /<b>303<\/b>/);
+assert.match(completed, /公开历史/);
+assert.match(completed, /10派¥0\.0820/);
+assert.doesNotMatch(completed, /<b>101<\/b>|<b>202<\/b>/);
+// 空区块不占位：全部为空时只显示一行提示。
+renderFundDividendRecords({events:[]});
+const emptyHtml = $('fundDividendContent').innerHTML;
+assert.doesNotMatch(emptyHtml, /即将分红|待核实|历史分红/);
+assert.match(emptyHtml, /暂无分红记录/);
+// 只有已完成记录时，其余区块不渲染。
+renderFundDividendRecords({events:[{status:'settled', historical:true, amount:'303'}]});
+const settledOnly = $('fundDividendContent').innerHTML;
+assert.match(settledOnly, /已完成/);
+assert.doesNotMatch(settledOnly, /即将分红|待核实/);
 """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr
@@ -1355,3 +1379,21 @@ def test_sip_preview_uses_chinese_schedule_field_names():
     assert "daily: '每日'" in html
     assert "weekly: '每周'" in html
     assert "monthly: '每月'" in html
+
+
+def test_render_sets_state_before_filtering_overview_products():
+    """刷新后的首次渲染必须先写入 state.data，否则 0 份额的在途申购产品会被过滤掉。"""
+    html = _read_page()
+    render_body = html[
+        html.index("function render(data) {"):
+        html.index("async function loadDashboard()")
+    ]
+    assert "state.data = data || {};" in render_body
+    assert render_body.index("state.data = data || {};") < render_body.index(
+        "const products = (data.products || []).filter"
+    )
+    management = html[
+        html.index("function renderManagement(data) {"):
+        html.index("function renderPositions()")
+    ]
+    assert "state.data = data || {};" not in management
