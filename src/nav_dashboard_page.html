@@ -445,6 +445,7 @@
     .barometer-row-label { display: flex; align-items: center; justify-content: center; min-height: 32px; border-radius: 6px; background: var(--bg); color: var(--text); font-size: 10px; font-weight: 800; }
     .barometer-subtitle { margin: 10px 0 2px; color: var(--text); font-size: 12px; font-weight: 800; }
     .barometer-note { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    #marketPanel .section-head { border-bottom: 0; }
     .fund-dividend-content { display: grid; gap: 12px; }
     .fund-dividend-list { display: grid; gap: 8px; padding: 1px 2px 2px 0; }
     .fund-dividend-section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; color: var(--text); font-size: 13px; font-weight: 850; }
@@ -729,7 +730,6 @@
       </section>
 
       <section id="marketPanel" class="management-panel" role="tabpanel" aria-labelledby="marketTab" hidden>
-        <div class="panel-heading"><h2>行情</h2><button class="action-button" id="barometerRefreshButton" type="button">更新</button></div>
         <div class="write-notice" id="marketWriteNotice" hidden></div>
         <section class="card section" aria-label="债市晴雨表">
           <div class="section-head"><h2>债市晴雨表</h2><span class="section-meta" id="barometerMeta">--</span></div>
@@ -1091,8 +1091,6 @@
     async function loadBarometer(force = false) {
       if (barometerLoading) return;
       barometerLoading = true;
-      const button = $('barometerRefreshButton');
-      if (button) button.disabled = true;
       try {
         const response = await api(`/api/portfolio/bond-barometer${force ? '?refresh=1' : ''}`);
         if (response.status === 403) { setAccessState(false); return; }
@@ -1103,7 +1101,6 @@
         $('barometerContent').innerHTML = `<div class="empty">${esc(error.message || '读取行情失败')}，稍后自动重试</div>`;
       } finally {
         barometerLoading = false;
-        if (button) button.disabled = false;
       }
     }
     function setActiveTab(tab) {
@@ -2234,6 +2231,8 @@
     }
     async function refresh() {
       if ($('refreshButton').disabled) return;
+      // 顶部刷新与行情共用同一个更新入口：同时强制刷新债市晴雨表。
+      loadBarometer(true);
       refreshRequestPending = true;
       userRefreshInProgress = true;
       transientRefreshError = '';
@@ -3090,7 +3089,6 @@
       scheduleProductCandidateSearch('sip', 0);
       schedulePublicFundSearch('sip', 0);
     });
-    $('barometerRefreshButton').addEventListener('click', () => loadBarometer(true));
     $('sipFrequency').addEventListener('change', syncSipScheduleFields);
     $('sipWeeklyDay').addEventListener('change', syncSipStartDate);
     $('sipMonthlyDay').addEventListener('change', syncSipStartDate);

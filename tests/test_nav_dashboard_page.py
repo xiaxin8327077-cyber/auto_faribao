@@ -1416,11 +1416,14 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert overview < market < positions
     assert "const MANAGEMENT_TABS = ['overview', 'market', 'positions', 'transactions', 'sip'];" in html
     assert 'id="marketPanel"' in html
-    assert 'id="barometerRefreshButton"' in html
+    # 行情刷新与顶部导航刷新共用，不再有独立更新按钮。
+    assert "barometerRefreshButton" not in html
     assert "async function loadBarometer(force = false)" in html
     assert "function renderBarometer(data)" in html
     assert "if (tab === 'market') loadBarometer();" in html
-    assert "$('barometerRefreshButton').addEventListener('click', () => loadBarometer(true));" in html
+    assert "loadBarometer(true);\n      refreshRequestPending = true;" in html
+    assert "#marketPanel .section-head { border-bottom: 0; }" in html
+    assert "<h2>行情</h2>" not in html
     assert "/api/portfolio/bond-barometer" in html
     assert "红=收益率下行、绿=上行、灰=变动≤0.05bp" in html
     assert "交易时段（工作日 9:00-17:30）内每 30 分钟自动更新" in html
