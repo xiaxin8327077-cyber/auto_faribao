@@ -450,3 +450,50 @@ def test_same_day_ex_nav_priced_redemption_keeps_nav_loss_and_dividend_rights(se
     assert repo.get_transaction_by_idempotency(eid).amount==Decimal('10')
     assert Decimal(build_portfolio_payload(repo,date(2026,10,20))['summary']['total_assets'])==before
     assert calculate_latest_profit(repo,fund,date(2026,10,20))[1]==Decimal('0')
+
+
+def test_public_provider_retries_transient_timeouts(monkeypatch):
+    import requests
+    from src.portfolio_dividend_provider import PublicFundDividendProvider
+
+    monkeypatch.setattr("src.portfolio_dividend_provider.time.sleep", lambda _seconds: None)
+
+    class Response:
+        content = "分红".encode("utf-8")
+        def raise_for_status(self):
+            pass
+
+    class Session:
+        def __init__(self):
+            self.calls = 0
+        def get(self, url, **kwargs):
+            self.calls += 1
+            if self.calls < 3:
+                raise requests.exceptions.ReadTimeout("read timed out")
+            return Response()
+
+    session = Session()
+    provider = PublicFundDividendProvider(session)
+    assert provider._html("https://example.test/page") == "分红"
+    assert session.calls == 3
+
+
+def test_public_provider_raises_after_retry_budget(monkeypatch):
+    import pytest
+    import requests
+    from src.portfolio_dividend_provider import PublicFundDividendProvider
+
+    monkeypatch.setattr("src.portfolio_dividend_provider.time.sleep", lambda _seconds: None)
+
+    class Session:
+        def __init__(self):
+            self.calls = 0
+        def get(self, url, **kwargs):
+            self.calls += 1
+            raise requests.exceptions.ReadTimeout("read timed out")
+
+    session = Session()
+    provider = PublicFundDividendProvider(session)
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        provider._html("https://example.test/page")
+    assert session.calls == 3

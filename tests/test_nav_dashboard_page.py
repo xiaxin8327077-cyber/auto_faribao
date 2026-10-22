@@ -433,6 +433,12 @@ def test_dividend_panel_shows_modes_events_and_uses_safe_rendering():
     assert "红利再投" in html
     assert "仅影响尚未登记的分红记录" in html
     assert "不会向银行或基金销售平台发送真实分红指令" in html
+    # 净值模块两行布局：净值日并入标题括号，第二行净值+涨跌幅+更多。
+    assert "单位净值（${esc(shortDate(quoteDate) || '--')}）" in html
+    # 抓取失败的多为瞬时抖动，弹窗不再展示该类提示。
+    assert "setFundDividendStatus(serviceError" not in html
+    # 分红列表不再自带滚动条，避免与弹窗主体形成嵌套滚动。
+    assert ".fund-dividend-list { display: grid; gap: 8px; padding: 1px 2px 2px 0; }" in html
     assert "async function openFundDividends(productId)" in html
     assert "encodeURIComponent(productId)}/dividends" in html
     assert "encodeURIComponent(productId)}/dividend-mode" in html

@@ -430,7 +430,7 @@
     .fund-dividend-status { min-height: 17px; margin: 0 0 8px; color: var(--muted); font-size: 11px; line-height: 1.45; }
     .fund-dividend-status.error { color: var(--negative); }
     .fund-dividend-content { display: grid; gap: 12px; }
-    .fund-dividend-list { display: grid; gap: 8px; max-height: min(40vh, 330px); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 1px 2px 2px 0; }
+    .fund-dividend-list { display: grid; gap: 8px; padding: 1px 2px 2px 0; }
     .fund-dividend-section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; color: var(--text); font-size: 13px; font-weight: 850; }
     .fund-dividend-section-title small { color: var(--muted); font-size: 10px; font-weight: 600; }
     .fund-dividend-event { display: grid; gap: 7px; min-width: 0; padding: 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel); }
@@ -1623,9 +1623,10 @@
             : '';
           const shareStats = `<div class="manage-stat"><span>持有份额</span><b>${esc(sharesDisplay || '--')}</b></div><div class="manage-stat"><span>可用份额</span><b>${esc(availableSharesDisplay || '--')}</b></div><div class="manage-stat"><span>在途资金</span><b>${money(inTransitAmount || 0)} 元</b></div>`;
           const moreAction = `<button class="stat-more" type="button" data-view-product="${esc(id)}" aria-label="更多，查看持仓详情">更多</button>`;
+          // 净值日并入标题行括号；第二行是净值 + 涨跌幅 + 更多，避免三行占高。
           const navStat = group === 'cash_management'
             ? `<div class="manage-stat"><span>万份收益</span><b>${esc(cashYield || '--')}</b></div><div class="manage-stat"><span>七日年化</span><b>${esc(sevenDayDisplay)}</b><small class="manage-subvalue">${moreAction}</small></div>`
-            : `<div class="manage-stat"><span>单位净值</span><b>${esc(nav || '--')}</b><small class="manage-subvalue">${esc(shortDate(quoteDate) || '--')} · <span class="change-value ${tone(changePct)}">${changePct === '' ? '--' : esc(signedPercent(changePct))}</span> · ${moreAction}</small></div>`;
+            : `<div class="manage-stat"><span>单位净值（${esc(shortDate(quoteDate) || '--')}）</span><b>${esc(nav || '--')} <span class="change-value ${tone(changePct)}">${changePct === '' ? '--' : esc(signedPercent(changePct))}</span> ${moreAction}</b></div>`;
           const latestProfitStat = `<div class="manage-stat"><span>最新收益</span><b>${latestProfit === '' ? '--' : signedMoney(latestProfit) + ' 元'}</b></div>`;
           const profitStat = `<div class="manage-stat"><span>累计持有收益</span><b>${holdingProfit === '' ? '--' : signedMoney(holdingProfit) + ' 元'}</b></div>`;
           return `<article class="manage-card"><div class="manage-title-row"><div class="manage-name">${esc(name)}</div><div class="manage-value">${holding ? money(holding) + ' 元' : '--'}</div></div><div class="manage-code">${esc(rowValue(row, 'code', 'product_code'))}</div><div class="manage-grid position-stat-grid">${shareStats}${navStat}${latestProfitStat}${profitStat}</div><div class="row-actions"><button class="row-action" type="button" data-write-operation="trade" data-product-id="${esc(id)}">申/赎</button><button class="row-action" type="button" data-write-operation="adjust" data-product-id="${esc(id)}">校准持仓</button><button class="row-action" type="button" data-write-operation="adjust-latest-profit" data-product-id="${esc(id)}">校准最新收益</button>${dividendAction}</div></article>`;
@@ -2706,8 +2707,8 @@
         renderSection('历史分红', completed),
       ].filter(Boolean);
       $('fundDividendContent').innerHTML = sections.join('') || '<div class="empty">暂无分红记录</div>';
-      const serviceError = String(payload?.error || '').trim();
-      setFundDividendStatus(serviceError || (events.length ? '' : '暂无分红记录'), Boolean(serviceError));
+      // 抓取失败多为公开源瞬时限流，周期任务会自动重试；不在弹窗里展示该提示。
+      setFundDividendStatus(events.length ? '' : '暂无分红记录');
     }
     async function loadFundDividendRecords(requestId = fundDividendRequestId) {
       const productId = fundDividendProductId;

@@ -12,6 +12,9 @@ from urllib.parse import urljoin
 import requests
 
 _NOTICE_CACHE = {}
+# 公开源从境外访问偶发超时：重试并放宽读取超时，避免一次抖动被记成抓取失败。
+_FETCH_TIMEOUT = (10, 25)
+_FETCH_ATTEMPTS = 3
 
 
 class DividendSourceConflict(ValueError):
@@ -145,9 +148,21 @@ class PublicFundDividendProvider:
     def __init__(self, session=None):
         self.session = session or requests.Session()
 
+    def _get(self, url, **kwargs):
+        last_error = None
+        for attempt in range(_FETCH_ATTEMPTS):
+            try:
+                response = self.session.get(url, timeout=_FETCH_TIMEOUT, **kwargs)
+                response.raise_for_status()
+                return response
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt + 1 < _FETCH_ATTEMPTS:
+                    time.sleep(0.5 * (attempt + 1))
+        raise last_error
+
     def _html(self, url):
-        response = self.session.get(url, timeout=20, headers={"Referer": "https://fundf10.eastmoney.com/"})
-        response.raise_for_status()
+        response = self._get(url, headers={"Referer": "https://fundf10.eastmoney.com/"})
         # Both sources declare UTF-8 in HTML but omit the HTTP charset.
         return response.content.decode("utf-8")
 
@@ -156,7 +171,7 @@ class PublicFundDividendProvider:
         if cached and time.monotonic()-cached[0] < 3600:
             text = cached[1]
         else:
-            response = self.session.get(url, timeout=20)
+            response = self._get(url)
             response.raise_for_status()
             from pypdf import PdfReader
             text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(response.content)).pages)
@@ -184,8 +199,8 @@ class PublicFundDividendProvider:
         if not events:
             return events
         try:
-            response=self.session.get("https://api.fund.eastmoney.com/f10/JJGG",params={"fundcode":product.code,"pageIndex":1,"pageSize":10,"type":2},
-                                      headers={"Referer":"https://fundf10.eastmoney.com/"},timeout=20)
+            response=self._get("https://api.fund.eastmoney.com/f10/JJGG",params={"fundcode":product.code,"pageIndex":1,"pageSize":10,"type":2},
+                               headers={"Referer":"https://fundf10.eastmoney.com/"})
             response.raise_for_status()
             data=response.json()
             if data.get("ErrCode") != 0 or not isinstance(data.get("Data"),list):
