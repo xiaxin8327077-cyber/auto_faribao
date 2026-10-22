@@ -459,6 +459,7 @@
     .form-field-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
     .form-field-title small { color: var(--muted); font-size: 11px; font-weight: 500; }
     .form-field input, .form-field select, .form-field textarea { width: 100%; min-height: 39px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--text); font: inherit; font-size: 14px; }
+    .form-field-hint { margin: -6px 0 12px; color: var(--muted); font-size: 11px; font-weight: 500; }
     #tradeDialog .form-field { min-width: 0; max-width: 100%; }
     #sipDialog .form-field { min-width: 0; max-width: 100%; }
     .date-input-shell { display: block; min-width: 0; max-width: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
@@ -762,7 +763,7 @@
 
   <dialog class="management-dialog" id="sipDialog" aria-labelledby="sipDialogTitle">
     <form id="sipForm" method="dialog"><header class="dialog-head"><h2 id="sipDialogTitle">定投计划</h2><button class="icon-button" type="button" data-close-dialog="sipDialog" aria-label="关闭">×</button></header><div class="dialog-body">
-      <div class="form-field"><label for="sipProductQuery">搜索并选择公募基金</label><div class="product-search-control"><input id="sipProductQuery" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="sipProductSuggestions" placeholder="输入基金代码或中文名称" autocomplete="off" required><div class="product-suggestion-panel" id="sipProductSuggestions" role="listbox" hidden></div></div><input name="product_id" id="sipProduct" type="hidden"><input name="new_fund_code" id="sipFundCode" type="hidden"><span class="product-search-status" id="sipProductSearchStatus" aria-live="polite"></span></div><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">定投周期<select name="frequency" id="sipFrequency"><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label><label class="form-field" id="sipWeeklyDayField" hidden>每周扣款日<select id="sipWeeklyDay" disabled><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option></select></label><label class="form-field" id="sipMonthlyDayField" hidden>每月扣款日<select id="sipMonthlyDay" disabled><option value="1">1 日</option><option value="2">2 日</option><option value="3">3 日</option><option value="4">4 日</option><option value="5">5 日</option><option value="6">6 日</option><option value="7">7 日</option><option value="8">8 日</option><option value="9">9 日</option><option value="10">10 日</option><option value="11">11 日</option><option value="12">12 日</option><option value="13">13 日</option><option value="14">14 日</option><option value="15">15 日</option><option value="16">16 日</option><option value="17">17 日</option><option value="18">18 日</option><option value="19">19 日</option><option value="20">20 日</option><option value="21">21 日</option><option value="22">22 日</option><option value="23">23 日</option><option value="24">24 日</option><option value="25">25 日</option><option value="26">26 日</option><option value="27">27 日</option><option value="28">28 日</option><option value="29">29 日</option><option value="30">30 日</option><option value="31">31 日</option></select></label><label class="form-field">开始日期<input name="start_date" type="text" readonly required aria-label="开始日期，由定投周期和扣款日自动计算"></label><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
+      <div class="form-field"><label for="sipProductQuery">搜索并选择公募基金</label><div class="product-search-control"><input id="sipProductQuery" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="sipProductSuggestions" placeholder="输入基金代码或中文名称" autocomplete="off" required><div class="product-suggestion-panel" id="sipProductSuggestions" role="listbox" hidden></div></div><input name="product_id" id="sipProduct" type="hidden"><input name="new_fund_code" id="sipFundCode" type="hidden"><span class="product-search-status" id="sipProductSearchStatus" aria-live="polite"></span></div><label class="form-field">每期金额（元）<input name="amount" type="number" min="0.01" step="0.01" required inputmode="decimal"></label><label class="form-field">定投周期<select name="frequency" id="sipFrequency"><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label><label class="form-field" id="sipWeeklyDayField" hidden>每周扣款日<select id="sipWeeklyDay" disabled><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option></select></label><label class="form-field" id="sipMonthlyDayField" hidden>每月扣款日<select id="sipMonthlyDay" disabled><option value="1">1 日</option><option value="2">2 日</option><option value="3">3 日</option><option value="4">4 日</option><option value="5">5 日</option><option value="6">6 日</option><option value="7">7 日</option><option value="8">8 日</option><option value="9">9 日</option><option value="10">10 日</option><option value="11">11 日</option><option value="12">12 日</option><option value="13">13 日</option><option value="14">14 日</option><option value="15">15 日</option><option value="16">16 日</option><option value="17">17 日</option><option value="18">18 日</option><option value="19">19 日</option><option value="20">20 日</option><option value="21">21 日</option><option value="22">22 日</option><option value="23">23 日</option><option value="24">24 日</option><option value="25">25 日</option><option value="26">26 日</option><option value="27">27 日</option><option value="28">28 日</option><option value="29">29 日</option><option value="30">30 日</option><option value="31">31 日</option></select></label><label class="form-field">开始日期<input name="start_date" type="date" required aria-label="开始日期，默认按周期自动计算，可手动修改"></label><p class="form-field-hint">默认按周期自动计算，可手动修改；选择过去日期将从该日起自动补扣。</p><label class="form-field">扣款来源<select name="source" id="sipSource" required><option value="">请选择现金管理产品</option></select></label><label class="form-field">申购费率（%）<input name="fee_rate" type="number" min="0" step="0.0001" inputmode="decimal"></label>
       <div class="dialog-actions"><button class="action-button secondary" type="button" data-close-dialog="sipDialog">取消</button><button class="action-button" type="submit">保存计划</button></div>
     </div></form>
   </dialog>
@@ -2461,8 +2462,10 @@
     }
     let sipStartDateRequestId = 0;
     async function syncSipStartDate() {
-      const requestId = ++sipStartDateRequestId;
       const form = $('sipForm');
+      // 已手选的日期优先，自动计算不再覆盖。
+      if (form.dataset.startDateManual === 'true') return;
+      const requestId = ++sipStartDateRequestId;
       const frequency = $('sipFrequency').value;
       form.dataset.autoStartDate = 'true';
       form.start_date.setCustomValidity('');
@@ -2490,8 +2493,11 @@
       $('sipMonthlyDayField').hidden = !monthly;
       $('sipMonthlyDay').disabled = !monthly;
       const form = $('sipForm');
-      form.start_date.readOnly = true;
-      if (event) syncSipStartDate();
+      if (event) {
+        // 周期/扣款日变化后默认日期应跟随重算，清除手选状态。
+        delete form.dataset.startDateManual;
+        return syncSipStartDate();
+      }
     }
     function sipScheduleLabel(row) {
       const frequency = String(rowValue(row, 'frequency') || 'daily');
@@ -2533,8 +2539,12 @@
         $('sipWeeklyDay').value = String(scheduleDay || '1');
         $('sipMonthlyDay').value = String(scheduleDay || '1');
         form.dataset.sipId = sipId;
+        // 回填原开始日期并标记手选，保存时保留原值，不被自动重算覆盖。
+        form.start_date.value = rowValue(existing, 'start_date');
+        form.dataset.startDateManual = 'true';
       } else {
         delete form.dataset.sipId;
+        delete form.dataset.startDateManual;
       }
       syncSipScheduleFields();
       syncSipStartDate();
@@ -2765,6 +2775,10 @@
     $('sipFrequency').addEventListener('change', syncSipScheduleFields);
     $('sipWeeklyDay').addEventListener('change', syncSipStartDate);
     $('sipMonthlyDay').addEventListener('change', syncSipStartDate);
+    $('sipForm').start_date.addEventListener('input', () => {
+      // 仅用户输入会触发 input 事件，程序赋值不会，避免误标手选。
+      $('sipForm').dataset.startDateManual = 'true';
+    });
     for (const scope of ['trade', 'sip']) {
       const controls = PRODUCT_SEARCH_CONTROLS[scope];
       const input = $(controls.query);
@@ -2931,14 +2945,19 @@
         syncProductSearch('sip', 'public_fund', true);
         const frequency = $('sipFrequency').value || 'daily';
         if (!form.start_date.value) {
-          throw new Error('开始日期尚未计算完成，请稍后重试或重新选择扣款日');
+          throw new Error('请先填写开始日期，或等待自动计算完成');
         }
         const payload = await ensureInlineFund(
           form,
           {...formPayload(form), activate: true, sip_id: form.dataset.sipId || undefined}
         );
         payload.frequency = frequency;
-        payload.auto_start_date = true;
+        if (form.dataset.startDateManual === 'true') {
+          // 手选日期按显式值保存，不触发服务端自动重算。
+          delete payload.auto_start_date;
+        } else {
+          payload.auto_start_date = true;
+        }
         if (frequency === 'weekly') payload.schedule_day = Number($('sipWeeklyDay').value);
         else if (frequency === 'monthly') payload.schedule_day = Number($('sipMonthlyDay').value);
         else payload.schedule_day = null;

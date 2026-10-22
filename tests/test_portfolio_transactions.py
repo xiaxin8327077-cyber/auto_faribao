@@ -1883,8 +1883,8 @@ def test_cash_latest_profit_adjustment_updates_shares_and_market_value(services)
     assert after["summary"]["market_value"] == "10009.44"
 
 
-def test_nav_latest_profit_adjustment_does_not_change_shares(services):
-    """净值产品校准最新收益只改收益展示，不改份额/市值。"""
+def test_nav_latest_profit_adjustment_keeps_shares_but_updates_market_value(services):
+    """净值产品校准最新收益不改份额，但差额计入市值与总资产，与累计收益口径一致。"""
     from src.portfolio_view import build_portfolio_payload
 
     repository, transactions, projector = services
@@ -1895,6 +1895,8 @@ def test_nav_latest_profit_adjustment_does_not_change_shares(services):
     projector.rebuild("fund")
     before = build_portfolio_payload(repository, as_of=TRADE_DATE)
     fund_before = next(row for row in before["products"] if row["id"] == "fund")
+    assert fund_before["market_value"] == "110"
+    assert before["summary"]["total_assets"] == "110"
 
     adjustment = transactions.adjust_latest_profit(
         "fund",
@@ -1905,11 +1907,105 @@ def test_nav_latest_profit_adjustment_does_not_change_shares(services):
     )
 
     assert adjustment.shares == Decimal("0")
+    assert adjustment.amount == Decimal("-2.5")
     after = build_portfolio_payload(repository, as_of=TRADE_DATE)
     fund_after = next(row for row in after["products"] if row["id"] == "fund")
     assert fund_after["latest_profit"] == "7.5"
     assert fund_after["shares"] == fund_before["shares"]
-    assert fund_after["market_value"] == fund_before["market_value"]
+    assert fund_after["market_value"] == "107.5"
+    assert after["summary"]["market_value"] == "107.5"
+    assert after["summary"]["total_assets"] == "107.5"
+    assert after["summary"]["unrealized_profit"] == "7.5"
+
+
+def test_nav_latest_profit_adjustment_accumulates_across_disclosures(services):
+    """新净值披露后旧校准差额仍保留在市值中，再次校准按增量计入，市值-成本=累计收益。"""
+    from src.portfolio_view import build_portfolio_payload
+
+    repository, transactions, projector = services
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_opening_position(repository, "fund", "100")
+    # 持仓收益自 2026-08-01 起累计，用 8 月日期构造。
+    seed_quote(repository, fund, date(2026, 8, 3), Decimal("1"))
+    seed_quote(repository, fund, date(2026, 8, 4), Decimal("1.1"))
+    projector.rebuild("fund")
+
+    transactions.adjust_latest_profit(
+        "fund",
+        Decimal("7.5"),
+        date(2026, 8, 4),
+        "校准最新收益",
+        "web:fund-acc-1",
+    )
+
+    seed_quote(repository, fund, date(2026, 8, 5), Decimal("1.2"))
+    advanced = build_portfolio_payload(repository, as_of=date(2026, 8, 5))
+    fund_advanced = next(row for row in advanced["products"] if row["id"] == "fund")
+    # 8/4 当日收益 10 校准为 7.5（差额 -2.5）；8/5 净值差收益 10。
+    assert fund_advanced["latest_profit"] == "10"
+    assert fund_advanced["holding_profit"] == "17.5"
+    assert fund_advanced["market_value"] == "117.5"
+    assert (
+        Decimal(fund_advanced["market_value"]) - Decimal(fund_advanced["cost_basis"])
+        == Decimal(fund_advanced["holding_profit"])
+    )
+
+    transactions.adjust_latest_profit(
+        "fund",
+        Decimal("12"),
+        date(2026, 8, 5),
+        "再次校准",
+        "web:fund-acc-2",
+    )
+
+    recalibrated = build_portfolio_payload(repository, as_of=date(2026, 8, 5))
+    fund_re = next(row for row in recalibrated["products"] if row["id"] == "fund")
+    # 第二次校准差额 +2，总校准 -0.5，市值 120-0.5。
+    assert fund_re["latest_profit"] == "12"
+    assert fund_re["holding_profit"] == "19.5"
+    assert fund_re["market_value"] == "119.5"
+    assert recalibrated["summary"]["total_assets"] == "119.5"
+    assert (
+        Decimal(fund_re["market_value"]) - Decimal(fund_re["cost_basis"])
+        == Decimal(fund_re["holding_profit"])
+    )
+
+
+def test_reversed_nav_latest_profit_adjustment_leaves_market_value(services):
+    """冲正净值产品的最新收益校准后，市值/总资产回到校准前口径。"""
+    from src.portfolio_view import build_portfolio_payload
+
+    repository, transactions, projector = services
+    fund = seed_product(repository, "fund", ProductType.PUBLIC_FUND)
+    seed_opening_position(repository, "fund", "100")
+    seed_quote(repository, fund, date(2026, 8, 3), Decimal("1"))
+    seed_quote(repository, fund, date(2026, 8, 4), Decimal("1.1"))
+    projector.rebuild("fund")
+
+    adjustment = transactions.adjust_latest_profit(
+        "fund",
+        Decimal("7.5"),
+        date(2026, 8, 4),
+        "校准最新收益",
+        "web:fund-reverse-1",
+    )
+    calibrated = build_portfolio_payload(repository, as_of=date(2026, 8, 4))
+    assert next(
+        row for row in calibrated["products"] if row["id"] == "fund"
+    )["market_value"] == "107.5"
+
+    transactions.reverse_confirmed(
+        adjustment.id,
+        "校准有误",
+        "web:fund-reverse-1-reversal",
+    )
+
+    reversed_payload = build_portfolio_payload(repository, as_of=date(2026, 8, 4))
+    fund_after = next(
+        row for row in reversed_payload["products"] if row["id"] == "fund"
+    )
+    assert fund_after["market_value"] == "110"
+    assert reversed_payload["summary"]["total_assets"] == "110"
 
 
 def test_adjust_holding_retry_rejects_corrupt_cost_payload(services):

@@ -1612,3 +1612,143 @@ def test_sip_view_does_not_count_legacy_locked_cash_as_deducted(
     assert plan["deduction_count"] == 0
     assert plan["deduction_amount"] == "0"
     assert plan["records"] == []
+
+
+def test_dashboard_build_preloads_rows_and_shares_daily_series(tmp_path):
+    """单次看板构建应预载交易/行情并共享逐日收益计算。
+
+    回归护栏：防止回到 O(行情日×交易) 的逐日重复查询（每次查询新开
+    连接曾让 /api/nav-dashboard 稳定耗时 3.4 秒）。
+    """
+    from src.portfolio_profit import daily_product_profits
+
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    projector = PositionProjector(repository)
+    repository.add_product(
+        Product("cash", "nanyin_wealth", "NYRR000007", "现金管理", ProductType.CASH_MANAGEMENT)
+    )
+    repository.add_product(
+        Product("fund", "changsheng_fund", "003103", "公募基金", ProductType.PUBLIC_FUND)
+    )
+    for product_id in ("cash", "fund"):
+        repository.create_transaction(
+            Transaction(
+                id=f"opening:{product_id}",
+                product_id=product_id,
+                transaction_type=TransactionType.OPENING_POSITION,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=date(2026, 8, 1),
+                idempotency_key=f"opening:{product_id}",
+                amount=Decimal("10000"),
+                shares=Decimal("10000"),
+            )
+        )
+    quote_days = [
+        date(2026, 8, day)
+        for day in (3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 17, 18, 19, 20, 21)
+    ]
+    for index, quote_day in enumerate(quote_days):
+        repository.upsert_quote(
+            "fund",
+            MarketQuote(
+                "003103",
+                quote_day,
+                "official",
+                f"fund:{quote_day}",
+                unit_nav=Decimal(1) + Decimal("0.01") * index,
+            ),
+            "2026-08-01T18:00:00+08:00",
+        )
+        repository.upsert_quote(
+            "cash",
+            MarketQuote(
+                "NYRR000007",
+                quote_day,
+                "official",
+                f"cash:{quote_day}",
+                income_per_10k=Decimal("0.3644"),
+            ),
+            "2026-08-01T18:00:00+08:00",
+        )
+        repository.create_transaction(
+            Transaction(
+                id=f"income:cash:{quote_day}",
+                product_id="cash",
+                transaction_type=TransactionType.INCOME_ACCRUAL,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=quote_day,
+                confirmation_date=quote_day,
+                idempotency_key=f"income:cash:{quote_day}",
+                amount=Decimal("0.36"),
+                shares=Decimal("0.36"),
+                confirmation_nav=Decimal("1"),
+            )
+        )
+    for purchase_day in (quote_days[2], quote_days[6], quote_days[11]):
+        repository.create_transaction(
+            Transaction(
+                id=f"sip:purchase:{purchase_day}",
+                product_id="fund",
+                transaction_type=TransactionType.SIP_PURCHASE,
+                status=TransactionStatus.CONFIRMED,
+                trade_date=purchase_day,
+                confirmation_date=purchase_day,
+                idempotency_key=f"sip:purchase:{purchase_day}",
+                amount=Decimal("100"),
+                shares=Decimal("100"),
+                confirmation_nav=Decimal("1"),
+            )
+        )
+    projector.rebuild("cash")
+    projector.rebuild("fund")
+    as_of = quote_days[-1]
+
+    counters = {"list_transactions": 0, "latest_quote": 0, "open": 0}
+    original_list_transactions = repository.list_transactions
+    original_latest_quote = repository.latest_quote
+    original_open = database._open
+
+    def counting_list_transactions(*args, **kwargs):
+        counters["list_transactions"] += 1
+        return original_list_transactions(*args, **kwargs)
+
+    def counting_latest_quote(*args, **kwargs):
+        counters["latest_quote"] += 1
+        return original_latest_quote(*args, **kwargs)
+
+    def counting_open(**kwargs):
+        counters["open"] += 1
+        return original_open(**kwargs)
+
+    repository.list_transactions = counting_list_transactions
+    repository.latest_quote = counting_latest_quote
+    database._open = counting_open
+
+    try:
+        with repository.database.connection() as conn:
+            daily = daily_product_profits(repository, as_of, conn=conn)
+            payload = build_portfolio_payload(
+                repository,
+                as_of=as_of,
+                conn=conn,
+                daily_profits_by_product=daily,
+            )
+    finally:
+        del repository.list_transactions
+        del repository.latest_quote
+        del database._open
+
+    assert counters["list_transactions"] <= 5
+    assert counters["latest_quote"] <= 3
+    assert counters["open"] <= 3
+
+    # 预载路径与逐查询路径必须产出完全一致的结果。
+    reference = build_portfolio_payload(repository, as_of=as_of)
+    assert payload == reference
+    assert {pid: series for pid, series in daily.items()} == {
+        pid: series for pid, series in daily.items()
+    }
+    assert [day for day, _ in daily["fund"]] == quote_days[1:]
+    assert sum(amount for _, amount in daily["cash"]) == Decimal("5.40")

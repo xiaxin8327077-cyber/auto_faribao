@@ -27,6 +27,25 @@ _cmd_busy = False
 _cmd_name = ""
 
 
+def _gzip_response(response, *, threshold=16384):
+    """对大响应按 Accept-Encoding 启用 gzip（看板 payload 360KB+ 传输慢）。"""
+    import gzip as gzip_module
+
+    if "gzip" not in request.headers.get("Accept-Encoding", "").lower():
+        return response
+    data = response.get_data()
+    if len(data) < threshold:
+        return response
+    compressed = gzip_module.compress(data, 6)
+    if len(compressed) >= len(data):
+        return response
+    response.set_data(compressed)
+    response.headers["Content-Encoding"] = "gzip"
+    response.headers["Content-Length"] = str(len(compressed))
+    response.headers.add("Vary", "Accept-Encoding")
+    return response
+
+
 def _try_start_cmd(name: str) -> bool:
     """Try to acquire the command lock. Returns True if started, False if busy."""
     global _cmd_busy, _cmd_name
@@ -1102,9 +1121,11 @@ def create_app(
 
     @app.route("/nav", methods=["GET"])
     def nav_dashboard_page():
+        from flask import make_response
+
         from src.nav_dashboard import render_dashboard_page
 
-        return render_dashboard_page()
+        return _gzip_response(make_response(render_dashboard_page()))
 
     @app.route("/nav-assets/<path:filename>", methods=["GET"])
     def nav_dashboard_asset(filename):
@@ -1117,7 +1138,7 @@ def create_app(
 
         if not request_is_authorized(request):
             return jsonify({"error": "private_link_invalid"}), 403
-        return jsonify(get_dashboard_payload(cfg))
+        return _gzip_response(jsonify(get_dashboard_payload(cfg)))
 
     @app.route("/api/nav-dashboard/refresh", methods=["POST"])
     def nav_dashboard_refresh():

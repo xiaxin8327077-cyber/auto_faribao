@@ -14,7 +14,12 @@ from src.portfolio_positions import (
     PositionProjector,
     pending_purchase_is_in_current_position,
 )
-from src.portfolio_profit import calculate_holding_profit, calculate_latest_profit
+from src.portfolio_profit import (
+    calculate_holding_profit,
+    calculate_latest_profit,
+    daily_product_profits,
+    product_daily_profit_series,
+)
 from src.portfolio_wallet import is_wallet_plus_product
 from src.portfolio_wallet_allocation import wallet_pending_purchase_allocations
 from src.portfolio_reconciliation import transit_assets
@@ -37,14 +42,60 @@ _PURCHASE_TYPES = {
 }
 
 
-def build_portfolio_payload(repository, as_of=None) -> dict:
-    """Serialize the ledger projections for the dashboard and mobile views."""
+def build_portfolio_payload(
+    repository,
+    as_of=None,
+    conn=None,
+    daily_profits_by_product=None,
+) -> dict:
+    """Serialize the ledger projections for the dashboard and mobile views.
+
+    *conn* 让看板一次请求复用同一个数据库连接；*daily_profits_by_product*
+    可传入 daily_product_profits 的共享结果，持仓累计收益与每日收益视图
+    不再各算一遍。
+    """
     as_of = as_of or date.today()
-    products = repository.list_products()
+    if conn is not None:
+        products = repository.list_products(conn=conn)
+    else:
+        products = repository.list_products()
     products_by_id = {product.id: product for product in products}
-    transactions = repository.list_transactions()
+    if conn is not None:
+        transactions = repository.list_transactions(conn=conn)
+    else:
+        transactions = repository.list_transactions()
+    transactions_by_product = defaultdict(list)
+    for transaction in transactions:
+        transactions_by_product[transaction.product_id].append(transaction)
+    quotes_by_product = {
+        product.id: (
+            repository.list_quotes(
+                product.id, on_or_before=as_of, conn=conn
+            )
+            if conn is not None
+            else repository.list_quotes(product.id, on_or_before=as_of)
+        )
+        for product in products
+    }
+    if daily_profits_by_product is None:
+        daily_profits_by_product = daily_product_profits(
+            repository,
+            as_of,
+            conn=conn,
+            products=products,
+            transactions_by_product=transactions_by_product,
+            quotes_by_product=quotes_by_product,
+        )
     rows = [
-        _product_row(repository, product, as_of)
+        _product_row(
+            repository,
+            product,
+            as_of,
+            conn=conn,
+            transactions=transactions_by_product.get(product.id, []),
+            quotes=quotes_by_product.get(product.id, []),
+            daily_profits=daily_profits_by_product.get(product.id),
+        )
         for product in products
     ]
     positions = [
@@ -52,7 +103,11 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
         for row in rows
         if _is_overview_position(row, transactions, as_of)
     ]
-    profit_history = _profit_history(repository)
+    profit_history = _profit_history(
+        repository,
+        conn=conn,
+        transactions=transactions,
+    )
     summary = _summary(
         rows,
         profit_history,
@@ -102,8 +157,18 @@ def build_portfolio_payload(repository, as_of=None) -> dict:
             for transaction in ordered_transactions
         ],
         "sip_plans": [
-            _sip_plan_row(repository, plan, products_by_id)
-            for plan in repository.list_plans()
+            _sip_plan_row(
+                repository,
+                plan,
+                products_by_id,
+                conn=conn,
+                transactions=transactions,
+            )
+            for plan in (
+                repository.list_plans(conn=conn)
+                if conn is not None
+                else repository.list_plans()
+            )
         ],
         "profit_history": profit_history,
         "write_enabled": True,
@@ -224,14 +289,57 @@ def _pending_purchase_amount(product, transactions):
     )
 
 
-def _product_row(repository, product, as_of):
+def _product_row(
+    repository,
+    product,
+    as_of,
+    conn=None,
+    *,
+    transactions=None,
+    quotes=None,
+    daily_profits=None,
+):
     position = repository.get_position(product.id)
-    quote = repository.latest_quote(product.id, on_or_before=as_of)
+    if quotes is not None:
+        quote = quotes[-1] if quotes else None
+    elif conn is not None:
+        quote = repository.latest_quote(
+            product.id, on_or_before=as_of, conn=conn
+        )
+    else:
+        quote = repository.latest_quote(product.id, on_or_before=as_of)
     quote_payload = _quote_payload(product.product_type, quote)
     market_value = _market_value(product.product_type, position.total_shares, quote)
-    product_transactions = repository.list_transactions(
-        product_id=product.id,
-    )
+    if transactions is not None:
+        product_transactions = transactions
+    elif conn is not None:
+        product_transactions = repository.list_transactions(
+            product_id=product.id,
+            conn=conn,
+        )
+    else:
+        product_transactions = repository.list_transactions(
+            product_id=product.id,
+        )
+    # 净值产品市值纳入累计校准差额：校准代表平台权威市值与净值推算的差，
+    # 需持续体现在市值/总资产中并与累计收益口径一致；现金产品差额已计入
+    # 份额（市值=份额），再叠加会重复计算。
+    if (
+        market_value is not None
+        and product.product_type is not ProductType.CASH_MANAGEMENT
+    ):
+        market_value += sum(
+            (
+                transaction.amount or _ZERO
+                for transaction in product_transactions
+                if (
+                    transaction.status is TransactionStatus.CONFIRMED
+                    and transaction.transaction_type
+                    is TransactionType.LATEST_PROFIT_ADJUSTMENT
+                )
+            ),
+            _ZERO,
+        )
     in_transit_amount = _pending_purchase_amount(
         product,
         product_transactions,
@@ -240,20 +348,40 @@ def _product_row(repository, product, as_of):
         repository,
         product,
         as_of,
+        conn=conn,
+        transactions=product_transactions,
+        quotes=quotes,
     )
     # 持仓卡片上的"累计持有收益"：8月及之后该产品的每日收益总和
-    holding_profit = _ZERO
-    for quote in repository.list_quotes(product.id, on_or_before=as_of):
-        if quote.quote_date < date(2026, 8, 1):
-            continue
-        pd, profit = calculate_latest_profit(
+    # （与每日收益明细共享同一套逐日序列，避免各算一遍）。
+    if daily_profits is not None:
+        holding_series = daily_profits
+    else:
+        if quotes is None:
+            if conn is not None:
+                quotes = repository.list_quotes(
+                    product.id, on_or_before=as_of, conn=conn
+                )
+            else:
+                quotes = repository.list_quotes(
+                    product.id, on_or_before=as_of
+                )
+        holding_series = product_daily_profit_series(
             repository,
             product,
-            quote.quote_date,
-            bundle_non_trading_days=False,
+            as_of,
+            conn=conn,
+            transactions=product_transactions,
+            quotes=quotes,
         )
-        if pd == quote.quote_date and profit is not None:
-            holding_profit += profit
+    holding_profit = sum(
+        (
+            profit
+            for quote_date, profit in holding_series
+            if quote_date >= date(2026, 8, 1)
+        ),
+        _ZERO,
+    )
     row = {
         "id": product.id,
         "product_id": product.id,
@@ -293,14 +421,25 @@ def _product_row(repository, product, as_of):
         )
     else:
         unit_nav = quote_payload.get("unit_nav")
-        previous_quote = (
-            repository.latest_quote(
-                product.id,
-                on_or_before=quote.quote_date - timedelta(days=1),
-            )
-            if quote is not None
-            else None
-        )
+        previous_quote = None
+        if quote is not None:
+            if quotes is not None:
+                earlier = [
+                    q for q in quotes
+                    if q.quote_date < quote.quote_date
+                ]
+                previous_quote = earlier[-1] if earlier else None
+            elif conn is not None:
+                previous_quote = repository.latest_quote(
+                    product.id,
+                    on_or_before=quote.quote_date - timedelta(days=1),
+                    conn=conn,
+                )
+            else:
+                previous_quote = repository.latest_quote(
+                    product.id,
+                    on_or_before=quote.quote_date - timedelta(days=1),
+                )
         change_pct = None
         if (
             quote is not None
@@ -353,10 +492,15 @@ def _market_value(product_type, shares, quote):
     return shares * quote.unit_nav
 
 
-def _profit_history(repository):
-    rows = _legacy_profit_rows(repository)
+def _profit_history(repository, conn=None, transactions=None):
+    rows = _legacy_profit_rows(repository, conn=conn)
     ledger_by_date_and_source = defaultdict(lambda: _ZERO)
-    for transaction in repository.list_transactions():
+    if transactions is None:
+        if conn is not None:
+            transactions = repository.list_transactions(conn=conn)
+        else:
+            transactions = repository.list_transactions()
+    for transaction in transactions:
         if (
             transaction.status is TransactionStatus.CONFIRMED
             and transaction.transaction_type in _LEDGER_PROFIT_TYPES
@@ -386,13 +530,20 @@ def _profit_history(repository):
     return sorted(rows, key=lambda row: (row["date"], row["source"]))
 
 
-def _legacy_profit_rows(repository):
-    with repository.database.connection() as connection:
-        rows = connection.execute(
+def _legacy_profit_rows(repository, conn=None):
+    if conn is not None:
+        rows = conn.execute(
             """SELECT profit_date, amount, source_kind
                FROM legacy_profit_history
                ORDER BY profit_date, id"""
         ).fetchall()
+    else:
+        with repository.database.connection() as connection:
+            rows = connection.execute(
+                """SELECT profit_date, amount, source_kind
+                   FROM legacy_profit_history
+                   ORDER BY profit_date, id"""
+            ).fetchall()
     return [
         {
             "date": row["profit_date"],
@@ -665,10 +816,20 @@ def _sip_plan_records(deductions, transactions):
     return records
 
 
-def _sip_plan_row(repository, plan, products_by_id):
+def _sip_plan_row(
+    repository,
+    plan,
+    products_by_id,
+    conn=None,
+    transactions=None,
+):
     product = products_by_id.get(plan.product_id)
     source = products_by_id.get(plan.source_cash_product_id)
-    executions = repository.list_plan_executions(plan.id)
+    executions = (
+        repository.list_plan_executions(plan.id, conn=conn)
+        if conn is not None
+        else repository.list_plan_executions(plan.id)
+    )
     last_execution = next(
         (
             execution
@@ -678,7 +839,11 @@ def _sip_plan_row(repository, plan, products_by_id):
         ),
         None,
     )
-    transactions = repository.list_transactions()
+    if transactions is None:
+        if conn is not None:
+            transactions = repository.list_transactions(conn=conn)
+        else:
+            transactions = repository.list_transactions()
     transactions_by_id = {transaction.id: transaction for transaction in transactions}
     execution_cash_ids = set()
     active_execution_cash_ids = set()

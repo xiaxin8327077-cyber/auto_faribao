@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from src.beijing_time import now as beijing_now
+from src.portfolio_profit import daily_product_profits
 from src.portfolio_view import build_portfolio_payload
 
 
@@ -732,7 +733,19 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
         return payload
 
     write_enabled = bool(getattr(runtime, "write_enabled", False))
-    portfolio = build_portfolio_payload(repository)
+    # 一次请求复用同一个数据库连接；逐日收益单遍计算后由持仓累计收益
+    # 与每日收益视图共享，避免 O(行情日×交易) 的重复查询。
+    as_of = date.today()
+    with repository.database.connection() as conn:
+        daily_profits_by_product = daily_product_profits(
+            repository, as_of, conn=conn
+        )
+        portfolio = build_portfolio_payload(
+            repository,
+            as_of=as_of,
+            conn=conn,
+            daily_profits_by_product=daily_profits_by_product,
+        )
     portfolio["write_enabled"] = write_enabled
     if not write_enabled:
         portfolio["write_disabled_reason"] = "portfolio_migration_failed"
@@ -780,7 +793,13 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
         payload["latest_profit"] = str(latest_profit)
     # 每日/每月收益以组合账本为准：ledger 包含全量产品（财富+债券基金），
     # profit_entries 只包含从官网抓取的财富类产品，因此 ledger 优先覆盖。
-    _apply_portfolio_profit_views(payload, repository, portfolio)
+    # 逐日收益序列复用上面单遍计算的结果，不再各算一遍。
+    _apply_portfolio_profit_views(
+        payload,
+        repository,
+        portfolio,
+        daily_profits_by_product=daily_profits_by_product,
+    )
 
     # 累计收益 = daily_profits 总和（从 8 月开始，与理财看板一致）
     payload["cumulative_profit"] = str(sum(
@@ -821,34 +840,40 @@ def _product_breakdown_rows(amounts_by_id, products_by_id) -> list:
     return rows
 
 
-def _portfolio_daily_product_profits(repository, as_of: date) -> dict:
+def _portfolio_daily_product_profits(
+    repository,
+    as_of: date,
+    conn=None,
+    daily_profits_by_product=None,
+) -> dict:
+    """{iso_day: {product_id: profit}}，仅统计 active 产品（与既有口径一致）。
+
+    *daily_profits_by_product* 传入 daily_product_profits 的共享单遍结果，
+    避免看板请求内重复计算。
+    """
     from collections import defaultdict
 
-    from src.portfolio_profit import calculate_latest_profit
-
-    daily = defaultdict(dict)
-    for product in repository.list_products(active_only=True):
-        quote_dates = sorted(
-            {
-                quote.quote_date
-                for quote in repository.list_quotes(
-                    product.id,
-                    on_or_before=as_of,
-                )
-            }
+    if daily_profits_by_product is None:
+        daily_profits_by_product = daily_product_profits(
+            repository,
+            as_of,
+            conn=conn,
         )
-        for quote_date in quote_dates:
-            profit_date, profit = calculate_latest_profit(
-                repository,
-                product,
-                quote_date,
-                bundle_non_trading_days=False,
+    active_ids = {
+        product.id
+        for product in repository.list_products(
+            active_only=True, conn=conn
+        )
+    }
+    daily = defaultdict(dict)
+    for product_id, series in daily_profits_by_product.items():
+        if product_id not in active_ids:
+            continue
+        for quote_date, profit in series:
+            day = quote_date.isoformat()
+            daily[day][product_id] = (
+                daily[day].get(product_id, Decimal("0")) + profit
             )
-            if profit_date == quote_date and profit is not None:
-                day = quote_date.isoformat()
-                daily[day][product.id] = (
-                    daily[day].get(product.id, Decimal("0")) + profit
-                )
     return dict(daily)
 
 
@@ -862,7 +887,13 @@ def _portfolio_daily_profit_totals(repository, as_of: date) -> dict:
     }
 
 
-def _apply_portfolio_profit_views(payload, repository, portfolio) -> None:
+def _apply_portfolio_profit_views(
+    payload,
+    repository,
+    portfolio,
+    conn=None,
+    daily_profits_by_product=None,
+) -> None:
     """Use ledger-based daily profits (all products), overriding partial profit_entries."""
     if not hasattr(repository, "list_products") or not hasattr(repository, "list_quotes"):
         return
@@ -874,7 +905,12 @@ def _apply_portfolio_profit_views(payload, repository, portfolio) -> None:
         as_of = date.today()
 
     try:
-        ledger_daily_products = _portfolio_daily_product_profits(repository, as_of)
+        ledger_daily_products = _portfolio_daily_product_profits(
+            repository,
+            as_of,
+            conn=conn,
+            daily_profits_by_product=daily_profits_by_product,
+        )
     except Exception:
         logger.exception("Failed to rebuild dashboard daily profits from ledger")
         return

@@ -113,6 +113,13 @@ def _parse_date(value, name, default=None):
         raise ValueError(f"{name} must be an ISO date") from exc
 
 
+def _validate_manual_sip_start_date(start_date):
+    # 手选开始日期只做上界校验：过去日期是既有的补记入口（backfill），
+    # 拒绝会破坏"创建即补扣"语义；上界防误选过远日期。
+    if start_date > beijing_now().date() + timedelta(days=365):
+        raise ValueError("start_date cannot be more than one year ahead")
+
+
 def _parse_datetime(value, name):
     try:
         parsed = normalize_market_datetime(value)
@@ -962,6 +969,7 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             source = repo.require_product(source_id)
             if source.product_type is not ProductType.CASH_MANAGEMENT:
                 raise ValueError("source must be cash_management")
+        start_date_provided = str(body.get("start_date") or "").strip() != ""
         start_date = _parse_date(
             body.get("start_date"), "start_date", date.today()
         )
@@ -988,6 +996,15 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
             start_date = first_sip_trade_date(
                 schedule_anchor, frequency, schedule_day,
             )
+        elif existing is not None:
+            if not start_date_provided:
+                # 编辑未携带开始日期且未开启自动计算时保留原值，
+                # 避免 date.today() 默认值悄悄改写运行中计划的开始日期。
+                start_date = existing.start_date
+            elif start_date != existing.start_date:
+                _validate_manual_sip_start_date(start_date)
+        elif start_date_provided:
+            _validate_manual_sip_start_date(start_date)
         resulting_status = (
             existing.status
             if existing is not None

@@ -1250,6 +1250,169 @@ def test_auto_start_recalculates_existing_date_when_editing(api_setup, monkeypat
     assert preview.get_json()["start_date"] == "2026-10-30"
 
 
+def test_sip_manual_start_date_is_saved_and_far_future_rejected(
+    api_setup, monkeypatch,
+):
+    """手选开始日期（不带 auto 标记）原样保存；超过一年被拒，防误选。"""
+    client, _, repository, _ = api_setup
+    monkeypatch.setattr("src.portfolio_api.beijing_now", lambda: datetime(2026, 10, 22))
+    base = {
+        "product_id": "fund", "daily_amount": "100", "source": "cash",
+        "frequency": "weekly", "schedule_day": 3,
+    }
+
+    preview = client.post(
+        "/api/portfolio/sip-plans/preview",
+        headers=write_headers(idem="manual-preview"),
+        json={**base, "start_date": "2026-10-28"},
+    )
+    saved = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="manual-create"),
+        json={**base, "start_date": "2026-10-28"},
+    )
+
+    assert preview.get_json()["preview"]["start_date"] == "2026-10-28"
+    assert saved.status_code == 201
+    plan = repository.get_plan(saved.get_json()["sip_plan"]["id"])
+    assert plan.start_date == date(2026, 10, 28)
+
+    far = client.post(
+        "/api/portfolio/sip-plans/preview",
+        headers=write_headers(idem="manual-far"),
+        json={**base, "start_date": "2028-10-28"},
+    )
+    far_saved = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="manual-far-create"),
+        json={**base, "start_date": "2028-10-28"},
+    )
+    assert far.status_code == 400
+    assert far.get_json()["error"] == "validation_error"
+    assert "one year" in far.get_json()["message"]
+    assert far_saved.status_code == 400
+
+
+def test_sip_manual_past_start_date_still_supports_backfill(
+    api_setup, monkeypatch,
+):
+    """过去日期保留为补记入口：创建后按已有 backfill 语义立即补扣。"""
+    client, _, repository, _ = api_setup
+    repository.upsert_quote(
+        "fund",
+        MarketQuote(
+            "fund",
+            date(2026, 10, 21),
+            "official",
+            "fund:2026-10-21",
+            unit_nav=Decimal("1"),
+        ),
+        "2026-10-21T18:00:00+08:00",
+    )
+    monkeypatch.setattr("src.portfolio_api.beijing_now", lambda: datetime(2026, 10, 22))
+
+    response = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="manual-past-create"),
+        json={
+            "product_id": "fund", "daily_amount": "100",
+            "source_cash_product_id": "cash",
+            "start_date": "2026-10-21", "activate": True,
+        },
+    )
+
+    assert response.status_code == 201
+    assert repository.get_plan(
+        response.get_json()["sip_plan"]["id"]
+    ).start_date == date(2026, 10, 21)
+
+
+def test_sip_edit_without_start_date_preserves_original(
+    api_setup, monkeypatch,
+):
+    """编辑不携带开始日期且未开启自动计算时，保留计划原开始日期。"""
+    client, _, repository, _ = api_setup
+
+    class FixedToday(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 10, 22)
+
+    monkeypatch.setattr("src.portfolio_api.date", FixedToday)
+    monkeypatch.setattr("src.portfolio_api.beijing_now", lambda: datetime(2026, 10, 22))
+    body = {
+        "product_id": "fund", "daily_amount": "100", "source": "cash",
+        "frequency": "daily", "start_date": "2026-10-25",
+    }
+    created = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="preserve-create"),
+        json=body,
+    )
+    plan_id = created.get_json()["sip_plan"]["id"]
+
+    edited = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="preserve-edit"),
+        json={"product_id": "fund", "daily_amount": "200", "source": "cash",
+              "frequency": "daily", "sip_id": plan_id},
+    )
+
+    assert edited.status_code == 200
+    assert repository.get_plan(plan_id).start_date == date(2026, 10, 25)
+
+    changed_far = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="preserve-edit-far"),
+        json={"product_id": "fund", "daily_amount": "200", "source": "cash",
+              "frequency": "daily", "sip_id": plan_id, "start_date": "2028-10-25"},
+    )
+    assert changed_far.status_code == 400
+
+
+def test_sip_edit_with_unchanged_far_future_start_date_is_allowed(
+    api_setup, monkeypatch,
+):
+    """编辑携带与原计划相同的开始日期（即便超界）不触发重校验，旧计划可继续编辑。"""
+    from src.portfolio_models import SipPlan, SipPlanStatus
+
+    client, _, repository, _ = api_setup
+    monkeypatch.setattr("src.portfolio_api.beijing_now", lambda: datetime(2026, 10, 22))
+    # 直接落库一个超界历史计划（早于本校验存在的旧数据形态）。
+    repository.save_plan(SipPlan(
+        id="legacy-far-plan",
+        product_id="fund",
+        daily_amount=Decimal("100"),
+        purchase_fee_rate=Decimal("0"),
+        source_cash_product_id="cash",
+        status=SipPlanStatus.DRAFT,
+        start_date=date(2028, 10, 22),
+    ))
+
+    edited = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="far-edit-unchanged"),
+        json={
+            "product_id": "fund", "daily_amount": "200", "source": "cash",
+            "frequency": "daily", "sip_id": "legacy-far-plan",
+            "start_date": "2028-10-22",
+        },
+    )
+    assert edited.status_code == 200
+    assert repository.get_plan("legacy-far-plan").start_date == date(2028, 10, 22)
+
+    changed = client.post(
+        "/api/portfolio/sip-plans",
+        headers=write_headers(idem="far-edit-changed"),
+        json={
+            "product_id": "fund", "daily_amount": "200", "source": "cash",
+            "frequency": "daily", "sip_id": "legacy-far-plan",
+            "start_date": "2029-10-22",
+        },
+    )
+    assert changed.status_code == 400
+
+
 @pytest.mark.parametrize("frequency,day,expected", [
     ("weekly", 1, "2026-09-07"),
     ("monthly", 2, "2026-10-08"),

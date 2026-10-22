@@ -248,7 +248,7 @@ def test_sip_save_is_draft_and_activation_is_an_explicit_operation():
     assert "if (existingStatus !== 'draft')" not in html
     assert "sip_id: form.dataset.sipId || undefined" in html
     assert 'name="start_date"' in html
-    assert "form.start_date.value = rowValue(existing, 'start_date')" not in html
+    assert "form.start_date.value = rowValue(existing, 'start_date');" in html
     assert "syncSipScheduleFields();\n      syncSipStartDate();\n      dialogOpen('sipDialog');" in html
 
 
@@ -1116,8 +1116,10 @@ def test_sip_start_date_updates_on_schedule_changes():
     assert "$('sipWeeklyDay').addEventListener('change', syncSipStartDate);" in html
     assert "$('sipMonthlyDay').addEventListener('change', syncSipStartDate);" in html
     assert "/api/portfolio/sip-plans/start-date?" in html
-    assert '<input name="start_date" type="text" readonly required' in html
+    assert '<input name="start_date" type="date" required' in html
     assert "payload.auto_start_date = true;" in html
+    # 手选路径不带 auto 标记，由后端按显式日期保存。
+    assert "delete payload.auto_start_date;" in html
 
 
 def test_sip_start_date_browser_logic_handles_changes_and_stale_responses():
@@ -1142,7 +1144,6 @@ const showFormError = (form, error) => errors.push(error.message);
 (async () => {
   const form = $('sipForm');
   syncSipScheduleFields();
-  assert.strictEqual(form.start_date.readOnly, true);
   assert.strictEqual(requests.length, 0);
   const weekly = syncSipStartDate();
   assert(requests[0].path.includes('frequency=weekly&schedule_day=1'));
@@ -1161,7 +1162,6 @@ const showFormError = (form, error) => errors.push(error.message);
   assert.deepStrictEqual(errors, ['calendar unavailable']);
   $('sipFrequency').value = 'daily';
   syncSipScheduleFields();
-  assert.strictEqual(form.start_date.readOnly, true);
   const daily = syncSipStartDate();
   assert(requests[3].path.endsWith('frequency=daily'));
   requests[3].resolve({ok: true, json: async () => ({start_date: '2026-09-07'})});
@@ -1169,10 +1169,42 @@ const showFormError = (form, error) => errors.push(error.message);
   assert.strictEqual(form.start_date.value, '2026-09-07');
   assert.strictEqual(form.start_date.error, '');
   assert.strictEqual(form.dataset.autoStartDate, 'true');
+  // 手选开始日期后：syncSipStartDate 不再发起请求、不覆盖已选值。
+  form.dataset.startDateManual = 'true';
+  form.start_date.value = '2026-10-28';
+  await Promise.race([
+    syncSipStartDate(),
+    new Promise(resolve => setTimeout(() => resolve('timeout'), 50)),
+  ]);
+  assert.strictEqual(requests.length, 4);
+  assert.strictEqual(form.start_date.value, '2026-10-28');
+  // 周期变化（带事件）会清除手选状态并重算默认日期。
+  const rescheduled = syncSipScheduleFields({});
+  assert.strictEqual(form.dataset.startDateManual, undefined);
+  assert(requests[4].path.endsWith('frequency=daily'));
+  requests[4].resolve({ok: true, json: async () => ({start_date: '2026-09-08'})});
+  await rescheduled;
+  assert.strictEqual(form.start_date.value, '2026-09-08');
 })().catch(error => {console.error(error); process.exit(1);});
 """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_sip_start_date_supports_manual_selection():
+    html = _read_page()
+    # 输入框可编辑，input 事件标记手选状态。
+    assert '<input name="start_date" type="date" required' in html
+    assert "$('sipForm').start_date.addEventListener('input'," in html
+    assert "dataset.startDateManual = 'true';" in html
+    # 提交：手选不带 auto 标记（走显式日期），默认路径仍自动计算。
+    assert "if (form.dataset.startDateManual === 'true') {" in html
+    assert "delete payload.auto_start_date;" in html
+    # 编辑回填原开始日期并标记手选，避免被自动重算覆盖。
+    assert "form.start_date.value = rowValue(existing, 'start_date');" in html
+    # 提示文案说明手选与补扣语义。
+    assert "可手动修改" in html
+    assert "自动补扣" in html
 
 
 def test_sip_edit_refills_schedule_and_syncs():
@@ -1200,7 +1232,7 @@ def test_sip_start_date_label_is_begin_date_not_first_deduction():
     assert "开始日期" in html
     # 卡片与表单都改用“开始日期”。
     assert "<span>开始日期</span>" in html
-    assert '>开始日期<input name="start_date" type="text" readonly required' in html
+    assert '>开始日期<input name="start_date" type="date" required' in html
     assert "#sipDialog .form-field { min-width: 0; max-width: 100%; }" in html
 
 

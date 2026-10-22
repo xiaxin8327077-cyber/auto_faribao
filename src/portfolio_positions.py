@@ -125,17 +125,25 @@ class PositionProjector:
         conn=None,
         as_of=None,
         use_confirmation_date=False,
-    ) -> Position:
+        *,
+        product=None,
+        transactions=None,
+    ):
         total_shares = ZERO
         locked_shares = ZERO
         cost_basis = ZERO
         unconfirmed_wallet_liquidity = ZERO
-        product = self.repository.require_product(product_id, conn=conn)
-        transactions = sorted(
-            self.repository.list_transactions(
+        if product is None:
+            product = self.repository.require_product(
+                product_id, conn=conn
+            )
+        if transactions is None:
+            transactions = self.repository.list_transactions(
                 product_id=product_id,
                 conn=conn,
-            ),
+            )
+        transactions = sorted(
+            transactions,
             key=lambda transaction: (
                 transaction.trade_date,
                 0

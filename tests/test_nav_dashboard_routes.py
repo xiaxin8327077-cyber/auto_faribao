@@ -167,3 +167,72 @@ def test_fangsong_webfont_is_served_locally():
     assert "FZFangSong-Z02S" in css.get_data(as_text=True)
     assert woff.status_code == 200
     assert woff.mimetype in {"font/woff2", "application/octet-stream", "application/font-woff2"}
+
+
+def test_dashboard_api_gzips_large_payload_only(monkeypatch):
+    """大 payload 按 Accept-Encoding 返回 gzip；小响应与未请求 gzip 时不压缩。"""
+    import gzip as gzip_module
+    import json
+
+    monkeypatch.setattr("src.nav_dashboard.get_access_token", lambda: "secret-key")
+    monkeypatch.setattr(
+        "src.nav_dashboard.get_dashboard_payload",
+        lambda _cfg: {"initialized": True, "blob": "x" * 40000},
+    )
+    client = create_app(_cfg()).test_client()
+
+    compressed = client.get(
+        "/api/nav-dashboard",
+        headers={
+            "X-Nav-Dashboard-Key": "secret-key",
+            "Accept-Encoding": "gzip",
+        },
+    )
+    assert compressed.status_code == 200
+    assert compressed.headers.get("Content-Encoding") == "gzip"
+    assert "Accept-Encoding" in compressed.headers.get("Vary", "")
+    decompressed = json.loads(gzip_module.decompress(compressed.get_data()))
+    assert decompressed["initialized"] is True
+    assert len(decompressed["blob"]) == 40000
+
+    plain = client.get(
+        "/api/nav-dashboard",
+        headers={"X-Nav-Dashboard-Key": "secret-key"},
+    )
+    assert plain.headers.get("Content-Encoding") is None
+    assert plain.get_json()["initialized"] is True
+
+    monkeypatch.setattr(
+        "src.nav_dashboard.get_dashboard_payload",
+        lambda _cfg: {"initialized": True},
+    )
+    small = client.get(
+        "/api/nav-dashboard",
+        headers={
+            "X-Nav-Dashboard-Key": "secret-key",
+            "Accept-Encoding": "gzip",
+        },
+    )
+    assert small.headers.get("Content-Encoding") is None
+    assert small.get_json() == {"initialized": True}
+
+
+def test_dashboard_page_gzips_html(monkeypatch):
+    import gzip as gzip_module
+
+    monkeypatch.setattr(
+        "src.nav_dashboard.render_dashboard_page",
+        lambda: "<html>" + "x" * 200000 + "</html>",
+    )
+    client = create_app(_cfg()).test_client()
+
+    response = client.get("/nav", headers={"Accept-Encoding": "gzip"})
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Encoding") == "gzip"
+    body = gzip_module.decompress(response.get_data())
+    assert body.startswith(b"<html>")
+
+    plain = client.get("/nav")
+    assert plain.headers.get("Content-Encoding") is None
+    assert plain.get_data().startswith(b"<html>")
