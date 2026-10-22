@@ -1425,7 +1425,8 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert "BAROMETER_CACHE_KEY" not in html
     assert "restoreBarometerCache" not in html
     assert "barometerData" not in html
-    assert "if (tab === 'market') loadBarometer();" in html
+    assert "if (data.bond_barometer) renderBarometer(data.bond_barometer);" in html
+    assert "if (tab === 'market' && !barometerReady) loadBarometer();" in html
     assert "loadBarometer(true);\n      refreshRequestPending = true;" in html
     assert "#marketPanel .section-head { border-bottom: 0; }" in html
     assert "<h2>行情</h2>" not in html

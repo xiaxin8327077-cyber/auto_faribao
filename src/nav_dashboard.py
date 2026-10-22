@@ -746,6 +746,13 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
             conn=conn,
             daily_profits_by_product=daily_profits_by_product,
         )
+        # 行情快照随主 payload 下发，首屏即可渲染，避免“正在读取行情”。
+        from src.bond_barometer import read_snapshot
+
+        barometer_snapshot = read_snapshot(conn)
+    payload["bond_barometer"] = (
+        barometer_snapshot["payload"] if barometer_snapshot else None
+    )
     portfolio["write_enabled"] = write_enabled
     if not write_enabled:
         portfolio["write_disabled_reason"] = "portfolio_migration_failed"

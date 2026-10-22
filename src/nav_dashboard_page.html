@@ -1066,14 +1066,17 @@
       updateWriteControls();
     }
     const BAROMETER_WEATHER = { sunny: '☀️', sun_cloud: '⛅', cloud: '☁️', rain: '🌧', flat: '—' };
+    let barometerReady = false;
     function renderBarometer(data) {
       const meta = $('barometerMeta');
       const content = $('barometerContent');
       if (!data || data.available !== true) {
+        barometerReady = false;
         meta.textContent = '--';
         content.innerHTML = '<div class="empty">暂无行情数据，交易时段内将自动更新</div>';
         return;
       }
+      barometerReady = true;
       const generated = (data.snapshot_at || data.generated_at) ? String(data.snapshot_at || data.generated_at).slice(11, 16) : '';
       meta.textContent = `${esc(data.as_of)}${generated ? ` · 更新 ${esc(generated)}` : ''}`;
       const grid = (title, block, cols) => {
@@ -1122,7 +1125,7 @@
           panel.classList.add('is-entering');
         }
       });
-      if (tab === 'market') loadBarometer();
+      if (tab === 'market' && !barometerReady) loadBarometer();
     }
     function positionTypeLabel(value) {
       return ({wealth_nav: '净值型理财', cash_management: '现金管理', public_fund: '公募基金'})[value] || '其他产品';
@@ -2096,6 +2099,7 @@
       // 必须先于任何 portfolioRows 读取：否则刷新后的首次渲染拿不到
       // positions/transactions，0 份额的在途申购产品会被过滤掉。
       state.data = data || {};
+      if (data.bond_barometer) renderBarometer(data.bond_barometer);
       const cumulative = number(data.cumulative_profit);
       const latestProfit = number(data.latest_profit);
       const currentMonthProfit = number(data.current_month_profit);

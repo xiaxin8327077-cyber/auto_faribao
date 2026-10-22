@@ -339,3 +339,23 @@ def test_sip_same_trade_date_is_idempotent_on_repeated_backfill(tmp_path):
         e.intended_trade_date for e in first
     ]
     assert len(_plan_purchases(repo, plan.id)) == purchases_after_first == 1
+
+
+def test_dashboard_payload_includes_bond_barometer_snapshot(tmp_path):
+    from datetime import datetime
+
+    from src.bond_barometer import write_snapshot
+    from src.nav_dashboard import get_dashboard_payload
+
+    runtime, cfg = _seed_runtime(tmp_path)
+    with runtime.repository.database.connection() as conn:
+        write_snapshot(
+            conn,
+            {"available": True, "as_of": "2026-10-22", "rate": {"rows": []}, "credit": {"rows": []}},
+            datetime(2026, 10, 22, 10, 0),
+        )
+
+    payload = get_dashboard_payload(cfg, state_path=tmp_path / "state.json")
+
+    assert payload["bond_barometer"]["available"] is True
+    assert payload["bond_barometer"]["snapshot_at"] == "2026-10-22T10:00:00"
