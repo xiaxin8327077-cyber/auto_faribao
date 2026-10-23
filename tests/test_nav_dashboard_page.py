@@ -1501,7 +1501,7 @@ const tone=v=>Number(v)>0?'positive':Number(v)<0?'negative':'neutral';
 const rowValue=(r,...ks)=>{for(const k of ks)if(r?.[k]!==undefined&&r[k]!==null)return r[k];return '';};
 const portfolioRows=()=>[];
 const isClearedAndSettled=()=>false;
-const state={activeTab:'market',data:{fund_estimates:{a:{product_id:'a',code:'918273',name:'基金<名>',holding_status:'held',return_pct:'-0.024',estimated_profit:'-3.51',market_as_of:'2026-10-23T16:56:00+08:00'},b:{product_id:'b',code:'564738',name:'待确认基金',holding_status:'pending_purchase',pending_purchase:true,return_pct:'0.01',estimated_profit:null,profit_reason:'awaiting_confirmed_shares',market_as_of:'2026-10-23T16:56:00+08:00'}}}};
+const state={activeTab:'market',data:{fund_estimates:{a:{product_id:'a',code:'918273',name:'基金<名>',holding_status:'held',return_pct:'-0.024',estimated_profit:'-3.51',market_as_of:'2026-10-23T16:56:00+08:00',confidence_label:'试验，情景范围不是概率置信区间'},b:{product_id:'b',code:'564738',name:'待确认基金',holding_status:'pending_purchase',pending_purchase:true,return_pct:'0.01',estimated_profit:null,profit_reason:'awaiting_confirmed_shares',market_as_of:'2026-10-23T16:56:00+08:00',confidence_label:'试验，情景范围不是概率置信区间'}}}};
 ''' + logic + r'''
 renderHeldFundEstimates();
 const result=elements.estimateWatchList.innerHTML;
@@ -1512,18 +1512,21 @@ assert(result.includes('买入待确认'));
 assert(result.includes('待份额确认'));
 assert(!result.includes('¥0.00'));
 assert(!result.includes('行情 2026-10-23 16:56'));
+assert(!result.includes('情景范围'));
+assert(!result.includes('试验'));
 assert(elements.estimateMeta.textContent.includes('行情 2026-10-23 16:56'));
-renderStockMarket({available:true,source:'东财',fetched_at:'2026-10-23T16:20:00+08:00',indices:[{name:'标普500',market:'美股',quote_date:'2026-10-22',quote_time:'2026-10-22T16:00:00-04:00',price:'6000',change_pct:'-1.2'}],indices_status:{US:{collection_phase:'close'}},industries:{quote_date:'2026-10-23',leaders:[{name:'电子<行业>',change_pct:'2'}],laggards:[]}});
+renderStockMarket({available:true,source:'东财',fetched_at:'2026-10-23T16:20:00+08:00',indices:[{name:'标普500',market:'美股',quote_date:'2026-10-22',quote_time:'2026-10-22T16:00:00-04:00',price:'6000',change_pct:'-1.2'}],indices_status:{US:{collection_phase:'close'}},industries:{quote_date:'2026-10-23',stale:true,leaders:[{name:'电子<行业>',change_pct:'2'}],laggards:[]}});
 assert(!elements.stockMarketContent.innerHTML.includes('2026-10-22 16:00 纽约'));
 assert(elements.stockMarketMeta.textContent.includes('16:20 更新'));
 assert(elements.stockMarketMeta.textContent.includes('收盘保留'));
-assert(!elements.stockMarketMeta.textContent.includes('更新延迟'));
+assert(!elements.stockMarketContent.innerHTML.includes('更新延迟'));
 assert(elements.stockMarketContent.innerHTML.includes('已收盘'));
 assert(elements.stockMarketContent.innerHTML.includes('电子&lt;行业&gt;'));
 assert(elements.stockMarketContent.innerHTML.includes('-1.20%'));
-renderStockMarket({available:true,source:'东财',fetched_at:'2026-10-23T10:05:00+08:00',refresh_error:'部分失败',indices:[{name:'上证指数',market:'A股',quote_date:'2026-10-23',quote_time:'2026-10-23T10:00:00+08:00',price:'3690',change_pct:'0.5'}],indices_status:{CN:{collection_phase:'morning'}},industries:{quote_date:'2026-10-23',leaders:[],laggards:[]}});
+renderStockMarket({available:true,source:'东财',fetched_at:'2026-10-23T10:05:00+08:00',refresh_error:'部分失败',indices:[{name:'上证指数',market:'A股',quote_date:'2026-10-23',quote_time:'2026-10-23T10:00:00+08:00',price:'3690',change_pct:'0.5',source_delayed:true}],indices_status:{CN:{collection_phase:'morning'}},industries:{quote_date:'2026-10-23',stale:true,items:[{name:'机械',change_pct:'1',source_delayed:true}],leaders:[],laggards:[]}});
 assert(elements.stockMarketMeta.textContent.includes('更新延迟'));
 assert(elements.stockMarketContent.innerHTML.includes('交易中'));
+assert(elements.stockMarketContent.innerHTML.includes('更新延迟'));
 '''
     result = subprocess.run([node, '-e', script], capture_output=True, text=True, encoding='utf-8')
     assert result.returncode == 0, result.stderr

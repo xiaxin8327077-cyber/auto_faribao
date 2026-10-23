@@ -1299,9 +1299,7 @@
         const pendingHtml = estimate?.pending_purchase ? '<span class="estimate-pending">买入待确认</span>' : '';
         const marketTime = estimate?.market_as_of ? String(estimate.market_as_of).slice(0, 16).replace('T', ' ') : '';
         if (marketTime && (!latestEstimateTime || marketTime > latestEstimateTime)) latestEstimateTime = marketTime;
-        const quality = estimate?.confidence_label || '';
-        const timeHtml = quality ? `<div class="estimate-reason">${esc(quality)}</div>` : '';
-        return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}${pendingHtml}</div>${reasonHtml}${timeHtml}</div><div class="estimate-return ${toneClass}">${esc(value)}${heldFundEstimateAmount(estimate)}</div></article>`;
+        return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}${pendingHtml}</div>${reasonHtml}</div><div class="estimate-return ${toneClass}">${esc(value)}${heldFundEstimateAmount(estimate)}</div></article>`;
       }).join('') : '<div class="empty">没有持有的公募基金</div>';
       const estimateMeta = $('estimateMeta');
       if (estimateMeta) estimateMeta.textContent = latestEstimateTime ? `预估涨跌幅 · 行情 ${latestEstimateTime}` : '预估涨跌幅';
@@ -1332,7 +1330,10 @@
       }).join('');
       const sectors = data.industries || {};
       const sectorColumn = (title, rows) => `<div><p class="stock-group-title">${title}</p>${(rows || []).map(item => `<div class="stock-sector-row"><span>${esc(item.name)}</span><span class="${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</span></div>`).join('') || '<div class="stock-index-time">暂无符合条件板块</div>'}</div>`;
-      box.innerHTML = `${groups}<p class="stock-group-title">A股一级行业 <span class="stock-index-time">${esc(sectors.quote_date || '')}${sectors.stale ? ' · 更新延迟' : ''}</span></p><div class="stock-sector-grid">${sectorColumn('领涨', sectors.leaders)}${sectorColumn('领跌', sectors.laggards)}</div><p class="barometer-note">${esc(data.source || '公开行情')} · 按各市场交易时段采集，午间及收盘后保留最近快照。${data.refresh_error ? '来源暂不可用，显示上次成功行情。' : ''}</p>`;
+      const cnPhase = ((data.indices_status || {}).CN || {}).collection_phase;
+      const cnActive = cnPhase === 'morning' || cnPhase === 'afternoon';
+      const sectorDelayed = Boolean(sectors.refresh_error) || (sectors.items || []).some(i => i && i.source_delayed);
+      box.innerHTML = `${groups}<p class="stock-group-title">A股一级行业 <span class="stock-index-time">${esc(sectors.quote_date || '')}${cnActive && sectorDelayed ? ' · 更新延迟' : ''}</span></p><div class="stock-sector-grid">${sectorColumn('领涨', sectors.leaders)}${sectorColumn('领跌', sectors.laggards)}</div><p class="barometer-note">${esc(data.source || '公开行情')} · 按各市场交易时段采集，午间及收盘后保留最近快照。${data.refresh_error ? '来源暂不可用，显示上次成功行情。' : ''}</p>`;
     }
     async function loadMarketOverview(force = false) {
       if (marketLoading || document.hidden || state.activeTab !== 'market') return;
