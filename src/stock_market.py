@@ -20,12 +20,14 @@ from zoneinfo import ZoneInfo
 import requests
 
 from src.portfolio_confirmation import MissingTradingCalendarError, is_trading_day
+from src.stock_market_trends import attach_intraday_trend, tencent_trend_payload, yahoo_trend_payload
 
 
-_SOURCE = "东方财富公开行情"
+_SOURCE = "公开市场行情"
 _SOURCE_URL = "https://quote.eastmoney.com/center/"
 _INDICES_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
 _INDUSTRIES_URL = "https://push2.eastmoney.com/api/qt/clist/get"
+_TRENDS_URL = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
 _FIELDS = "f1,f2,f3,f4,f12,f13,f14,f124"
 _HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
 _TTL_SECONDS = 30
@@ -53,17 +55,21 @@ _INDICES = (
 )
 _TENCENT_URL = "https://qt.gtimg.cn/q="
 _TENCENT_CODES = {
-    "s_sh000001": (1, "000001"), "s_sz399001": (0, "399001"), "s_sz399006": (0, "399006"),
-    "s_sh000688": (1, "000688"), "s_sz899050": (0, "899050"), "s_hkHSI": (100, "HSI"),
-    "s_hkHSTECH": (124, "HSTECH"), "s_usDJI": (100, "DJIA"), "s_usNDX": (100, "NDX"),
-    "s_usINX": (100, "SPX"),
+    "sh000001": (1, "000001"), "sz399001": (0, "399001"), "sz399006": (0, "399006"),
+    "sh000688": (1, "000688"), "bj899050": (0, "899050"), "hkHSI": (100, "HSI"),
+    "hkHSTECH": (124, "HSTECH"), "usDJI": (100, "DJIA"), "usIXIC": (100, "NDX"),
+    "usINX": (100, "SPX"),
 }
 
 
-def _tencent_indices(client):
+def _tencent_indices(client, deadline=None):
     """备用源：腾讯行情。转成东财同结构行供解析管道复用，东财失败时兜底指数。"""
+    remaining = deadline - time.monotonic() if deadline else 8.0
+    if remaining <= 0:
+        raise requests.Timeout('stock-market refresh deadline exceeded')
     response = client.get(_TENCENT_URL + ",".join(_TENCENT_CODES), params={},
-                          headers={"User-Agent": "Mozilla/5.0"}, timeout=(3.0, 5.0))
+                          headers={"User-Agent": "Mozilla/5.0"},
+                          timeout=(min(3.0, remaining / 2), min(5.0, remaining / 2)))
     response.raise_for_status()
     rows = []
     for line in getattr(response, "text", "").splitlines():
@@ -74,12 +80,22 @@ def _tencent_indices(client):
         if key not in _TENCENT_CODES:
             continue
         parts = rest.rstrip('";').split("~")
-        if len(parts) < 6:
+        if len(parts) < 33:
             continue
         f13, f12 = _TENCENT_CODES[key]
+        market = 'US' if key.startswith('us') else 'HK' if key.startswith('hk') else 'CN'
+        stamp = None
+        for pattern in ('%Y%m%d%H%M%S', '%Y/%m/%d %H:%M:%S', '%Y-%m-%d %H:%M:%S'):
+            try:
+                stamp = datetime.strptime(parts[30], pattern).replace(tzinfo=ZoneInfo(_MARKETS[market]['timezone']))
+                break
+            except ValueError:
+                continue
+        if stamp is None:
+            continue
         rows.append({"f12": f12, "f13": f13, "f14": parts[1],
-                     "f2": parts[3], "f3": parts[5], "f4": parts[4],
-                     "f124": int(time.time())})
+                     "f2": parts[3], "f3": parts[32], "f4": parts[31],
+                     "f124": int(stamp.timestamp())})
     if not rows:
         raise ValueError("tencent fallback returned no quotes")
     return {"rc": 0, "data": {"diff": rows}}
@@ -190,6 +206,9 @@ def stock_market_due(now=None, snapshot=None, *, trading_calendars=None) -> bool
     for market in _MARKETS:
         slot = _market_slot(market, at, trading_calendars)
         if _is_due(snapshot.get("indices_status", {}).get(market), slot, at):
+            return True
+        if any(item.get('market_id') == market and item.get('available') and 'trend' not in item
+               for item in snapshot.get('indices', [])):
             return True
     return _is_due(snapshot.get("industries"), _market_slot("CN", at, trading_calendars), at)
 
@@ -371,9 +390,9 @@ def read_stock_market(conn, now=None) -> dict | None:
     return _snapshot(_read_records(conn), _now(now))
 
 
-def _request(client, url, params, deadline):
+def _request(client, url, params, deadline, *, trend=False):
     last_error = None
-    for _ in range(2):
+    for _ in range(1 if trend else 2):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise requests.Timeout("stock-market refresh deadline exceeded")
@@ -382,11 +401,34 @@ def _request(client, url, params, deadline):
                                   timeout=(min(3.0, remaining / 2), min(5.0, remaining / 2)))
             response.raise_for_status()
             payload = response.json()
-            _rows(payload)
+            if trend:
+                if not isinstance(payload, dict) or not isinstance(payload.get('data'), dict) or not payload['data'].get('trends'):
+                    raise ValueError('intraday trend response has no points')
+            else:
+                _rows(payload)
             return payload
         except (requests.RequestException, ValueError, TypeError) as exc:
             last_error = exc
     raise last_error
+
+
+def _fallback_trend(client, key, deadline):
+    _, _, market, secid = next(row for row in _INDICES if row[0] == key)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise requests.Timeout('stock-market refresh deadline exceeded')
+    timeout = (min(3.0, remaining / 2), min(5.0, remaining / 2))
+    if market == 'US':
+        symbol = {'djia': '^DJI', 'nasdaq': '^IXIC', 'sp500': '^GSPC'}[key]
+        response = client.get('https://query1.finance.yahoo.com/v8/finance/chart/' + requests.utils.quote(symbol, safe=''),
+                              params={'interval': '1m', 'range': '1d'}, headers={'User-Agent': 'Mozilla/5.0'}, timeout=timeout)
+        response.raise_for_status()
+        return yahoo_trend_payload(response.json(), symbol=symbol, secid=secid)
+    code = next(code for code, (market_id, ticker) in _TENCENT_CODES.items() if f'{market_id}.{ticker}' == secid)
+    response = client.get('https://web.ifzq.gtimg.cn/appstock/app/minute/query', params={'code': code},
+                          headers={'User-Agent': 'Mozilla/5.0'}, timeout=timeout)
+    response.raise_for_status()
+    return tencent_trend_payload(response.json(), code=code, secid=secid, market=market)
 
 
 def _fetch(markets, industries_due, session):
@@ -399,6 +441,11 @@ def _fetch(markets, industries_due, session):
         params = {"fltt": 2, "fields": _FIELDS,
                   "secids": ",".join(secid for _, _, market, secid in _INDICES if market in markets)}
         jobs.append(("indices", _INDICES_URL, params))
+        for key, _, market, secid in _INDICES:
+            if market in markets:
+                jobs.append((f'trend:{key}', _TRENDS_URL,
+                             {'secid': secid, 'fields1': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11',
+                              'fields2': 'f51,f53,f54,f55,f56,f57,f58', 'ndays': 1, 'iscr': 0, 'iscca': 0}))
     if industries_due:
         jobs.append(("industries", _INDUSTRIES_URL,
                      {"pn": 1, "pz": 100, "po": 1, "np": 1, "fltt": 2, "invt": 2,
@@ -408,7 +455,7 @@ def _fetch(markets, industries_due, session):
         client = session
         try:
             client = client if client is not None else requests.Session()
-            result = _request(client, url, params, deadline)
+            result = _request(client, url, params, deadline, trend=name.startswith('trend:'))
             if name == "industries":
                 collected = _rows(result)
                 total = int(result["data"].get("total", len(collected)))
@@ -422,7 +469,12 @@ def _fetch(markets, industries_due, session):
         except Exception as exc:  # Each public source can fail independently.
             if name == "indices":
                 try:
-                    outcome = (_tencent_indices(client), None)
+                    outcome = (_tencent_indices(client, deadline), None)
+                except Exception:
+                    outcome = (None, f"{type(exc).__name__}: {str(exc)[:180]}")
+            elif name.startswith('trend:'):
+                try:
+                    outcome = (_fallback_trend(client, name.split(':', 1)[1], deadline), None)
                 except Exception:
                     outcome = (None, f"{type(exc).__name__}: {str(exc)[:180]}")
             else:
@@ -510,7 +562,10 @@ def refresh_stock_market(conn, now=None, *, session=None, force=False, trading_c
     at = _now(now)
     records = _read_records(conn)
     slots = {market: _market_slot(market, at, trading_calendars) for market in _MARKETS}
-    markets = [market for market, slot in slots.items() if _is_due(records.get(market), slot, at, force)]
+    markets = [market for market, slot in slots.items()
+               if _is_due(records.get(market), slot, at, force)
+               or any(item.get('available') and 'trend' not in item
+                      for item in ((records.get(market) or {}).get('payload') or []))]
     industries_due = _is_due(records.get("industries"), slots["CN"], at, force)
     if not markets and not industries_due:
         return _snapshot(records, at, trading_calendars)
@@ -531,6 +586,10 @@ def refresh_stock_market(conn, now=None, *, session=None, force=False, trading_c
             market_error = error
             if candidate is not None and not any(item["available"] for item in candidate):
                 candidate, market_error = None, "no usable index quotes for market"
+            if candidate is not None:
+                previous = {item['key']: item for item in ((records.get(market) or {}).get('payload') or [])}
+                candidate = [attach_intraday_trend(item, outcomes.get(f"trend:{item['key']}", (None, None))[0],
+                                                   previous.get(item['key'])) for item in candidate]
             updates[market] = (candidate, market_error, slots[market]["slot"])
     if industries_due:
         raw, error = outcomes["industries"]

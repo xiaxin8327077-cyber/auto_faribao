@@ -59,13 +59,19 @@ class _Response:
 
 
 class _Session:
-    def __init__(self, indices=None, industries=None):
+    def __init__(self, indices=None, industries=None, trends=None):
         self.indices = _payload(_index_rows()) if indices is None else indices
         self.industries = _payload(_industry_rows()) if industries is None else industries
         self.calls = []
+        self.trends = trends
 
     def get(self, url, *, params, timeout, headers):
         self.calls.append((url, params.copy(), timeout))
+        if '/trends2/' in url:
+            result = self.trends
+            if isinstance(result, Exception):
+                raise result
+            return _Response(result if result is not None else {'rc': 0, 'data': None})
         result = self.indices if "/ulist." in url else self.industries
         if isinstance(result, Exception):
             raise result
@@ -164,6 +170,42 @@ def test_active_market_collects_at_thirty_seconds(conn):
     session = _Session()
     module.refresh_stock_market(conn, now=_now("2026-10-23T10:00:30+08:00"), session=session)
     assert any("/clist/" in url for url, _, _ in session.calls)
+
+
+def test_intraday_curve_refreshes_with_quotes_and_stops_after_final_close(conn):
+    module = _module()
+    trend = {'rc': 0, 'data': {'market': 1, 'code': '000001', 'preClose': 3658.03,
+                              'trends': ['2026-10-23 09:30,3623.57', '2026-10-23 09:59,3690.48']}}
+    first = module.refresh_stock_market(conn, now=_now(), session=_Session(trends=trend))
+    assert len(_index(first, 'sse')['trend']['points']) == 2
+    session = _Session(trends=trend)
+    module.refresh_stock_market(conn, now=_now('2026-10-23T10:00:30+08:00'), session=session)
+    assert any('/trends2/' in url and params['secid'] == '1.000001' for url, params, _ in session.calls)
+    module.refresh_stock_market(conn, now=_now('2026-10-23T16:01:00+08:00'), session=_Session(trends=trend))
+    closed = _Session()
+    module.refresh_stock_market(conn, now=_now('2026-10-23T17:00:00+08:00'), session=closed)
+    assert not any('/trends2/' in url for url, _, _ in closed.calls)
+    assert _index(module.read_stock_market(conn), 'sse')['trend']['points']
+
+
+def test_existing_closed_cache_bootstraps_missing_curves_once(conn):
+    import json
+
+    module = _module()
+    at = _now('2026-10-23T16:01:00+08:00')
+    module.refresh_stock_market(conn, now=at, session=_Session())
+    payload = json.loads(conn.execute("SELECT payload FROM stock_market_cache WHERE component='CN'").fetchone()[0])
+    for quote in payload:
+        quote.pop('trend', None)
+    conn.execute("UPDATE stock_market_cache SET payload=? WHERE component='CN'", (json.dumps(payload),))
+    conn.commit()
+    assert module.stock_market_due(at, module.read_stock_market(conn, now=at))
+    session = _Session()
+    module.refresh_stock_market(conn, now=at, session=session)
+    assert any('/trends2/' in url for url, _, _ in session.calls)
+    session.calls.clear()
+    module.refresh_stock_market(conn, now=at, session=session)
+    assert session.calls == []
 
 
 def test_refresh_failure_retains_snapshot_and_original_source_and_fetch_times(conn):
@@ -274,8 +316,9 @@ def test_lunch_and_close_finalization_are_each_requested_only_once_even_when_for
     assert session.calls == []
     # Friday's US close occurs on Saturday morning in Beijing, and gets one check.
     module.refresh_stock_market(conn, now=_now("2026-10-24T10:00:00+08:00"), session=session)
-    assert len(session.calls) == 1
-    assert "100.NDX" in session.calls[0][1]["secids"]
+    quote_calls = [call for call in session.calls if '/ulist.' in call[0]]
+    assert len(quote_calls) == 1
+    assert "100.NDX" in quote_calls[0][1]["secids"]
     session.calls.clear()
     module.refresh_stock_market(conn, now=_now("2026-10-24T11:00:00+08:00"), session=session, force=True)
     assert session.calls == []
@@ -389,10 +432,18 @@ def test_source_timestamp_missing_is_not_filled_with_fetch_date(conn):
 def test_eastmoney_index_failure_falls_back_to_tencent(conn):
     module = _module()
 
+    lines = []
+    for code, label, price, change, pct, stamp in (
+        ('sh000001', '上证指数', '3690.48', '32.45', '0.89', '20261023161500'),
+        ('hkHSI', '恒生指数', '23093.37', '158.69', '0.69', '2026/10/23 18:31:07'),
+    ):
+        fields = [''] * 33
+        fields[1], fields[3], fields[30], fields[31], fields[32] = label, price, stamp, change, pct
+        lines.append('v_' + code + '="' + '~'.join(fields) + '";\n')
+
     class Text:
         status_code = 200
-        text = ('v_s_sh000001="1~上证指数~000001~3690.48~32.45~0.89~1~~2~~";\n'
-                'v_s_hkHSI="100~恒生指数~HSI~23093.37~158.69~0.69~1~~2~~";\n')
+        text = ''.join(lines)
 
         def raise_for_status(self):
             pass

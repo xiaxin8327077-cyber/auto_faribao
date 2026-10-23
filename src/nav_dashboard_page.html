@@ -407,18 +407,51 @@
     .estimate-amount { display: block; margin-top: 4px; font-size: 11px; font-weight: 650; line-height: 1.4; }
     .estimate-amount.unavailable { color: var(--muted); font-weight: 500; }
     .estimate-pending { margin-left: 6px; color: var(--muted); font-size: 10px; font-weight: 600; }
-    .stock-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-    .stock-index { min-width: 0; padding: 10px 8px; background: var(--bg); border-radius: 9px; }
-    .stock-index-name { font-size: 11px; font-weight: 750; }
-    .stock-index-value { margin-top: 6px; font-size: 15px; font-weight: 850; font-variant-numeric: tabular-nums; }
-    .stock-index-change { margin-top: 3px; font-size: 12px; font-weight: 750; }
+    .stock-grid { display: grid; grid-template-columns: minmax(0, 1fr); }
+    .stock-index { min-width: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+    .stock-index:last-child { border-bottom: 0; }
+    .stock-index-name { min-width: 0; font-size: 11px; font-weight: 750; }
+    .stock-index-value { text-align: center; font-size: 13px; font-weight: 850; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .stock-index-change { text-align: center; font-size: 12px; font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .stock-sparkline { display: block; width: 100%; height: 30px; overflow: visible; }
+    .stock-sparkline-placeholder { display: flex; align-items: center; justify-content: center; height: 30px; color: var(--soft); font-size: 9px; }
     .stock-index-time { margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.5; }
     .stock-group-title { margin: 14px 0 8px; font-size: 12px; font-weight: 750; }
     .stock-group-status { margin-left: 6px; color: var(--muted); font-size: 10px; font-weight: 700; }
     .stock-group-title:first-child { margin-top: 2px; }
+    .stock-market-group + .stock-market-group { margin-top: 16px; }
+    .stock-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; margin-bottom: 5px; border-left: 3px solid var(--blue); border-radius: 6px; background: var(--bg); }
+    .stock-market-title { margin: 0; font-size: 13px; font-weight: 850; white-space: nowrap; }
+    .stock-group-meta { display: flex; align-items: center; justify-content: flex-end; gap: 7px; color: var(--muted); font-size: 9px; white-space: nowrap; }
+    .stock-market-state { padding: 2px 6px; border-radius: 4px; background: var(--panel); color: var(--muted); font-size: 9px; }
+    .stock-market-state.trading { color: var(--blue); font-weight: 750; }
     .stock-sector-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .stock-sector-row { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 11px; }
     .stock-sector-row span:first-child { overflow-wrap: anywhere; }
+    .verification-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 4px; color: var(--muted); font-size: 11px; }
+    .verification-toolbar strong { color: var(--text); font-size: 12px; }
+    .verification-overall-title { margin: 2px 0 5px; font-size: 13px; font-weight: 800; }
+    .verification-period { margin: 0 0 12px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .verification-date { min-height: 36px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); font: inherit; font-size: 12px; }
+    .verification-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 4px; }
+    .verification-stat { min-width: 0; padding: 11px 8px; border-radius: 8px; background: var(--bg); text-align: center; }
+    .verification-stat span { display: block; color: var(--muted); font-size: 10px; }
+    .verification-stat strong { display: block; margin-top: 5px; font-size: 14px; font-variant-numeric: tabular-nums; }
+    .verification-fund { padding: 15px 0; border-bottom: 1px solid var(--line-soft); }
+    .verification-fund:last-child { border-bottom: 0; }
+    .verification-fund-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .verification-name { min-width: 0; font-size: 13px; font-weight: 800; line-height: 1.5; }
+    .verification-code { margin-top: 2px; color: var(--muted); font-size: 11px; font-weight: 500; }
+    .verification-direction { flex: 0 0 auto; font-size: 20px; line-height: 1.5; }
+    .verification-direction.unavailable { margin-top: 2px; padding: 3px 7px; border-radius: 5px; background: var(--bg); color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .verification-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+    .verification-value span { display: block; color: var(--muted); font-size: 10px; }
+    .verification-value strong { display: block; margin-top: 4px; font-size: 15px; font-variant-numeric: tabular-nums; }
+    .verification-money { display: block; margin-top: 4px; font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .verification-value:not(:first-child) { text-align: right; }
+    .verification-analysis { margin-top: 12px; padding: 12px; border-radius: 8px; background: var(--bg); font-size: 12px; line-height: 1.75; color: var(--muted); white-space: pre-line; }
+    .verification-analysis strong { display: block; margin-bottom: 4px; color: var(--text); font-size: 11px; }
+    .verification-note { margin: 12px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
     #marketPanel > .card.section ~ .card.section { margin-top: 14px; }
     .panel-heading h2 { font-size: 16px; font-weight: 700; }
     .metric-sub { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 14px; }
@@ -639,6 +672,9 @@
       .weather-icon { right: 10px; font-size: 66px; }
       .product { grid-template-columns: 28px minmax(0, 1fr) 65px 76px; gap: 5px; }
       .section { padding-left: 10px; padding-right: 10px; }
+      .stock-index { gap: 8px; }
+      .stock-index-value { font-size: 12px; }
+      .stock-index-change { font-size: 11px; }
     }
 
     /* 触控按压反馈 */
@@ -1306,11 +1342,43 @@
         return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}${pendingHtml}</div>${reasonHtml}</div><div class="estimate-return ${toneClass}">${esc(value)}${heldFundEstimateAmount(estimate)}</div></article>`;
       }).join('') : '<div class="empty">没有持有的公募基金</div>';
       const estimateMeta = $('estimateMeta');
-      if (estimateMeta) estimateMeta.textContent = latestEstimateTime ? `预估涨跌幅 · 行情 ${latestEstimateTime}` : '预估涨跌幅';
+      if (estimateMeta) estimateMeta.textContent = latestEstimateTime ? latestEstimateTime.slice(-5) : '--';
     }
     function stockPercent(value) {
       if (value == null || value === '' || !Number.isFinite(Number(value))) return '--';
       const n = Number(value); return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
+    }
+    function stockSparkline(item) {
+      const trend = item.trend;
+      const points = trend && trend.quote_date === item.quote_date ? (trend.points || []).filter(point =>
+        String(point.time || '').slice(0, 10) === item.quote_date && Number.isFinite(Number(point.price)) && Number(point.price) > 0
+      ) : [];
+      if (points.length < 2) return `<div class="stock-sparkline-placeholder">${points.length ? '走势积累中' : '走势暂缺'}</div>`;
+      const prices = points.map(point => Number(point.price));
+      const base = Number(trend.pre_close);
+      const hasBase = trend.pre_close != null && Number.isFinite(base) && base > 0;
+      const values = hasBase ? [...prices, base] : prices;
+      const low = Math.min(...values), high = Math.max(...values);
+      const span = high - low;
+      const y = value => span ? 34 - (value - low) / span * 32 : 18;
+      const minutes = points.map(point => {
+        const clock = String(point.time).slice(11, 16).split(':').map(Number);
+        let minute = Math.min(clock[0] * 60 + clock[1], item.market_id === 'CN' ? 900 : 960);
+        if (item.market_id === 'CN' && minute >= 780) minute -= 90;
+        if (item.market_id === 'HK' && minute >= 780) minute -= 60;
+        return minute;
+      });
+      const duration = minutes[minutes.length - 1] - minutes[0];
+      const coords = prices.map((price, index) => [
+        duration ? 2 + (minutes[index] - minutes[0]) / duration * 116 : 2 + index / (prices.length - 1) * 116,
+        y(price)
+      ]);
+      if (coords.some(point => point.some(value => !Number.isFinite(value)))) return '<div class="stock-sparkline-placeholder">走势暂缺</div>';
+      const path = coords.map((point, index) => `${index ? 'L' : 'M'}${point[0].toFixed(2)},${point[1].toFixed(2)}`).join(' ');
+      const baseline = hasBase ? y(base).toFixed(2) : '34';
+      const area = `${path} L${coords[coords.length - 1][0].toFixed(2)},${baseline} L${coords[0][0].toFixed(2)},${baseline} Z`;
+      const label = esc(`${item.name || ''} ${item.quote_date} 当日走势`);
+      return `<svg class="stock-sparkline ${tone(item.change_pct)}" viewBox="0 0 120 36" role="img" aria-label="${label}" preserveAspectRatio="none"><title>${label}</title><path d="${area}" fill="currentColor" opacity="0.10"/>${hasBase ? `<line x1="2" x2="118" y1="${baseline}" y2="${baseline}" stroke="var(--line)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ''}<path d="${path}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>`;
     }
     function renderStockMarket(data) {
       const box = $('stockMarketContent');
@@ -1328,36 +1396,82 @@
         const members = indices.filter(item => item.market === market);
         const cards = members.map(item => {
           const price = item.price == null || !Number.isFinite(Number(item.price)) ? '--' : Number(item.price).toFixed(2);
-          return `<div class="stock-index"><div class="stock-index-name">${esc(item.name)}</div><div class="stock-index-value ${tone(item.change_pct)}">${esc(price)}</div><div class="stock-index-change ${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</div></div>`;
+          return `<div class="stock-index"><div class="stock-index-name">${esc(item.name)}</div><div class="stock-index-value ${tone(item.change_pct)}">${esc(price)}</div><div class="stock-index-change ${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</div>${stockSparkline(item)}</div>`;
         }).join('');
         const status = (data.indices_status || {})[marketKeys[market]] || {};
         const dates = members.map(i => i.quote_date).filter(Boolean).sort();
         const dateText = dates.length ? dates[dates.length - 1].replace(/-/g, '.') : '';
-        return cards ? `<p class="stock-group-title">${esc(market)} <span class="stock-group-status">${esc(dateText)} ${esc(phaseLabel(status.collection_phase))}</span></p><div class="stock-grid">${cards}</div>` : '';
+        const trading = status.collection_phase === 'morning' || status.collection_phase === 'afternoon';
+        return cards ? `<section class="stock-market-group"><div class="stock-group-heading"><h3 class="stock-market-title">${esc(market)}</h3><div class="stock-group-meta"><span>${esc(dateText)}</span><span class="stock-market-state${trading ? ' trading' : ''}">${esc(phaseLabel(status.collection_phase))}</span></div></div><div class="stock-grid">${cards}</div></section>` : '';
       }).join('');
       const sectors = data.industries || {};
       const sectorColumn = (title, rows) => `<div><p class="stock-group-title">${title}</p>${(rows || []).map(item => `<div class="stock-sector-row"><span>${esc(item.name)}</span><span class="${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</span></div>`).join('') || '<div class="stock-index-time">暂无符合条件板块</div>'}</div>`;
       const cnPhase = ((data.indices_status || {}).CN || {}).collection_phase;
       const cnActive = cnPhase === 'morning' || cnPhase === 'afternoon';
       const sectorDelayed = Boolean(sectors.refresh_error) || (sectors.items || []).some(i => i && i.source_delayed);
-      box.innerHTML = `${groups}<p class="stock-group-title">A股一级行业 <span class="stock-index-time">${esc(sectors.quote_date || '')}${cnActive && sectorDelayed ? ' · 更新延迟' : ''}</span></p><div class="stock-sector-grid">${sectorColumn('领涨', sectors.leaders)}${sectorColumn('领跌', sectors.laggards)}</div><p class="barometer-note">${esc(data.source || '公开行情')} · 按各市场交易时段采集，午间及收盘后保留最近快照。${data.refresh_error ? '来源暂不可用，显示上次成功行情。' : ''}</p>`;
+      box.innerHTML = `${groups}<section class="stock-market-group"><div class="stock-group-heading"><h3 class="stock-market-title">A股一级行业</h3><div class="stock-group-meta">${esc(sectors.quote_date || '')}${cnActive && sectorDelayed ? ' · 更新延迟' : ''}</div></div><div class="stock-sector-grid">${sectorColumn('领涨', sectors.leaders)}${sectorColumn('领跌', sectors.laggards)}</div></section><p class="barometer-note">${esc(data.source || '公开行情')} · 按各市场交易时段采集，午间及收盘后保留最近快照。${data.refresh_error ? '来源暂不可用，显示上次成功行情。' : ''}</p>`;
+    }
+    function verificationPercent(value, signed = false) {
+      if (value == null || value === '' || !Number.isFinite(Number(value))) return '—';
+      const fixed = Number(value).toFixed(3);
+      const number = Number(fixed);
+      if (number === 0) return '0.000%';
+      return `${signed && number > 0 ? '+' : ''}${fixed}%`;
+    }
+    function verificationMoney(value, signed = true) {
+      if (value == null || value === '' || !Number.isFinite(Number(value))) return '—';
+      const amount = signed ? Number(value) : Math.abs(Number(value));
+      const fixed = amount.toFixed(2);
+      if (Number(fixed) === 0) return '0.00元';
+      return `${signed && amount > 0 ? '+' : ''}${fixed}元`;
     }
     function renderVerification(data) {
       const box = $('verificationContent');
       if (!box) return;
-      const stats = (data && data.stats) || {};
       const items = (data && data.items) || [];
-      $('verificationMeta').textContent = stats.pairs ? `样本 ${stats.pairs}` : '--';
-      if (!items.length) { box.innerHTML = '<div class="empty">暂无验证样本，净值确认后自动累积</div>'; return; }
-      const rows = items.slice().reverse().slice(0, 8).map(item => {
-        const predicted = item.predicted_pct == null ? '未出预估' : `${item.predicted_pct}%`;
-        const mark = item.direction_ok == null ? '' : item.direction_ok ? ' ✓' : ' ✗';
-        return `<div class="stock-sector-row"><span>${esc(item.trade_date)} ${esc(item.code)}</span><span>${esc(predicted)} → ${esc(item.realized_pct)}%${mark}</span></div>`;
+      if (!items.length) {
+        $('verificationMeta').textContent = '--';
+        box.innerHTML = '<div class="empty">正式净值公布后，自动对比当日最终预估</div>';
+        renderVerification.signature = null;
+        return;
+      }
+      const dates = [...new Set(items.map(item => item.trade_date))].sort().reverse();
+      const day = dates.includes(renderVerification.selectedDate) ? renderVerification.selectedDate : dates[0];
+      renderVerification.selectedDate = day;
+      const signature = JSON.stringify([day, items, data.stats, data.overall, data.ai_analysis]);
+      if (signature === renderVerification.signature) return;
+      renderVerification.signature = signature;
+      const daily = items.filter(item => item.trade_date === day);
+      const valid = items.filter(item => item.error_pct != null && Number.isFinite(Number(item.error_pct)));
+      const stats = data.stats || {};
+      const overall = data.overall || {};
+      const hits = stats.direction_hits ?? valid.filter(item => item.direction_ok === true).length;
+      const count = stats.predicted_count ?? valid.length;
+      const accuracy = count ? hits / count * 100 : null;
+      const mae = stats.mae_pct ?? (valid.length ? valid.reduce((sum, item) => sum + Math.abs(Number(item.error_pct)), 0) / valid.length : null);
+      const dayCount = overall.day_count ?? dates.length;
+      const fundCount = overall.fund_count ?? new Set(items.map(item => item.product_id || item.code)).size;
+      $('verificationMeta').textContent = `${dayCount}天 · ${fundCount}只基金`;
+      const rows = daily.map(item => {
+        const smallError = item.error_pct != null && Number.isFinite(Number(item.error_pct)) && Math.abs(Number(item.error_pct)) <= 0.010;
+        const directionLabel = item.direction_ok ? (smallError ? '方向一致，绝对误差≤1bp' : '方向一致，绝对误差>1bp') : '方向不一致';
+        const direction = item.direction_ok == null
+          ? '<span class="verification-direction unavailable">当日无有效预估</span>'
+          : `<span class="verification-direction" role="img" aria-label="${directionLabel}" title="${directionLabel}">${item.direction_ok ? (smallError ? '🙂' : '😐') : '🙁'}</span>`;
+        const absoluteError = item.error_pct == null || item.error_pct === '' ? null : Math.abs(Number(item.error_pct));
+        return `<article class="verification-fund"><div class="verification-fund-head"><div class="verification-name">${esc(item.name || item.code)}<div class="verification-code">${esc(item.code)}</div></div>${direction}</div><div class="verification-values"><div class="verification-value"><span>最终预估</span><strong class="${tone(item.predicted_pct)}">${verificationPercent(item.predicted_pct, true)}</strong><small class="verification-money ${tone(item.predicted_profit)}">${verificationMoney(item.predicted_profit)}</small></div><div class="verification-value"><span>实际涨跌</span><strong class="${tone(item.realized_pct)}">${verificationPercent(item.realized_pct, true)}</strong><small class="verification-money ${tone(item.realized_profit)}">${verificationMoney(item.realized_profit)}</small></div><div class="verification-value"><span>偏差</span><strong>${verificationPercent(absoluteError)}</strong><small class="verification-money">${verificationMoney(item.profit_error, false)}</small></div></div></article>`;
       }).join('');
-      const accuracy = stats.direction_accuracy == null ? '--' : `${(Number(stats.direction_accuracy) * 100).toFixed(1)}%`;
-      const summary = `方向准确率 ${accuracy} · 平均偏差 ${stats.bias_pct == null ? '--' : esc(stats.bias_pct) + '%'} · 平均误差 ${stats.mae_pct == null ? '--' : esc(stats.mae_pct) + '%'} · 缺预估 ${stats.missing_predictions || 0} 次`;
-      const ai = data && data.ai_analysis ? `<p class="barometer-note">${esc(data.ai_analysis)}</p>` : '';
-      box.innerHTML = `<p class="estimate-note">${summary}</p>${rows}${ai}`;
+      const analysis = data.ai_analysis || overall.summary;
+      const analysisHtml = analysis ? `<div class="verification-analysis">${esc(analysis)}</div>` : '';
+      const start = overall.start_date || dates[dates.length - 1];
+      const end = overall.end_date || dates[0];
+      const options = dates.map(date => `<option value="${esc(date)}"${date === day ? ' selected' : ''}>${esc(date)}</option>`).join('');
+      box.innerHTML = `<div class="verification-overall"><h3 class="verification-overall-title">累计分析</h3><p class="verification-period">${esc(start)} 至 ${esc(end)} · ${count}条最终预估</p><div class="verification-stats"><div class="verification-stat"><span>方向一致率</span><strong>${verificationPercent(accuracy)}</strong></div><div class="verification-stat"><span>平均误差</span><strong>${verificationPercent(mae)}</strong></div></div>${analysisHtml}</div><div class="verification-toolbar"><strong>每日明细</strong><select class="verification-date" aria-label="验证日期">${options}</select></div><div>${rows}</div><p class="verification-note">偏差取预估与实际之差的绝对值。</p>`;
+      const dateSelect = box.querySelector('.verification-date');
+      if (dateSelect) dateSelect.addEventListener('change', event => {
+        renderVerification.selectedDate = event.target.value;
+        renderVerification(data);
+      });
     }
     async function loadVerification() {
       try {
@@ -1372,6 +1486,8 @@
       try {
         const headers = marketEtag && !force ? {'If-None-Match': marketEtag} : {};
         const response = await api('/api/portfolio/market-overview', {headers});
+        // 正式净值和验证记录独立更新，行情缓存命中时也需要刷新验证区。
+        if (response.ok || response.status === 304) loadVerification();
         if (response.status === 304) return;
         if (response.status === 403) { setAccessState(false); return; }
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1384,7 +1500,6 @@
         renderStockMarket(payload.stock_market);
         if (payload.bond_barometer) renderBarometer(payload.bond_barometer);
         renderHeldFundEstimates();
-        loadVerification();
       } catch (_error) {
         $('stockMarketMeta').textContent = '连接延迟，保留上次行情';
       } finally {

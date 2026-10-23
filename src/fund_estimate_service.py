@@ -268,57 +268,130 @@ class FundEstimateService:
         from src.fund_estimate_types import decimal_text
 
         rows = self.store.read_verifications()
-        items, errors = [], []
-        hits = predicted_count = missing = 0
+        snapshot_items = []
+        names = {}
         for row in rows:
             realized = row.get('realized_return_pct')
             if realized in (None, ''):
                 continue
             predicted = row.get('predicted')
-            entry = {'code': row['code'], 'trade_date': row['trade_date'],
+            product_id = row['product_id']
+            if product_id not in names:
+                product = self.repository.get_product(product_id) if self.repository is not None else None
+                names[product_id] = product.name if product is not None else row['code']
+            entry = {'product_id': product_id, 'name': names[product_id],
+                     'code': row['code'], 'trade_date': row['trade_date'],
                      'snapshot_generated_at': row['snapshot_generated_at'],
                      'predicted_pct': predicted, 'realized_pct': realized,
                      'error_pct': None, 'direction_ok': None}
-            if predicted in (None, ''):
-                missing += 1
-            else:
-                predicted_count += 1
+            if predicted not in (None, ''):
                 error = Decimal(str(predicted)) - Decimal(str(realized))
-                errors.append(error)
                 entry['error_pct'] = decimal_text(error)
                 if (Decimal(str(predicted)) > 0) - (Decimal(str(predicted)) < 0) == \
                         (Decimal(str(realized)) > 0) - (Decimal(str(realized)) < 0):
-                    hits += 1
                     entry['direction_ok'] = True
                 else:
                     entry['direction_ok'] = False
-            items.append(entry)
-        stats = {
-            'pairs': len(items),
-            'predicted_count': predicted_count,
-            'missing_predictions': missing,
-            'direction_hits': hits,
-            'direction_accuracy': decimal_text(Decimal(hits) / Decimal(predicted_count)) if predicted_count else None,
-            'mae_pct': decimal_text(sum((abs(e) for e in errors), Decimal(0)) / Decimal(len(errors))) if errors else None,
-            'bias_pct': decimal_text(sum(errors, Decimal(0)) / Decimal(len(errors))) if errors else None,
-        }
-        return {'items': items, 'stats': stats, 'ai_analysis': self._verification_analysis(items, stats),
+            snapshot_items.append(entry)
+        # 每只基金每天只验证最后一次有效预估；分钟采样频率不应改变统计权重。
+        daily = {}
+        for entry in snapshot_items:
+            key = (entry['product_id'], entry['trade_date'])
+            current = daily.get(key)
+            rank = (entry['predicted_pct'] not in (None, ''), entry['snapshot_generated_at'])
+            current_rank = ((current['predicted_pct'] not in (None, ''), current['snapshot_generated_at'])
+                            if current is not None else None)
+            if current_rank is None or rank > current_rank:
+                daily[key] = entry
+        items = sorted(daily.values(), key=lambda item: (item['trade_date'], item['code'], item['product_id']))
+        stats = _verification_statistics(items)
+        overall = _verification_overall(items, stats)
+        # AI 仅接收涨跌幅和误差；持仓份额及收益金额不进入模型请求或缓存键。
+        analysis = self._verification_analysis(items, stats, overall)
+        items = self._verification_amounts(items, rows)
+        return {'items': items, 'stats': stats, 'snapshot_items': snapshot_items,
+                'overall': overall,
+                'ai_analysis': analysis,
                 'generated_at': iso_now(datetime.now(TZ_CN))}
 
-    def _verification_analysis(self, items: list, stats: dict):
+    def _verification_amounts(self, items, snapshots):
+        """按对应披露日的收益份额还原金额，沿用正式收益账本口径。"""
+        from src.portfolio_profit import _nav_earning_shares, calculate_latest_profit
+
+        snapshot_by_key = {(row['product_id'], row['snapshot_generated_at']): row for row in snapshots}
+        holdings = {}
+        result = []
+        for item in items:
+            entry = dict(item, predicted_profit=None, realized_profit=None, profit_error=None)
+            result.append(entry)
+            if self.repository is None or not all(hasattr(self.repository, name) for name in
+                                                  ('get_product', 'list_transactions', 'list_quotes')):
+                continue
+            product_id = item['product_id']
+            if product_id not in holdings:
+                product = self.repository.get_product(product_id)
+                if product is None or product.currency != 'CNY':
+                    holdings[product_id] = None
+                else:
+                    holdings[product_id] = (product, self.repository.list_transactions(product_id=product_id),
+                                           self.repository.list_quotes(product_id))
+            if holdings[product_id] is None:
+                continue
+            product, transactions, quotes = holdings[product_id]
+            day = date.fromisoformat(item['trade_date'])
+            current = next((quote for quote in reversed(quotes) if quote.quote_date == day and quote.unit_nav is not None), None)
+            previous = next((quote for quote in reversed(quotes) if quote.quote_date < day and quote.unit_nav is not None), None)
+            if current is None or previous is None:
+                continue
+            profit_date, realized = calculate_latest_profit(self.repository, product, day,
+                bundle_non_trading_days=False, transactions=transactions, quotes=quotes)
+            if profit_date == day and realized is not None:
+                entry['realized_profit'] = format(realized.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), 'f')
+            snapshot = snapshot_by_key.get((product_id, item['snapshot_generated_at']), {})
+            if item['predicted_pct'] in (None, '') or snapshot.get('base_nav') in (None, ''):
+                continue
+            shares = _nav_earning_shares(self.repository, product_id, previous.quote_date, day,
+                product=product, transactions=transactions, current_nav=current.unit_nav)
+            predicted = shares * Decimal(str(snapshot['base_nav'])) * Decimal(str(item['predicted_pct'])) / 100
+            entry['predicted_profit'] = format(predicted.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), 'f')
+            if entry['realized_profit'] is not None:
+                entry['profit_error'] = format(abs(Decimal(entry['predicted_profit']) - Decimal(entry['realized_profit'])), '.2f')
+        return result
+
+    def _verification_analysis(self, items: list, stats: dict, overall: dict):
         if not items:
             return None
-        digest = hashlib.sha256(json.dumps([items, stats], ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+        digest = hashlib.sha256(json.dumps(['overall-v3', items, stats], ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
         cached = self.store.get_watermark(f'verification-analysis:{digest}')
         if cached:
             return cached
         try:
             if self.ai is None or not self.ai.is_enabled():
                 return None
-            payload = json.dumps({'stats': stats, 'items': items[-20:]}, ensure_ascii=False)
+            payload = json.dumps({
+                'stats': stats,
+                'period': {key: overall[key] for key in ('start_date', 'end_date', 'day_count', 'fund_count')},
+                'by_day': overall['by_day'],
+                'by_fund': overall['by_fund'],
+                'diagnostics': overall['diagnostics'],
+                'items': items[-20:],
+            }, ensure_ascii=False)
             text = self.ai.complete([
                 {'role': 'system', 'content': '你是基金预估的数据点评助手。只依据给定数据写简短中文分析，绝不改动或虚构任何数字，不做未来收益承诺。'},
-                {'role': 'user', 'content': '以下是基金盘中预估涨跌幅与真实涨跌的对比数据（单位：%）。请写3-5句分析：整体准确率评价、偏差方向与幅度、值得留意的样本。数据：' + payload},
+                {'role': 'user', 'content': (
+                    '请写有解释力的累计分析，约500-800个中文字，用4个自然段，不加标题、不用Markdown，不要只复述数字。'
+                    '第1段解释整体表现：把方向一致率与始终预测上涨/下跌的简单对照比较，说明是否表现出额外判断力；'
+                    '多数方向基线只是事后描述性对照，不是事前可交易策略。'
+                    '第2段解释误差：结合平均实际波动、误差与实际波动的倍数、误差同号情况，判断偏差更像集中高估/低估还是相互抵消；'
+                    '指出哪些基金和日期拖累结果，不能只罗列指标。'
+                    '第3段讨论原因：只把数据直接支持的现象作为结论；持仓差异、因子覆盖、久期或收益累积等未提供证据的原因只能提出少量明确标为假设的解释，并指出如何检验，不能凭空断言。'
+                    '第4段给出后续观察重点和验证标准，说明什么结果会支持或推翻前面的判断；不要承诺准确率、不要给买卖建议。'
+                    '数据仅含每天每只基金最终有效预估与正式涨跌幅对比，单位为%，1个百分点=100bp。'
+                    'stats、by_day、by_fund、diagnostics覆盖全部历史，items仅为最近明细。'
+                    'accuracy及above_baseline字段均为0到1的比例，引用准确率时须乘100并加%，差值须乘100并加“个百分点”，例如0.75必须写75.000%。'
+                    '所有_pct字段已经是百分数数值，引用时直接加%，不可再乘100，例如0.0205应写0.021%或2.050bp；每个误差或波动数值都必须带%或bp单位，不能只写裸数字。'
+                    '后续方向判断应与同一观察期重新计算的基线比较，不把当天的准确率或基线固定为未来验证门槛。'
+                    '所有百分数与bp数统一保留3位小数。只有一天数据时，重点分析当天共性与个体差异，不虚构跨日趋势，也不反复用样本不足填充篇幅。数据：' + payload)},
             ])
         except Exception:
             return None
@@ -409,17 +482,20 @@ class FundEstimateService:
                 _identity_payload(identity),
                 iso_now(now),
             )
-            # realized_return(D) 依赖 nav_{D-1} 与 nav_D：被改日期自身和它的
-            # 后一净值日都要重算真值，否则修订 D-1 会留下陈旧的 D 日验证结果。
-            nav_dates = sorted({item.nav_date for item in navs})
-            affected = set()
-            for item in changed:
-                affected.add(item.nav_date)
-                later = [day for day in nav_dates if day > item.nav_date]
-                if later:
-                    affected.add(min(later))
-            for nav_date in sorted(affected):
-                self._verify(identity, nav_date, now)
+        # 验证独立于训练：净值没变化也要补齐历史漏配和新出现的快照。
+        # realized_return(D) 依赖 nav_{D-1} 与 nav_D，前一净值修订也要重算 D。
+        nav_dates = sorted({item.nav_date for item in navs})
+        affected = set(self.store.pending_verification_dates(identity.product_id))
+        for item in changed:
+            affected.add(item.nav_date)
+            later = [day for day in nav_dates if day > item.nav_date]
+            if later:
+                affected.add(min(later))
+        # available_at 是抓取完成时间；任务启动时的 now 看不到刚保存的新净值。
+        completed_at = self.sources.clock() if self.sources.clock is not None else datetime.now(TZ_CN)
+        verification_now = max(ensure_aware(now, TZ_CN), ensure_aware(completed_at, TZ_CN))
+        for nav_date in sorted(affected):
+            self._verify(identity, nav_date, verification_now)
 
     def _sync_daily_factors(self, today: date, stamp: str) -> list[str]:
         """同源历史按小批次回补；所有基金共享公开曲线和新版本触发。
@@ -629,6 +705,82 @@ def _metadata(raw: str) -> dict:
     except (TypeError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _verification_statistics(items: list[dict]) -> dict:
+    from src.fund_estimate_types import decimal_text
+
+    errors = [Decimal(item['error_pct']) for item in items if item['error_pct'] is not None]
+    count = len(errors)
+    hits = sum(item['direction_ok'] is True for item in items)
+    return {
+        'pairs': len(items),
+        'predicted_count': count,
+        'missing_predictions': len(items) - count,
+        'direction_hits': hits,
+        'direction_accuracy': decimal_text(Decimal(hits) / Decimal(count)) if count else None,
+        'mae_pct': decimal_text(sum((abs(error) for error in errors), Decimal(0)) / Decimal(count)) if count else None,
+        'bias_pct': decimal_text(sum(errors, Decimal(0)) / Decimal(count)) if count else None,
+    }
+
+
+def _verification_overall(items: list[dict], stats: dict) -> dict:
+    by_day, by_fund = {}, {}
+    for item in items:
+        by_day.setdefault(item['trade_date'], []).append(item)
+        by_fund.setdefault(item['product_id'], []).append(item)
+    dates = sorted(by_day)
+    summary = f"已覆盖{len(dates)}个净值日、{len(by_fund)}只基金，累计完成{stats['predicted_count']}条最终预估对比。"
+    if stats['bias_pct'] is not None:
+        bias = Decimal(stats['bias_pct'])
+        summary += '整体预估偏高。' if bias > 0 else '整体预估偏低。' if bias < 0 else '平均偏差为零。'
+    if len(dates) == 1:
+        summary += '目前仅有一天数据，长期表现仍需继续观察。'
+    return {
+        'start_date': dates[0] if dates else None,
+        'end_date': dates[-1] if dates else None,
+        'day_count': len(dates),
+        'fund_count': len(by_fund),
+        'summary': summary if dates else None,
+        'diagnostics': _verification_diagnostics(items, stats),
+        'by_day': [dict(trade_date=day, **_verification_statistics(by_day[day])) for day in dates],
+        'by_fund': [dict(product_id=pid, code=rows[0]['code'], name=rows[0]['name'],
+                         **_verification_statistics(rows)) for pid, rows in sorted(by_fund.items())],
+    }
+
+
+def _verification_diagnostics(items: list[dict], stats: dict) -> dict:
+    from src.fund_estimate_types import decimal_text
+
+    valid = [item for item in items if item['error_pct'] is not None]
+    count = len(valid)
+    if not count:
+        return {}
+    denominator = Decimal(count)
+    errors = [Decimal(item['error_pct']) for item in valid]
+    realized = [Decimal(str(item['realized_pct'])) for item in valid]
+    predicted = [Decimal(str(item['predicted_pct'])) for item in valid]
+    actual_movement = sum((abs(value) for value in realized), Decimal(0)) / denominator
+    up = Decimal(sum(value > 0 for value in realized)) / denominator
+    down = Decimal(sum(value < 0 for value in realized)) / denominator
+    flat = Decimal(sum(value == 0 for value in realized)) / denominator
+    baseline = max(up, down, flat)
+    mae = Decimal(stats['mae_pct'])
+    return {
+        'positive_errors': sum(value > 0 for value in errors),
+        'negative_errors': sum(value < 0 for value in errors),
+        'zero_errors': sum(value == 0 for value in errors),
+        'mean_abs_realized_pct': decimal_text(actual_movement),
+        'mean_abs_predicted_pct': decimal_text(sum((abs(value) for value in predicted), Decimal(0)) / denominator),
+        'mae_bp': decimal_text(mae * Decimal(100)),
+        'bias_bp': decimal_text(Decimal(stats['bias_pct']) * Decimal(100)),
+        'mean_abs_realized_bp': decimal_text(actual_movement * Decimal(100)),
+        'error_to_realized_movement_ratio': decimal_text(mae / actual_movement) if actual_movement else None,
+        'always_up_accuracy': decimal_text(up),
+        'always_down_accuracy': decimal_text(down),
+        'majority_direction_accuracy': decimal_text(baseline),
+        'direction_accuracy_above_baseline': decimal_text(Decimal(stats['direction_accuracy']) - baseline),
+    }
 
 
 def _nav_economic_content(item) -> tuple:
