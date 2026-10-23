@@ -1227,8 +1227,11 @@
     }
     function heldFundEstimateValue(item) {
       if (!item || item.return_pct == null || item.return_pct === '') return '数据准备中';
-      const text = String(item.return_pct);
-      return `${Number(text) > 0 ? '+' : ''}${text}%`;
+      const value = Number(item.return_pct);
+      if (!Number.isFinite(value)) return '数据准备中';
+      const rounded = value.toFixed(3);
+      if (Number(rounded) === 0) return '0.000%';
+      return `${Number(rounded) > 0 ? '+' : ''}${rounded}%`;
     }
     function renderHeldFundEstimates() {
       const box = $('estimateWatchList');
