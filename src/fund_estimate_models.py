@@ -180,9 +180,13 @@ def predict(model: ModelVersion, factors: FactorObservation, base_nav: NavObserv
         features["calendar_days"] = str(factors.calendar_days)
     raw = _predict_number(model, features)
     # 拟合目标已是正式净值的净收益，不再扣管理费。
+    # 南方盘中和中债日终不是已验证的同一口径，仍给出试验数字并标明原因。
     trained_family = str(model.preprocessing.get("source_family") or "")
-    if trained_family and factors.source_family != trained_family and factors.basis_status != "verified_mapping":
-        return _status_snapshot(identity, trade_date, generated_at, "reference", ["basis_unverified"], market_reference, base_nav, profile, model)
+    cross_family = bool(
+        trained_family
+        and factors.source_family != trained_family
+        and factors.basis_status != "verified_mapping"
+    )
     point = pct_text(raw)
     validation = model.validation or {}
     oos = int(validation.get("oos_count") or 0)
@@ -198,8 +202,8 @@ def predict(model: ModelVersion, factors: FactorObservation, base_nav: NavObserv
         band = abs(Decimal(str(_profile_duration(profile))) / Decimal(100))
         lower = pct_text(Decimal(point) - band)
         upper = pct_text(Decimal(point) + band)
-    status = "ready" if _quality_ready(validation, config) else "experimental"
-    reasons = []
+    status = "experimental" if cross_family or not _quality_ready(validation, config) else "ready"
+    reasons = ["basis_unverified"] if cross_family else []
     return EstimateSnapshot(
         product_id=identity.product_id,
         code=identity.code,

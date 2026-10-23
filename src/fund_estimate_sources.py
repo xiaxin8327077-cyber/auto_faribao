@@ -110,7 +110,30 @@ def combine_factor_families(observations: list[FactorObservation]) -> FactorObse
     )
 
 
-def _curve_point(curves, key, tenor):
+def align_southern_basis(factors: FactorObservation, base_nav_date: str | None, is_bond_day) -> FactorObservation:
+    """南方盘中 BP 相对前收。净值就是上一个交易日时，用该日作为基准并给出试验涨跌幅。"""
+    if (
+        factors.basis_date
+        or not base_nav_date
+        or factors.source_family != "southern_intraday"
+        or not factors.as_of
+    ):
+        return factors
+    as_of = date.fromisoformat(str(factors.as_of)[:10])
+    nav_day = date.fromisoformat(str(base_nav_date)[:10])
+    if nav_day >= as_of:
+        return factors
+    cursor = nav_day + timedelta(days=1)
+    while cursor < as_of:
+        if is_bond_day(cursor):
+            return factors
+        cursor += timedelta(days=1)
+    from dataclasses import replace
+    return replace(
+        factors,
+        basis_date=nav_day.isoformat(),
+        calendar_days=(as_of - nav_day).days,
+    )
     series = curves.get(key) if isinstance(curves, dict) else None
     if not isinstance(series, dict):
         return None

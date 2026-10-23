@@ -371,6 +371,9 @@ class FundEstimateService:
         factors = self.sources.read_intraday_factors(now)
         navs = self.store.nav_as_of(identity.code, iso_now(now))
         base = navs[-1] if navs else None
+        if base is not None:
+            from src.fund_estimate_sources import align_southern_basis
+            factors = align_southern_basis(factors, base.nav_date, self.bond_trading_day)
         reference = None
         if self.repository is not None:
             reference = _saved_market_reference(self.repository)

@@ -8,6 +8,7 @@ from src.fund_estimate_sources import (
     CHINABOND_EOD,
     EstimateSources,
     IncompleteNavHistory,
+    align_southern_basis,
     combine_factor_families,
     factors_from_chinabond_levels,
     total_return_pct,
@@ -174,3 +175,19 @@ def test_chinabond_close_to_close_is_one_bp_and_not_southern_mapping():
     incomplete = next(item for item in missing if item.as_of == "2026-10-19")
     assert incomplete.values_bp["credit_aaa_spread_3y_bp"] is None
     assert "credit_aaa_spread_3y_bp" in incomplete.missing_fields
+
+
+def test_southern_uses_previous_nav_day_and_stops_when_nav_skips_a_session():
+    def weekday(day):
+        return day.weekday() < 5
+
+    friday = FactorObservation(
+        "bond_factor_v1", "southern_intraday", "2026-10-23", "2026-10-23T12:00:00+08:00",
+        "2026-10-23T12:00:00+08:00", "2026-10-23T12:31:00+08:00",
+        {"gov_3y_bp": "1"}, 1, "native", [], None, "live",
+    )
+    aligned = align_southern_basis(friday, "2026-10-22", weekday)
+    assert aligned.basis_date == "2026-10-22"
+    assert aligned.calendar_days == 1
+    skipped = align_southern_basis(friday, "2026-10-21", weekday)
+    assert skipped.basis_date is None

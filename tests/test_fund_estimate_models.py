@@ -74,6 +74,25 @@ def test_synthetic_duration_sign_and_scale(tmp_path):
     assert Decimal(snapshot.return_pct) < 0
 
 
+def test_southern_intraday_keeps_experimental_return(tmp_path):
+    store = store_of(tmp_path)
+    store.save_nav(nav("2026-10-21", "1.0000", "2026-10-21T20:00:00+08:00"))
+    store.save_nav(nav("2026-10-22", "0.9997", "2026-10-22T20:00:00+08:00"))
+    store.save_factor(factor("2026-10-22", "2026-10-21", "1", "2026-10-22T20:00:00+08:00"))
+    store.publish_profile(profile("v", "2026-08-28T00:00:00+08:00"))
+    training = build_training_set(IDENTITY, "2026-10-23T00:00:00+08:00", store)
+    model = fit_baseline(training, store.profile_as_of("918273", "A", "2026-10-23T00:00:00+08:00"))
+    live = replace(
+        factor("2026-10-23", "2026-10-22", "1", "2026-10-23T12:31:00+08:00", family="southern_intraday"),
+        calendar_days=1,
+        market_as_of="2026-10-23T12:31:00+08:00",
+    )
+    snapshot = predict(model, live, nav("2026-10-22", "0.9997", "2026-10-22T20:00:00+08:00"), store.current_profile("918273", "A"), NOW)
+    assert snapshot.return_pct == "-0.03"
+    assert snapshot.status == "experimental"
+    assert "basis_unverified" in snapshot.reason_codes
+
+
 def test_preprocessing_fits_training_only(tmp_path):
     store = store_of(tmp_path)
     previous = "2026-01-01"

@@ -1010,6 +1010,7 @@
     };
     let transactionFilter = 'all';
     let barometerLoading = false;
+    let estimateStatusTimer = null;
     let managementSwipeStart = null;
     let productDetailRequestId = 0;
     let fundDividendRequestId = 0;
@@ -1193,6 +1194,8 @@
       });
       if (tab === 'market' && !barometerReady) loadBarometer();
       if (tab === 'settings') loadModelSettings();
+      clearInterval(estimateStatusTimer);
+      estimateStatusTimer = tab === 'settings' ? setInterval(refreshEstimateJobStatus, 5000) : null;
     }
     const ESTIMATE_REASONS = {
       history_backfill_pending: '正在补历史',
@@ -1273,11 +1276,23 @@
         $('estimateJobsEnabled').checked = Boolean(data.jobs_enabled);
         $('aiApiKey').value = '';
         $('aiKeyHint').textContent = data.api_key_configured ? `已保存密钥 ${data.api_key_hint || ''}` : '尚未保存密钥';
-        const job = data.status || {};
-        $('estimateJobStatus').textContent = `后台：排队 ${job.queued || 0}，失败 ${job.failed || 0}${job.last_error ? `，最近错误 ${job.last_error}` : ''}`;
+        renderEstimateJobStatus(data);
       } catch (_error) {
         setModelSettingsStatus('模型设置读取失败', true);
       }
+    }
+    function renderEstimateJobStatus(data) {
+      const job = (data && data.status) || {};
+      const el = $('estimateJobStatus');
+      if (!el) return;
+      el.textContent = `后台：排队 ${job.queued || 0}，运行 ${job.running || 0}，失败 ${job.failed || 0}${job.last_error ? `，最近错误 ${job.last_error}` : ''}`;
+    }
+    async function refreshEstimateJobStatus() {
+      try {
+        const response = await api('/api/portfolio/fund-estimate-model-settings');
+        if (!response.ok) return;
+        renderEstimateJobStatus(await response.json());
+      } catch (_error) {}
     }
     async function saveModelSettings(event) {
       event.preventDefault();
