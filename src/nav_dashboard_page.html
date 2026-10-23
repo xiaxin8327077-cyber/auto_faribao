@@ -402,6 +402,21 @@
     .estimate-return { font-size: 16px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
     .estimate-return.positive { color: var(--positive); }
     .estimate-return.negative { color: var(--negative); }
+    .estimate-amount { display: block; margin-top: 4px; font-size: 11px; font-weight: 650; line-height: 1.4; }
+    .estimate-amount.unavailable { color: var(--muted); font-weight: 500; }
+    .estimate-pending { margin-left: 6px; color: var(--muted); font-size: 10px; font-weight: 600; }
+    .stock-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .stock-index { min-width: 0; padding: 10px 8px; background: var(--bg); border-radius: 9px; }
+    .stock-index-name { font-size: 11px; font-weight: 750; }
+    .stock-index-value { margin-top: 6px; font-size: 15px; font-weight: 850; font-variant-numeric: tabular-nums; }
+    .stock-index-change { margin-top: 3px; font-size: 12px; font-weight: 750; }
+    .stock-index-time { margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.5; }
+    .stock-group-title { margin: 14px 0 8px; font-size: 12px; font-weight: 750; }
+    .stock-group-title:first-child { margin-top: 2px; }
+    .stock-sector-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .stock-sector-row { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 11px; }
+    .stock-sector-row span:first-child { overflow-wrap: anywhere; }
+    #marketPanel > .card.section + .card.section { margin-top: 14px; }
     .panel-heading h2 { font-size: 16px; font-weight: 700; }
     .metric-sub { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 14px; }
 .in-transit-hint { margin: -6px 2px 10px; font-size: 12px; color: var(--muted); min-height: 18px; }
@@ -762,6 +777,10 @@
       </section>
 
       <section id="marketPanel" class="management-panel" role="tabpanel" aria-labelledby="marketTab" hidden>
+        <section class="card section" aria-label="股市行情">
+          <div class="section-head"><h2>股市行情</h2><span class="section-meta" id="stockMarketMeta">最近行情</span></div>
+          <div id="stockMarketContent"><div class="empty">正在读取股市行情...</div></div>
+        </section>
         <div class="write-notice" id="marketWriteNotice" hidden></div>
         <section class="card section" aria-label="债市晴雨表">
           <div class="section-head"><h2>债市晴雨表</h2><span class="section-meta" id="barometerMeta">--</span></div>
@@ -1013,6 +1032,10 @@
     let transactionFilter = 'all';
     let barometerLoading = false;
     let estimateStatusTimer = null;
+    let marketPollTimer = null;
+    let marketLoading = false;
+    let marketEtag = '';
+    let lastMarketPayload = '';
     let managementSwipeStart = null;
     let productDetailRequestId = 0;
     let fundDividendRequestId = 0;
@@ -1194,7 +1217,8 @@
           panel.classList.add('is-entering');
         }
       });
-      if (tab === 'market' && !barometerReady) loadBarometer();
+      clearTimeout(marketPollTimer);
+      if (tab === 'market') loadMarketOverview();
       if (tab === 'settings') loadModelSettings();
       clearInterval(estimateStatusTimer);
       estimateStatusTimer = tab === 'settings' ? setInterval(refreshEstimateJobStatus, 5000) : null;
@@ -1233,13 +1257,20 @@
       if (Number(rounded) === 0) return '0.000%';
       return `${Number(rounded) > 0 ? '+' : ''}${rounded}%`;
     }
+    function heldFundEstimateAmount(item) {
+      if (item?.profit_reason === 'awaiting_confirmed_shares') return '<span class="estimate-amount unavailable">待份额确认</span>';
+      if (!item || item.estimated_profit == null || !Number.isFinite(Number(item.estimated_profit))) return '<span class="estimate-amount unavailable">预估收益 —</span>';
+      const value = Number(item.estimated_profit);
+      return `<span class="estimate-amount">预估收益 ${value > 0 ? '+' : ''}¥${value.toFixed(2)}</span>`;
+    }
     function renderHeldFundEstimates() {
       const box = $('estimateWatchList');
       if (!box) return;
       const estimates = state.data?.fund_estimates || {};
       const pfPositions = portfolioRows('positions', []);
       const pfTransactions = portfolioRows('transactions', []);
-      const funds = (state.data?.products || []).filter(item => {
+      const prepared = Object.values(estimates).filter(item => item && item.product_id && item.holding_status);
+      const funds = prepared.length ? prepared : (state.data?.products || []).filter(item => {
         const type = String(rowValue(item, 'product_type', 'wealth_type', 'type') || '');
         if (type !== 'public_fund') return false;
         const pid = String(rowValue(item, 'product_id', 'id', 'code'));
@@ -1257,12 +1288,65 @@
         const estimate = estimates[pid] || estimates[rowValue(item, 'code')] || null;
         const value = heldFundEstimateValue(estimate);
         const reason = estimate
-          ? estimateReasonText({...estimate, reason_codes: (estimate.reason_codes || []).filter(code => code !== 'basis_unverified')})
+          ? estimateReasonText(estimate)
           : (value === '数据准备中' ? '正在准备净值、曲线和画像' : '');
         const toneClass = estimate && estimate.return_pct != null && estimate.return_pct !== '' ? tone(estimate.return_pct) : 'neutral';
         const reasonHtml = reason ? `<div class="estimate-reason">${esc(reason)}</div>` : '';
-        return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}</div>${reasonHtml}</div><div class="estimate-return ${toneClass}">${esc(value)}</div></article>`;
+        const pendingHtml = estimate?.pending_purchase ? '<span class="estimate-pending">买入待确认</span>' : '';
+        const sourceTime = estimate?.market_as_of ? `行情 ${String(estimate.market_as_of).slice(0,16).replace('T',' ')}` : '';
+        const quality = estimate?.confidence_label || '';
+        const timeHtml = sourceTime || quality ? `<div class="estimate-reason">${esc([quality, sourceTime].filter(Boolean).join(' · '))}</div>` : '';
+        return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}${pendingHtml}</div>${reasonHtml}${timeHtml}</div><div class="estimate-return ${toneClass}">${esc(value)}${heldFundEstimateAmount(estimate)}</div></article>`;
       }).join('') : '<div class="empty">没有持有的公募基金</div>';
+    }
+    function stockPercent(value) {
+      if (value == null || value === '' || !Number.isFinite(Number(value))) return '--';
+      const n = Number(value); return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
+    }
+    function renderStockMarket(data) {
+      const box = $('stockMarketContent');
+      if (!box) return;
+      if (!data || !data.available) { box.innerHTML = '<div class="empty">股市行情暂未取得，稍后自动更新</div>'; return; }
+      $('stockMarketMeta').textContent = data.refresh_error ? '部分行情更新延迟' : '交易时段更新 · 收盘保留';
+      const indices = data.indices || [];
+      const groups = ['A股', '港股', '美股'].map(market => {
+        const cards = indices.filter(item => item.market === market).map(item => {
+          const price = item.price == null || !Number.isFinite(Number(item.price)) ? '--' : Number(item.price).toFixed(2);
+          const stamp = item.quote_date ? `${item.quote_date} ${String(item.quote_time || '').slice(11,16)}` : '暂无报价';
+          const description = `${stamp}${market === '美股' ? ' 纽约' : ''}${item.stale ? ' · 延迟' : ''}`;
+          return `<div class="stock-index"><div class="stock-index-name">${esc(item.name)}</div><div class="stock-index-value ${tone(item.change_pct)}">${esc(price)}</div><div class="stock-index-change ${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</div><div class="stock-index-time">${esc(description)}</div></div>`;
+        }).join('');
+        return cards ? `<p class="stock-group-title">${esc(market)}${market === '美股' ? ' · 当地市场日期' : ''}</p><div class="stock-grid">${cards}</div>` : '';
+      }).join('');
+      const sectors = data.industries || {};
+      const sectorColumn = (title, rows) => `<div><p class="stock-group-title">${title}</p>${(rows || []).map(item => `<div class="stock-sector-row"><span>${esc(item.name)}</span><span class="${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</span></div>`).join('') || '<div class="stock-index-time">暂无符合条件板块</div>'}</div>`;
+      box.innerHTML = `${groups}<p class="stock-group-title">A股一级行业 <span class="stock-index-time">${esc(sectors.quote_date || '')}${sectors.stale ? ' · 更新延迟' : ''}</span></p><div class="stock-sector-grid">${sectorColumn('领涨', sectors.leaders)}${sectorColumn('领跌', sectors.laggards)}</div><p class="barometer-note">${esc(data.source || '公开行情')} · 按各市场交易时段采集，午间及收盘后保留最近快照。${data.refresh_error ? '来源暂不可用，显示上次成功行情。' : ''}</p>`;
+    }
+    async function loadMarketOverview(force = false) {
+      if (marketLoading || document.hidden || state.activeTab !== 'market') return;
+      marketLoading = true;
+      try {
+        const headers = marketEtag && !force ? {'If-None-Match': marketEtag} : {};
+        const response = await api('/api/portfolio/market-overview', {headers});
+        if (response.status === 304) return;
+        if (response.status === 403) { setAccessState(false); return; }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        marketEtag = response.headers.get('ETag') || '';
+        const serialized = JSON.stringify(payload);
+        if (serialized === lastMarketPayload) return;
+        lastMarketPayload = serialized;
+        state.data = {...(state.data || {}), ...payload};
+        renderStockMarket(payload.stock_market);
+        if (payload.bond_barometer) renderBarometer(payload.bond_barometer);
+        renderHeldFundEstimates();
+      } catch (_error) {
+        $('stockMarketMeta').textContent = '连接延迟，保留上次行情';
+      } finally {
+        marketLoading = false;
+        clearTimeout(marketPollTimer);
+        if (!document.hidden && state.activeTab === 'market') marketPollTimer = setTimeout(loadMarketOverview, 30000);
+      }
     }
     function setModelSettingsStatus(message, isError) {
       const status = $('aiSettingsStatus');
@@ -3540,7 +3624,13 @@
     updateWriteControls();
     loadDashboard();
     setInterval(updateRefreshControls, 1000);
-    setInterval(loadDashboard, 60000);
+    setInterval(() => { if (!document.hidden && state.activeTab !== 'market') loadDashboard(); }, 60000);
+    document.addEventListener('visibilitychange', () => {
+      clearTimeout(marketPollTimer);
+      if (document.hidden) return;
+      if (state.activeTab === 'market') loadMarketOverview(true);
+      else loadDashboard();
+    });
   </script>
 </body>
 </html>

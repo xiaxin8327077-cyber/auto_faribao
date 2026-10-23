@@ -74,7 +74,7 @@ def test_synthetic_duration_sign_and_scale(tmp_path):
     assert Decimal(snapshot.return_pct) < 0
 
 
-def test_southern_intraday_keeps_experimental_return(tmp_path):
+def test_southern_intraday_without_mapping_returns_reference(tmp_path):
     store = store_of(tmp_path)
     store.save_nav(nav("2026-10-21", "1.0000", "2026-10-21T20:00:00+08:00"))
     store.save_nav(nav("2026-10-22", "0.9997", "2026-10-22T20:00:00+08:00"))
@@ -88,8 +88,9 @@ def test_southern_intraday_keeps_experimental_return(tmp_path):
         market_as_of="2026-10-23T12:31:00+08:00",
     )
     snapshot = predict(model, live, nav("2026-10-22", "0.9997", "2026-10-22T20:00:00+08:00"), store.current_profile("918273", "A"), NOW)
-    assert snapshot.return_pct == "-0.03"
-    assert snapshot.status == "experimental"
+    assert snapshot.return_pct is None
+    assert snapshot.interval_kind == "none"
+    assert snapshot.status == "reference"
     assert "basis_unverified" in snapshot.reason_codes
 
 

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
+import hashlib
 import logging
 from pathlib import Path
 import threading
@@ -28,8 +30,11 @@ from src.fund_estimate_types import (
     FactorObservation,
     FundIdentity,
     ensure_aware,
+    snapshot_pending,
 )
 from src.portfolio_models import ProductType, TransactionStatus, TransactionType
+from src.portfolio_confirmation import is_trading_day
+from src.fund_estimate_cfets import CFETS_REALTIME, CfetsCurveSource
 
 
 logger = logging.getLogger(__name__)
@@ -58,7 +63,9 @@ def discover_funds(repository, now: datetime | None = None) -> list[FundIdentity
         if not held and not pending:
             continue
         metadata = _metadata(product.metadata_json)
-        fund_type = str(metadata.get("fund_type") or "")
+        fund_type = str(metadata.get("fund_type") or product.name or "")
+        if product.currency and product.currency != 'CNY':
+            fund_type += ' 海外'
         if support_reason(fund_type, product.name):
             fund_type = f"{fund_type} {product.name}".strip()
         found.append(
@@ -118,7 +125,7 @@ class FundEstimateService:
         self.config = dict(DEFAULT_CONFIG)
         if config:
             self.config.update(config)
-        self.bond_trading_day = bond_trading_day or weekday_bond_day
+        self.bond_trading_day = bond_trading_day or is_trading_day
         self.ai = ai or EstimateAi(store)
         self._resumed = False
         self._worker = None
@@ -140,16 +147,21 @@ class FundEstimateService:
             self.store.resume_running_jobs(stamp)
             self._resumed = True
         identities = discover_funds(self.repository, now)
+        family = self.config.get('source_family', CFETS_REALTIME)
+        factor_revision = self.store.get_watermark(f'factor-revision:{family}')
         self.store.cancel_queued("intraday_snapshot", {item.code for item in identities}, stamp)
         for identity in identities:
             self.store.enqueue_job(
-                f"backfill:{identity.code}:{identity.share_class}",
+                f"backfill:v2:{family}:{identity.code}:{identity.share_class}",
                 "backfill",
                 identity.product_id,
                 identity.code,
                 _identity_payload(identity),
                 stamp,
             )
+            if factor_revision:
+                self.store.enqueue_job(f'train:{family}:{identity.code}:{identity.share_class}:factors:{factor_revision}',
+                    'train', identity.product_id, identity.code, _identity_payload(identity), stamp)
             if intraday_session(now, self.bond_trading_day):
                 slot = ensure_aware(now, TZ_CN).strftime("%Y-%m-%dT%H:%M")
                 snapshot_key = f"snapshot:{identity.code}:{identity.share_class}:{slot}"
@@ -235,10 +247,21 @@ class FundEstimateService:
             allowed &= set(product_ids)
         stored = self.store.latest_snapshots(list(allowed))
         session = intraday_session(now, self.bond_trading_day) and _inside_quote_window(now)
-        return {
-            product_id: present_snapshot(payload, now, self.config, session)
-            for product_id, payload in stored.items()
-        }
+        result = {}
+        for identity in identities:
+            if identity.product_id not in allowed:
+                continue
+            payload = stored.get(identity.product_id) or snapshot_pending(identity, now.date().isoformat(), iso_now(now), ['history_backfill_pending']).to_dict()
+            payload = present_snapshot(payload, now, self.config, session)
+            # 旧版本曾隐藏跨源警告，切换后不能继续显示旧的跨源数值。
+            if 'basis_unverified' in (payload.get('reason_codes') or []):
+                payload = dict(payload, status='reference', return_pct=None, lower_pct=None, upper_pct=None,
+                               interval_kind='none', confidence_label='同类参考')
+            payload = estimate_holding_amount(payload, identity, self.repository)
+            product = self.repository.get_product(identity.product_id)
+            payload['name'] = product.name if product is not None else identity.code
+            result[identity.product_id] = payload
+        return result
 
     def save_model_settings(self, body: dict, now: datetime) -> dict:
         base_url = chat_completions_url(str(body.get("base_url") or "")) if str(body.get("base_url") or "").strip() else ""
@@ -295,7 +318,7 @@ class FundEstimateService:
                     iso_now(now),
                 )
         elif job["job_type"] == "train":
-            train_models(identity, self.store, now, self.config, source_family=CHINABOND_EOD)
+            train_models(identity, self.store, now, self.config, source_family=self.config.get('source_family', CFETS_REALTIME))
         elif job["job_type"] == "intraday_snapshot":
             self._snapshot(identity, now)
         else:
@@ -304,43 +327,93 @@ class FundEstimateService:
     def _backfill(self, identity: FundIdentity, now: datetime, enqueue_train: bool) -> None:
         today = ensure_aware(now, TZ_CN).date()
         navs = self.sources.fetch_nav_history(identity, default_history_start(today), today)
-        previous_dates = {item.nav_date for item in self.store.nav_as_of(identity.code, iso_now(now))}
+        previous = {item.nav_date: _nav_economic_content(item) for item in self.store.nav_as_of(identity.code, iso_now(now))}
         for item in navs:
             self.store.save_nav(item)
+        factor_changes = []
         try:
-            self._sync_daily_factors(today, iso_now(now))
+            factor_changes = self._sync_daily_factors(today, iso_now(now))
         except Exception as exc:
             self.store.set_watermark(f"factors:{identity.code}", str(exc)[:200], iso_now(now))
-        new_dates = {item.nav_date for item in navs} - previous_dates
-        if enqueue_train and new_dates:
-            newest = max(new_dates)
+        changed = [item for item in navs if previous.get(item.nav_date) != _nav_economic_content(item)]
+        if enqueue_train and (changed or factor_changes):
+            newest = max((item.nav_date for item in navs), default=today.isoformat())
+            version = hashlib.sha256(json.dumps([[_nav_economic_content(item) for item in changed], factor_changes], sort_keys=True).encode()).hexdigest()[:16]
             self.store.enqueue_job(
-                f"train:{identity.code}:{identity.share_class}:nav:{newest}",
+                f"train:{identity.code}:{identity.share_class}:nav:{newest}:{version}",
                 "train",
                 identity.product_id,
                 identity.code,
                 _identity_payload(identity),
                 iso_now(now),
             )
-            self._verify(identity, newest, now)
+            # realized_return(D) 依赖 nav_{D-1} 与 nav_D：被改日期自身和它的
+            # 后一净值日都要重算真值，否则修订 D-1 会留下陈旧的 D 日验证结果。
+            nav_dates = sorted({item.nav_date for item in navs})
+            affected = set()
+            for item in changed:
+                affected.add(item.nav_date)
+                later = [day for day in nav_dates if day > item.nav_date]
+                if later:
+                    affected.add(min(later))
+            for nav_date in sorted(affected):
+                self._verify(identity, nav_date, now)
 
-    def _sync_daily_factors(self, today: date, stamp: str) -> None:
-        """最近两周每次都补，更早的中债日终按大约 90 天一批往前推进。"""
-        recent_start = today - timedelta(days=14)
-        for item in self.sources.fetch_daily_factors(recent_start, today, CHINABOND_EOD):
-            self.store.save_factor(item)
-        history_start = default_history_start(today)
-        cursor = self.store.get_watermark("chinabond_eod_before")
-        if cursor == history_start.isoformat():
-            return
-        end = today if not cursor else date.fromisoformat(cursor) - timedelta(days=1)
-        if end < history_start:
-            self.store.set_watermark("chinabond_eod_before", history_start.isoformat(), stamp)
-            return
-        batch_start = max(history_start, end - timedelta(days=90))
-        for item in self.sources.fetch_daily_factors(batch_start, end, CHINABOND_EOD):
-            self.store.save_factor(item)
-        self.store.set_watermark("chinabond_eod_before", batch_start.isoformat(), stamp)
+    def _sync_daily_factors(self, today: date, stamp: str) -> list[str]:
+        """同源历史按小批次回补；所有基金共享公开曲线和新版本触发。
+
+        批次游标只表达推进进度；临时网络故障的日期进入可重试水位，
+        不随游标推进被永久漏掉，来源本就无数据的日期不进水位。
+        """
+        family = self.config.get('source_family', CFETS_REALTIME)
+        changes = []
+        retry_key = f'{family}_retry_days'
+        try:
+            pending = set(json.loads(self.store.get_watermark(retry_key) or '[]'))
+        except ValueError:
+            pending = set()  # 水位损坏时重建，不能让回补永久卡死
+
+        def pull(start, finish):
+            got = []
+            for item in self.sources.fetch_daily_factors(start, finish, family):
+                if self.store.save_factor(item):
+                    got.append(item.source_version)
+            return got, {d.isoformat() for d in self.sources.take_transient_failures()}
+
+        try:
+            for day_text in sorted(pending):
+                if day_text >= today.isoformat():
+                    continue  # 当日缺口由近14天窗口滚动重试
+                got, transient = pull(date.fromisoformat(day_text), date.fromisoformat(day_text))
+                changes.extend(got)
+                pending |= transient
+                if day_text in transient:
+                    continue  # 仍临时失败，保留水位下次再试
+                pending.discard(day_text)
+
+            recent_start = today - timedelta(days=14)
+            got, transient = pull(recent_start, today)
+            changes.extend(got)
+            pending |= transient
+
+            history_start = today - timedelta(days=int(self.config.get('factor_history_days', 180)))
+            cursor_key = f'{family}_before'
+            cursor = self.store.get_watermark(cursor_key)
+            end = today if not cursor else date.fromisoformat(cursor) - timedelta(days=1)
+            if end >= history_start:
+                batch_start = max(history_start, end - timedelta(days=30))
+                got, transient = pull(batch_start, end)
+                changes.extend(got)
+                pending |= transient
+                self.store.set_watermark(cursor_key, batch_start.isoformat(), stamp)
+        finally:
+            # 半途异常也要留下已收集的临时失败日，不能把洞丢在内存里。
+            self.store.set_watermark(retry_key, json.dumps(sorted(pending)), stamp)
+        if changes:
+            old = self.store.get_watermark(f'factor-revision:{family}') or ''
+            revision = hashlib.sha256(json.dumps([old, sorted(changes)]).encode()).hexdigest()[:20]
+            self.store.set_watermark(f'factor-revision:{family}', revision, stamp)
+        return changes
 
     def _verify(self, identity: FundIdentity, nav_date: str, now: datetime) -> None:
         navs = self.store.nav_as_of(identity.code, iso_now(now))
@@ -369,6 +442,8 @@ class FundEstimateService:
 
     def _snapshot(self, identity: FundIdentity, now: datetime) -> None:
         factors = self.sources.read_intraday_factors(now)
+        if self.sources.clock is not None:
+            now = self.sources.clock()
         navs = self.store.nav_as_of(identity.code, iso_now(now))
         base = navs[-1] if navs else None
         if base is not None:
@@ -400,12 +475,17 @@ def create_fund_estimate_service(portfolio_runtime, config=None, *, path=None):
     raw = getattr(config, "fund_estimate", None) or {}
     if isinstance(raw, dict):
         settings.update(raw)
+    settings['source_family'] = CFETS_REALTIME
+    curve_source = CfetsCurveSource(store)
     sources = EstimateSources(
         dividend_fetcher=live_dividend_coverage,
-        factor_fetcher=live_chinabond_factors,
-        intraday_reader=lambda now: _saved_intraday(repository, now),
+        factor_fetcher=curve_source.fetch_daily_factors,
+        intraday_reader=curve_source.read_intraday_factors,
+        clock=curve_source.clock,
+        transient_reader=curve_source.take_transient_failures,
     )
-    profiles = ProfileService(store, _EmptyDocuments(), ai=EstimateAi(store))
+    from src.fund_estimate_documents import PublicFundDocuments
+    profiles = ProfileService(store, PublicFundDocuments(store), ai=EstimateAi(store))
     return FundEstimateService(repository, store, sources, profiles, settings, ai=EstimateAi(store))
 
 
@@ -487,6 +567,38 @@ def _metadata(raw: str) -> dict:
     except (TypeError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _nav_economic_content(item) -> tuple:
+    return (item.nav_date, item.unit_nav, item.cash_dividend_per_share,
+            item.dividend_coverage, item.event_status)
+
+
+def estimate_holding_amount(payload, identity, repository) -> dict:
+    """只给已确认份额计算参考金额，不写账本或把待确认资金算成持仓。"""
+    item = dict(payload)
+    shares = repository.get_position(identity.product_id).total_shares
+    pending = any(tx.transaction_type in PURCHASE_TYPES and tx.status in PENDING_STATUSES
+                  for tx in repository.list_transactions(identity.product_id))
+    item.update(estimated_profit=None, profit_currency=identity.currency, pending_purchase=pending,
+                holding_status=('held_with_pending_purchase' if pending else 'held') if shares > 0 else 'pending_purchase',
+                profit_reason='estimate_unavailable', profit_basis='confirmed_shares_previous_nav')
+    if shares <= 0:
+        item['profit_reason'] = 'awaiting_confirmed_shares'
+        return item
+    if item.get('return_pct') in (None, '') or item.get('base_nav') in (None, ''):
+        return item
+    try:
+        nav = Decimal(str(item['base_nav']))
+        rate = Decimal(str(item['return_pct']))
+        if not (shares.is_finite() and nav.is_finite() and rate.is_finite()) or nav <= 0:
+            return item
+        amount = (shares * nav * rate / Decimal(100)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        item['estimated_profit'] = format(abs(amount) if amount == 0 else amount, '.2f')
+        item['profit_reason'] = ''
+    except (InvalidOperation, ValueError, TypeError):
+        pass
+    return item
 
 
 def _inside_quote_window(now: datetime) -> bool:

@@ -307,13 +307,21 @@ class IncompleteNavHistory(RuntimeError):
 
 
 class EstimateSources:
-    def __init__(self, nav_fetcher=None, dividend_fetcher=None, factor_fetcher=None, intraday_reader=None, sleeper=None):
+    def __init__(self, nav_fetcher=None, dividend_fetcher=None, factor_fetcher=None, intraday_reader=None, sleeper=None, clock=None, transient_reader=None):
         self.nav_fetcher = nav_fetcher or _live_nav_page
         self.dividend_fetcher = dividend_fetcher
         self.factor_fetcher = factor_fetcher
         self.intraday_reader = intraday_reader
         self.sleeper = sleeper or (lambda _seconds: None)
         self.fetch_calls = 0
+        self.clock = clock
+        self.transient_reader = transient_reader
+
+    def take_transient_failures(self) -> set:
+        """最近一次历史回补中因临时故障缺失的日期；来源不支持时返回空集。"""
+        if self.transient_reader is None:
+            return set()
+        return set(self.transient_reader())
 
     def fetch_nav_history(self, identity: FundIdentity, start: date, end: date) -> list[NavObservation]:
         self.fetch_calls += 1

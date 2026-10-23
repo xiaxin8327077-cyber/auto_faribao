@@ -81,6 +81,7 @@ def _run(cfg):
     last_portfolio_slot = None
     last_barometer_slot = None
     last_estimate_slot = None
+    last_stock_slot = None
 
     while True:
         with _scheduler_lock:
@@ -93,6 +94,10 @@ def _run(cfg):
 
         now = beijing_now()
         today_str = now.strftime("%Y-%m-%d")
+        stock_slot = now.strftime('%Y-%m-%dT%H:%M:') + ('00' if now.second < 30 else '30')
+        if stock_slot != last_stock_slot:
+            last_stock_slot = stock_slot
+            threading.Thread(target=_warm_stock_market, args=(runtime, now), daemon=True).start()
 
         # 行情预热：交易时段内每分钟后台刷新一次债市晴雨表，
         # 不阻塞定时推送；非交易时段不自动更新。
@@ -205,6 +210,19 @@ def _warm_bond_barometer(runtime=None):
             latest_barometer(force=True, conn=conn)
     except Exception:
         logger.warning("Bond barometer prefetch failed", exc_info=True)
+
+
+def _warm_stock_market(runtime=None, now=None):
+    try:
+        from src.stock_market import ensure_stock_market_schema, refresh_stock_market
+        repo = getattr(runtime, 'repository', None)
+        if repo is None:
+            return
+        with repo.database.connection() as conn:
+            ensure_stock_market_schema(conn)
+            refresh_stock_market(conn, now=now)
+    except Exception:
+        logger.warning('Stock market prefetch failed', exc_info=True)
 
 
 def _portfolio_slot(now):

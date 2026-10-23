@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from contextlib import closing
 from dataclasses import asdict, is_dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 import hashlib
 import json
+import sqlite3
 import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
@@ -2187,6 +2189,52 @@ def create_portfolio_blueprint(runtime, provider_factory, estimate_service=None)
     @blueprint.post("/api/portfolio/sip-plans/<plan_id>/resume")
     def resume_sip_plan(plan_id):
         return sip_operation(plan_id, "resume")
+
+    @blueprint.get('/api/portfolio/market-overview')
+    def market_overview():
+        guard = read_guard()
+        if guard:
+            return guard
+        stock = bond = None
+        repo = repository()
+        try:
+            from src.bond_barometer import read_snapshot
+            with closing(sqlite3.connect(repo.database.path.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                saved = read_snapshot(conn)
+                bond = saved['payload'] if saved else None
+        except Exception:
+            pass
+        try:
+            from src.stock_market import read_stock_market
+            with closing(sqlite3.connect(repo.database.path.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                stock = read_stock_market(conn)
+        except Exception:
+            pass
+        estimates = {}
+        if estimate_service is not None:
+            try:
+                estimates = estimate_service.read_snapshots(None, beijing_now())
+            except Exception:
+                pass
+        payload = {'stock_market': stock, 'bond_barometer': bond, 'fund_estimates': estimates}
+        # 纯年龄/生成时间只随读取时刻增长，不代表数据变化，不能让条件请求失效；
+        # stale、phase 等状态字段仍参与指纹，响应里也保留年龄元数据供判断。
+        age_only = {'generated_at', 'cache_age_seconds', 'source_age_seconds'}
+
+        def canonical(value):
+            if isinstance(value, dict):
+                return {k: canonical(v) for k, v in value.items() if k not in age_only}
+            if isinstance(value, list):
+                return [canonical(v) for v in value]
+            return value
+        etag = hashlib.sha256(json.dumps(canonical(payload), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        response = jsonify(payload)
+        response.set_etag(etag)
+        response.headers['Cache-Control'] = 'private, no-cache'
+        response.headers['Vary'] = 'X-Nav-Dashboard-Key'
+        return response.make_conditional(request)
 
     @blueprint.get("/api/portfolio/fund-estimates")
     def fund_estimates():

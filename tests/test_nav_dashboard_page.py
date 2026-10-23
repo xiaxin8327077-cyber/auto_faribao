@@ -1426,7 +1426,7 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert "restoreBarometerCache" not in html
     assert "barometerData" not in html
     assert "if (data.bond_barometer) renderBarometer(data.bond_barometer);" in html
-    assert "if (tab === 'market' && !barometerReady) loadBarometer();" in html
+    assert "if (tab === 'market') loadMarketOverview();" in html
     assert "loadBarometer(true);\n      refreshRequestPending = true;" in html
     assert "#marketPanel .section-head { border-bottom: 0; }" in html
     assert "<h2>行情</h2>" not in html
@@ -1444,12 +1444,47 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert "预估涨跌幅" in market
     assert "试验参考" not in market
     assert ".estimate-return.positive { color: var(--positive); }" in html
-    assert "code !== 'basis_unverified'" in html
+    assert "code !== 'basis_unverified'" not in html
+    assert market.index('aria-label="股市行情"') < market.index('<h2>债市晴雨表</h2>')
     assert "value.toFixed(3)" in html
     assert "待确认基金参考" not in market
     assert "estimateMarkup(pid)" not in html
     # 行情面板首块与其他页签一致，与顶栏保持相同间距。
     assert "#marketPanel > .card.section { margin-top: 0; }" in html
+
+
+def test_estimates_render_profit_below_rate_and_pending_purchase_without_false_profit():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node is required for JavaScript behavior checks')
+    page = _read_page()
+    logic = page[page.index('const ESTIMATE_REASONS ='):page.index('function setModelSettingsStatus(')]
+    script = r'''
+const assert = require('assert');
+const elements={estimateWatchList:{innerHTML:''},stockMarketContent:{innerHTML:''},stockMarketMeta:{textContent:''}};
+const $=id=>elements[id];
+const esc=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const tone=v=>Number(v)>0?'positive':Number(v)<0?'negative':'neutral';
+const rowValue=(r,...ks)=>{for(const k of ks)if(r?.[k]!==undefined&&r[k]!==null)return r[k];return '';};
+const portfolioRows=()=>[];
+const isClearedAndSettled=()=>false;
+const state={activeTab:'market',data:{fund_estimates:{a:{product_id:'a',code:'918273',name:'基金<名>',holding_status:'held',return_pct:'-0.024',estimated_profit:'-3.51'},b:{product_id:'b',code:'564738',name:'待确认基金',holding_status:'pending_purchase',pending_purchase:true,return_pct:'0.01',estimated_profit:null,profit_reason:'awaiting_confirmed_shares'}}}};
+''' + logic + r'''
+renderHeldFundEstimates();
+const result=elements.estimateWatchList.innerHTML;
+assert(result.includes('基金&lt;名&gt;'));
+assert(result.indexOf('-0.024%') < result.indexOf('3.51'));
+assert(result.includes('estimate-amount'));
+assert(result.includes('买入待确认'));
+assert(result.includes('待份额确认'));
+assert(!result.includes('¥0.00'));
+renderStockMarket({available:true,source:'东财',indices:[{name:'标普500',market:'美股',quote_date:'2026-10-22',quote_time:'2026-10-22T16:00:00-04:00',price:'6000',change_pct:'-1.2'}],industries:{quote_date:'2026-10-23',leaders:[{name:'电子<行业>',change_pct:'2'}],laggards:[]}});
+assert(elements.stockMarketContent.innerHTML.includes('2026-10-22 16:00 纽约'));
+assert(elements.stockMarketContent.innerHTML.includes('电子&lt;行业&gt;'));
+assert(elements.stockMarketContent.innerHTML.includes('-1.20%'));
+'''
+    result = subprocess.run([node, '-e', script], capture_output=True, text=True, encoding='utf-8')
+    assert result.returncode == 0, result.stderr
 
 
 def test_barometer_renders_source_time_egg_ranges_and_missing_quotes():

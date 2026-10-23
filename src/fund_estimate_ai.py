@@ -63,6 +63,10 @@ class EstimateAi:
         self.store = store
         self.poster = poster or _post_chat
 
+    def is_enabled(self) -> bool:
+        settings = self.store.secret_ai_settings()
+        return bool(settings.get("enabled") and settings.get("api_key") and settings.get("base_url") and settings.get("model"))
+
     def complete(self, messages: list[dict]) -> str:
         settings = self.store.secret_ai_settings()
         if not settings.get("enabled") or not settings.get("api_key") or not settings.get("base_url"):
@@ -74,9 +78,14 @@ class EstimateAi:
             raise AiUnavailable(self._failure_message(status, text, settings["api_key"]))
         try:
             payload = json.loads(text)
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
+            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise AiUnavailable("模型响应无法解析") from exc
+        if choice.get("finish_reason") == "length":
+            raise AiUnavailable("模型响应被截断，请提高输出预算后重试")
+        if choice.get("finish_reason") not in {None, "stop"}:
+            raise AiUnavailable("模型未正常完成报告提取")
         if not isinstance(content, str) or not content.strip():
             raise AiUnavailable("模型响应为空")
         return content.strip()
@@ -101,7 +110,7 @@ class EstimateAi:
 
     def _post(self, settings, messages):
         try:
-            return self.poster(settings, messages, 16)
+            return self.poster(settings, messages, 4096)
         except Exception as exc:
             raise AiUnavailable("无法连接该地址：" + scrub_secret(str(exc), settings.get("api_key", ""))) from exc
 
@@ -136,7 +145,20 @@ def _post_chat(settings: dict, messages: list[dict], max_tokens: int):
             "temperature": 0,
             "stream": False,
         },
-        timeout=(3, 8),
+        timeout=(3, 45),
         allow_redirects=False,
+        stream=True,
     )
-    return response.status_code, response.text[:500]
+    try:
+        if int(response.headers.get("Content-Length") or 0) > 1024 * 1024:
+            raise AiUnavailable("模型响应过大")
+        chunks = []
+        size = 0
+        for chunk in response.iter_content(65536):
+            size += len(chunk)
+            if size > 1024 * 1024:
+                raise AiUnavailable("模型响应过大")
+            chunks.append(chunk)
+        return response.status_code, b"".join(chunks).decode("utf-8-sig")
+    finally:
+        response.close()

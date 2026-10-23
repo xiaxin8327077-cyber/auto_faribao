@@ -1,6 +1,7 @@
 """久期基线与指数加权 Ridge。系数是统计敞口，不是当日真实持仓。"""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 import hashlib
@@ -40,8 +41,9 @@ def build_training_set(identity: FundIdentity, cutoff_at: str, store, source_fam
     factors = {
         item.as_of: item
         for item in store.factors_as_of(cutoff_at, source_family=source_family)
+        if parse_time(_market_available_at(item)) <= parse_time(cutoff_at)
     }
-    profile = store.profile_as_of(identity.code, identity.share_class, cutoff_at)
+    profile = _visible_profile(store.profile_as_of(identity.code, identity.share_class, cutoff_at), cutoff_at)
     rows = []
     gaps = []
     ordered = sorted(navs, key=lambda item: item.nav_date)
@@ -70,13 +72,29 @@ def build_training_set(identity: FundIdentity, cutoff_at: str, store, source_fam
         calendar_days = str((date.fromisoformat(current.nav_date) - date.fromisoformat(previous.nav_date)).days)
         features = {name: factor.values_bp.get(name) for name in FACTOR_NAMES[:4]}
         features["calendar_days"] = calendar_days
+        market_available_at = _market_available_at(factor)
+        nav_available_at = max((previous.available_at, current.available_at), key=parse_time)
+        economic_at = factor.market_as_of or f"{factor.as_of}T17:00:00+08:00"
+        # 回补抓取只能证明当前版本于抓取时可见；行情日期不是版本发布日期。
+        availability_verified = bool(
+            factor.market_as_of
+            and parse_time(market_available_at).date().isoformat() == factor.as_of
+            and parse_time(previous.available_at) <= parse_time(market_available_at)
+            and parse_time(market_available_at) < parse_time(current.available_at)
+        )
         rows.append(
             {
                 "nav_date": current.nav_date,
-                "available_at": current.available_at,
+                "available_at": max((nav_available_at, market_available_at), key=parse_time),
+                "market_available_at": market_available_at,
+                "nav_available_at": nav_available_at,
+                "economic_at": economic_at,
+                "availability_verified": availability_verified,
                 "y": label,
                 "features": features,
                 "source_version": factor.source_version,
+                "nav_source_versions": [previous.source_version, current.source_version],
+                "prediction_at": market_available_at if availability_verified else economic_at,
             }
         )
     return TrainingSet(
@@ -93,6 +111,7 @@ def build_training_set(identity: FundIdentity, cutoff_at: str, store, source_fam
 
 def fit_baseline(training: TrainingSet, profile: ProfileVersion | None, config: dict | None = None) -> ModelVersion:
     config = config or {}
+    profile = _visible_profile(profile, training.cutoff_at)
     duration = _profile_duration(profile)
     rows = training.rows
     if duration is None:
@@ -138,26 +157,84 @@ def fit_ridge(training: TrainingSet, config: dict | None = None) -> ModelVersion
 
 def walk_forward_validate(training: TrainingSet, config: dict | None = None) -> dict:
     config = config or {}
-    min_fit = int(config.get("min_fit_samples", 60))
-    windows = [int(item) for item in config.get("training_windows", (60, 120, 250))]
-    rows = training.rows
-    gaps = list(training.gaps)
-    if len(rows) < min_fit + 1:
-        return _empty_validation(len(rows), gaps, "样本少于最短训练窗口")
-    best = None
-    for window in windows:
-        if len(rows) <= window:
-            continue
-        metrics = _expanding_metrics(rows, window, config)
-        metrics["window"] = window
-        if best is None or _mae_value(metrics) < _mae_value(best):
-            best = metrics
-    if best is None:
-        return _empty_validation(len(rows), gaps, "没有足够的窗口完成样本外比较")
-    best["gaps"] = gaps
-    best["intraday_sample_count"] = 0
-    best["ready"] = False
-    return best
+    rows = sorted(training.rows, key=lambda row: row["nav_date"])
+    windows = _training_windows(config)
+    viable = [window for window in windows if window < len(rows)]
+    default_window = min(min(windows), len(rows))
+    if not viable:
+        result = _empty_validation(len(rows), list(training.gaps), "没有足够的窗口完成样本外比较")
+        result.update(window=default_window, selected_model_kind="duration_baseline", models={})
+        return result
+
+    # 严格时点验证与当前历史版本探索使用不同的输入可见性规则，不能混报。
+    modes = ("point_in_time", "retrospective_current_versions")
+    common_start = max(viable)
+    split = common_start + max(1, (len(rows) - common_start) // 2)
+    predictions, dates = {}, {}
+    for mode in modes:
+        predictions[mode] = {
+            window: _rolling_predictions(training, rows, window, config, availability_mode=mode)
+            for window in viable
+        }
+        common = set.intersection(*(set(predictions[mode][window]) for window in viable))
+        dates[mode] = {
+            "selection": [row["nav_date"] for row in rows[common_start:split] if row["nav_date"] in common],
+            "evaluation": [row["nav_date"] for row in rows[split:] if row["nav_date"] in common],
+        }
+    strict = dates["point_in_time"]
+    mode = "point_in_time" if (
+        len(strict["selection"]) >= max(1, int(config.get("min_selection_predictions", 1)))
+        and len(strict["evaluation"]) >= max(1, int(config.get("min_validation_predictions", 1)))
+    ) else "retrospective_current_versions"
+    selection_dates = dates[mode]["selection"]
+
+    def metrics_for(kind, window, availability_mode, stage):
+        days = dates[availability_mode][stage]
+        pairs = [predictions[availability_mode][window][day][kind] for day in days]
+        return _metrics_from_pairs(pairs, [], [], len(rows), config, days,
+                                   training.source_family, availability_mode)
+
+    candidates = [
+        {"window": window, "prediction_dates": selection_dates,
+         "models": {kind: metrics_for(kind, window, mode, "selection")
+                    for kind in ("duration_baseline", "weighted_ridge_net")}}
+        for window in viable
+    ]
+    ranked = [
+        (_mae_value(candidate["models"][kind]), candidate["window"], kind)
+        for candidate in candidates for kind in ("duration_baseline", "weighted_ridge_net")
+    ]
+    _, window, selected_kind = min(ranked)
+    model_metrics = {}
+    scope = ("chronological_holdout_after_selection" if mode == "point_in_time"
+             else "retrospective_current_versions_chronological_holdout")
+    for kind in ("duration_baseline", "weighted_ridge_net"):
+        reports = {item: metrics_for(kind, window, item, "evaluation") for item in modes}
+        if mode != "point_in_time":
+            # 严格输入重放也不能洗掉使用回补版本挑参数的限制。
+            reports["point_in_time"].update(
+                selection_verified=False, availability_verified=False,
+                interval_coverage=None, interval_width_pct=None,
+                residual_low_pct=None, residual_high_pct=None,
+                interval_calibration_count=0, interval_evaluation_count=0,
+                interval_calibration_dates=[], interval_evaluation_dates=[],
+            )
+        metrics = dict(reports[mode])
+        metrics.update(window=window, evaluation_scope=scope,
+                       point_in_time=reports["point_in_time"],
+                       retrospective=reports["retrospective_current_versions"],
+                       point_in_time_oos_count=reports["point_in_time"]["oos_count"],
+                       retrospective_oos_count=reports["retrospective_current_versions"]["oos_count"])
+        model_metrics[kind] = metrics
+    result = dict(model_metrics[selected_kind])
+    result.update(
+        window=window, selected_model_kind=selected_kind, models=model_metrics,
+        baseline_mae_bp=model_metrics["duration_baseline"]["mae_bp"],
+        ridge_mae_bp=model_metrics["weighted_ridge_net"]["mae_bp"],
+        selection_prediction_dates=selection_dates, window_candidates=candidates,
+        gaps=list(training.gaps), baseline_profile_policy="statistical_duration_training_rows_only",
+    )
+    return result
 
 
 def predict(model: ModelVersion, factors: FactorObservation, base_nav: NavObservation, profile: ProfileVersion | None, now: datetime, config: dict | None = None, market_reference: dict | None = None) -> EstimateSnapshot:
@@ -166,6 +243,16 @@ def predict(model: ModelVersion, factors: FactorObservation, base_nav: NavObserv
     trade_date = factors.as_of or generated_at[:10]
     identity = model.identity
     _require_feature_contract(model)
+    profile = _visible_profile(profile, generated_at)
+    if parse_time(model.available_at) > parse_time(generated_at):
+        return _status_snapshot(identity, trade_date, generated_at, "reference", ["insufficient_history"], market_reference, base_nav, profile, None)
+    trained_family = str(model.preprocessing.get("source_family") or "")
+    cross_family = factors.source_family != trained_family
+    if not trained_family or (cross_family and not _mapping_verified(model, factors, generated_at)):
+        return _status_snapshot(identity, trade_date, generated_at, "reference", ["basis_unverified"], market_reference, base_nav, profile, model)
+    observed_times = (factors.published_at, factors.fetched_at, factors.market_as_of, base_nav.available_at)
+    if any(parse_time(value) > parse_time(generated_at) for value in observed_times if value):
+        return _status_snapshot(identity, trade_date, generated_at, "reference", ["market_missing"], market_reference, base_nav, profile, model)
     if factors.basis_status == "unverified" or factors.source_family == "unverified_mix":
         return _status_snapshot(identity, trade_date, generated_at, "reference", ["basis_unverified"], market_reference, base_nav, profile, model)
     if factors.basis_date is None or factors.basis_date != base_nav.nav_date:
@@ -174,26 +261,36 @@ def predict(model: ModelVersion, factors: FactorObservation, base_nav: NavObserv
     if missing:
         return _status_snapshot(identity, trade_date, generated_at, "reference", ["market_missing"], market_reference, base_nav, profile, model, missing=missing)
     features = dict(factors.values_bp)
+    if cross_family:
+        mappings = factors.mapping_evidence["per_feature"]
+        for name in FACTOR_NAMES[:4]:
+            mapping = mappings[name]
+            features[name] = decimal_text(
+                Decimal(decimal_text(mapping["slope"])) * Decimal(decimal_text(features[name]))
+                + Decimal(decimal_text(mapping["intercept_bp"]))
+            )
     if "calendar_days" in model.feature_names:
         if factors.calendar_days is None:
             return _status_snapshot(identity, trade_date, generated_at, "reference", ["market_missing"], market_reference, base_nav, profile, model)
         features["calendar_days"] = str(factors.calendar_days)
     raw = _predict_number(model, features)
     # 拟合目标已是正式净值的净收益，不再扣管理费。
-    # 南方盘中和中债日终不是已验证的同一口径，仍给出试验数字并标明原因。
-    trained_family = str(model.preprocessing.get("source_family") or "")
-    cross_family = bool(
-        trained_family
-        and factors.source_family != trained_family
-        and factors.basis_status != "verified_mapping"
-    )
     point = pct_text(raw)
     validation = model.validation or {}
     oos = int(validation.get("oos_count") or 0)
     min_oos = int(config.get("min_oos_residuals", 20))
     interval_kind = "none"
     lower = upper = None
-    if oos >= min_oos and validation.get("residual_low_pct") is not None:
+    compatible_interval = _interval_matches_observation(validation, factors, trained_family, config)
+    if (
+        compatible_interval
+        and oos >= min_oos
+        and int(validation.get("interval_calibration_count") or 0) >= min_oos
+        and int(validation.get("interval_evaluation_count") or 0) >= min_oos
+        and validation.get("residual_definition") == "actual_minus_predicted"
+        and validation.get("residual_low_pct") is not None
+        and validation.get("residual_high_pct") is not None
+    ):
         interval_kind = "empirical"
         lower = pct_text(Decimal(point) + Decimal(str(validation["residual_low_pct"])))
         upper = pct_text(Decimal(point) + Decimal(str(validation["residual_high_pct"])))
@@ -202,8 +299,13 @@ def predict(model: ModelVersion, factors: FactorObservation, base_nav: NavObserv
         band = abs(Decimal(str(_profile_duration(profile))) / Decimal(100))
         lower = pct_text(Decimal(point) - band)
         upper = pct_text(Decimal(point) + band)
-    status = "experimental" if cross_family or not _quality_ready(validation, config) else "ready"
-    reasons = ["basis_unverified"] if cross_family else []
+    status = "ready" if interval_kind == "empirical" and compatible_interval and _quality_ready(validation, config) else "experimental"
+    reasons = []
+    confidence_label = _label(status, interval_kind)
+    if interval_kind == "empirical" and validation.get("validation_scope") == "daily_close":
+        confidence_label += "（日终口径）"
+    if validation.get("validation_availability") == "retrospective_current_versions":
+        confidence_label += "（历史版本回顾，未验证真实时点表现）"
     return EstimateSnapshot(
         product_id=identity.product_id,
         code=identity.code,
@@ -222,7 +324,7 @@ def predict(model: ModelVersion, factors: FactorObservation, base_nav: NavObserv
         lower_pct=lower,
         upper_pct=upper,
         interval_kind=interval_kind,
-        confidence_label=_label(status, interval_kind),
+        confidence_label=confidence_label,
         market_reference=market_reference,
         generated_at=generated_at,
     )
@@ -239,13 +341,28 @@ def train_models(identity: FundIdentity, store, now: datetime, config: dict | No
     )
     if len(training.rows) < int(config.get("min_fit_samples", 60)):
         return {"trained": False, "rows": len(training.rows), "gaps": training.gaps}
-    profile = store.profile_as_of(identity.code, identity.share_class, cutoff)
-    baseline = fit_baseline(training, profile, config)
-    ridge = fit_ridge(training, config)
     validation = walk_forward_validate(training, config)
-    baseline = _with_validation(baseline, validation)
-    ridge = _with_validation(ridge, validation)
-    use_ridge = _mae_value(validation) < _mae_value({"mae_bp": validation.get("baseline_mae_bp")})
+    window = int(validation["window"])
+    selected_training = _training_slice(training, sorted(training.rows, key=lambda row: row["nav_date"])[-window:])
+    # 回测基线自行统计估计久期，最终拟合保持完全相同的方法。
+    baseline = fit_baseline(selected_training, None, config)
+    ridge = fit_ridge(selected_training, config)
+    versions = []
+    for model in (baseline, ridge):
+        own = dict(validation.get("models", {}).get(model.model_kind) or _empty_validation(len(training.rows), training.gaps, "无独立评估样本"))
+        own.update(
+            sample_count=len(selected_training.rows),
+            history_sample_count=len(training.rows),
+            window=window,
+            selected_model_kind=validation["selected_model_kind"],
+            selection_prediction_dates=validation.get("selection_prediction_dates", []),
+            evaluation_scope=validation.get("evaluation_scope", "unvalidated_fit"),
+            baseline_profile_policy="statistical_duration_training_rows_only",
+        )
+        preprocessing = dict(model.preprocessing, training_window=window)
+        versions.append(_with_validation(replace(model, preprocessing=preprocessing), own))
+    baseline, ridge = versions
+    use_ridge = validation["selected_model_kind"] == "weighted_ridge_net"
     store.save_model(baseline, active=not use_ridge)
     store.save_model(ridge, active=use_ridge)
     return {"trained": True, "rows": len(training.rows), "validation": validation, "selected": ridge.model_kind if use_ridge else baseline.model_kind}
@@ -257,7 +374,9 @@ def project_snapshot(identity, store, factors, base_nav, now, config, market_ref
     if reason:
         return _status_snapshot(identity, factors.as_of if factors else generated_at[:10], generated_at, "unsupported", [reason], market_reference, base_nav, None, None)
     model = store.active_model(identity.code, identity.share_class)
-    profile = store.current_profile(identity.code, identity.share_class)
+    if model is not None and parse_time(model.available_at) > parse_time(generated_at):
+        model = None
+    profile = _visible_profile(store.profile_as_of(identity.code, identity.share_class, generated_at), generated_at)
     training_rows = store.get_watermark(f"training:{identity.code}:{identity.share_class}")
     row_count = 0
     if training_rows:
@@ -314,6 +433,8 @@ def present_snapshot(payload: dict, now: datetime, config: dict, bond_session: b
 def _quality_ready(validation: dict, config: dict) -> bool:
     if not config.get("enable_ready", False):
         return False
+    if validation.get("validation_availability") != "point_in_time" or not validation.get("availability_verified"):
+        return False
     thresholds = ("max_mae_bp", "min_direction_accuracy", "min_interval_coverage")
     if any(config.get(name) is None for name in thresholds):
         return False
@@ -331,6 +452,64 @@ def _quality_ready(validation: dict, config: dict) -> bool:
         and Decimal(str(direction)) >= Decimal(str(config["min_direction_accuracy"]))
         and Decimal(str(coverage)) >= Decimal(str(config["min_interval_coverage"]))
     )
+
+
+def _visible_profile(profile: ProfileVersion | None, cutoff_at: str):
+    if profile is None or not profile.published_at:
+        return None
+    cutoff = parse_time(cutoff_at)
+    if parse_time(profile.published_at) > cutoff or parse_time(profile.fetched_at) > cutoff:
+        return None
+    return profile
+
+
+def _market_available_at(factor):
+    return max((value for value in (factor.published_at, factor.fetched_at) if value), key=parse_time)
+
+
+def _mapping_verified(model, factors, generated_at):
+    evidence = getattr(factors, "mapping_evidence", None)
+    if factors.basis_status != "verified_mapping" or not isinstance(evidence, dict):
+        return False
+    try:
+        if (
+            not evidence.get("mapping_id")
+            or evidence.get("from_source_family") != factors.source_family
+            or evidence.get("to_source_family") != model.preprocessing.get("source_family")
+            or parse_time(evidence["calibrated_at"]) > parse_time(generated_at)
+            or int(evidence.get("training_sample_count") or 0) < 20
+            or int(evidence.get("validation_sample_count") or 0) < 10
+        ):
+            return False
+        per_feature = evidence.get("per_feature")
+        if not isinstance(per_feature, dict):
+            return False
+        for name in FACTOR_NAMES[:4]:
+            mapping = per_feature.get(name, {})
+            if not isinstance(mapping, dict) or mapping.get("unit") != "bp" or factors.values_bp.get(name) in (None, ""):
+                return False
+            decimal_text(mapping["slope"])
+            decimal_text(mapping["intercept_bp"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _interval_matches_observation(validation, factors, trained_family, config):
+    if validation.get("validation_availability") != "point_in_time" or not validation.get("availability_verified"):
+        return False
+    if factors.source_family != trained_family or validation.get("source_family") != trained_family:
+        return False
+    if validation.get("validation_scope") == "intraday":
+        return int(validation.get("intraday_sample_count") or 0) >= int(config.get("min_intraday_samples", 20))
+    if validation.get("validation_scope") != "daily_close" or not factors.market_as_of:
+        return False
+    # 当前日盘中同源观测仍不是日终输入；日终残差不能证明盘中覆盖率。
+    # 收盘参考（非 17:00 定格）也不是日终输入，即使它的时点已过 17:00。
+    if factors.basis_status == "close_reference":
+        return False
+    observed = parse_time(factors.market_as_of)
+    return observed.date().isoformat() == factors.as_of and (observed.hour, observed.minute) >= (17, 0)
 
 
 def _predict_number(model: ModelVersion, features: dict) -> Decimal:
@@ -478,39 +657,64 @@ def _solve(matrix, vector):
     return [cloned[index][size] for index in range(size)]
 
 
-def _expanding_metrics(rows, window, config):
-    residual_rows = []
-    baseline_errors = []
-    ridge_errors = []
+def _training_windows(config):
+    minimum = max(2, int(config.get("min_fit_samples", 60)))
+    return sorted({max(minimum, int(window)) for window in config.get("training_windows", (60, 120, 250))}) or [minimum]
+
+
+def _training_slice(training, rows, cutoff_at=None):
+    return replace(
+        training,
+        rows=list(rows),
+        cutoff_at=cutoff_at or training.cutoff_at,
+        source_versions=sorted({row["source_version"] for row in rows}),
+        profile_version=None,
+    )
+
+
+def _rolling_predictions(training, rows, window, config, availability_mode="point_in_time"):
+    predictions = {}
     for end in range(window, len(rows)):
-        sample = rows[end - window:end]
-        training = TrainingSet(
-            identity=rows[end].get("identity") or FundIdentity("", "", "", "", None, ""),
-            cutoff_at=sample[-1]["nav_date"],
-            rows=sample,
-            feature_names=FACTOR_NAMES,
-            source_versions=[],
-            profile_version=None,
-        )
-        # 基线在没有画像时自行估计，保证比较发生在当时可见样本内。
+        row = rows[end]
+        prediction_at = row.get("prediction_at") or row["available_at"]
+        if availability_mode == "point_in_time":
+            if not row.get("availability_verified"):
+                continue
+            if parse_time(row.get("market_available_at") or row["available_at"]) > parse_time(prediction_at):
+                continue
+            # 每行可见时间包括行情版本及两个净值版本；不把后来的修订带回过去。
+            visible = [item for item in rows[:end] if parse_time(item["available_at"]) <= parse_time(prediction_at)]
+        else:
+            # 仅在显式标记的探索报告中使用当前历史版本，不作真实时点评估。
+            prediction_at = row.get("economic_at") or prediction_at
+            visible = rows[:end]
+        sample = visible[-window:]
+        if len(sample) < window:
+            continue
+        fitted = _training_slice(training, sample, prediction_at)
         try:
-            baseline = fit_baseline(training, None, config)
-            ridge = fit_ridge(training, config)
+            baseline = fit_baseline(fitted, None, config)
+            ridge = fit_ridge(fitted, config)
         except (EstimateInputError, ValueError):
             continue
-        actual = Decimal(rows[end]["y"])
-        base_hat = _predict_number(baseline, rows[end]["features"])
-        ridge_hat = _predict_number(ridge, rows[end]["features"])
-        baseline_errors.append(abs(base_hat - actual))
-        ridge_errors.append(abs(ridge_hat - actual))
-        residual_rows.append((ridge_hat, actual))
-    return _metrics_from_pairs(residual_rows, baseline_errors, ridge_errors, len(rows))
+        actual = Decimal(row["y"])
+        predictions[row["nav_date"]] = {
+            "duration_baseline": (_predict_number(baseline, row["features"]), actual),
+            "weighted_ridge_net": (_predict_number(ridge, row["features"]), actual),
+        }
+    return predictions
 
 
-def _metrics_from_pairs(pairs, baseline_errors, ridge_errors, sample_count):
+def _metrics_from_pairs(pairs, baseline_errors, ridge_errors, sample_count, config=None, prediction_dates=None, source_family="daily_close", availability_mode="point_in_time"):
+    config = config or {}
     if not pairs:
-        return _empty_validation(sample_count, [], "样本外预测没有生成")
+        result = _empty_validation(sample_count, [], "样本外预测没有生成")
+        result["prediction_dates"] = list(prediction_dates or [])
+        result.update(validation_availability=availability_mode, availability_verified=False)
+        return result
+    # 偏差保留 predicted-actual 定义；构造区间用 actual-predicted。
     errors = [hat - actual for hat, actual in pairs]
+    residuals = [-error for error in errors]
     mae = sum(abs(item) for item in errors) / Decimal(len(errors))
     bias = sum(errors) / Decimal(len(errors))
     hits = compared = 0
@@ -520,29 +724,43 @@ def _metrics_from_pairs(pairs, baseline_errors, ridge_errors, sample_count):
         compared += 1
         if (hat > 0) == (actual > 0):
             hits += 1
-    ordered = sorted(errors)
-    low = ordered[max(0, int(len(ordered) * 0.1) - 1)]
-    high = ordered[min(len(ordered) - 1, int(len(ordered) * 0.9))]
-    covered = 0
-    widths = []
-    for hat, actual in pairs:
-        left = hat + low
-        right = hat + high
-        widths.append(right - left)
-        if left <= actual <= right:
-            covered += 1
+    calibration_count = len(pairs) // 2 if availability_mode == "point_in_time" else 0
+    evaluation_count = len(pairs) - calibration_count if availability_mode == "point_in_time" else 0
+    minimum = max(1, int(config.get("min_oos_residuals", 20)))
+    low = high = coverage = width = None
+    if availability_mode == "point_in_time" and calibration_count >= minimum and evaluation_count >= minimum:
+        ordered = sorted(residuals[:calibration_count])
+        low = ordered[max(0, math.ceil(len(ordered) * 0.1) - 1)]
+        high = ordered[min(len(ordered) - 1, math.ceil(len(ordered) * 0.9) - 1)]
+        held_out = pairs[calibration_count:]
+        covered = sum(hat + low <= actual <= hat + high for hat, actual in held_out)
+        coverage = pct_text(Decimal(covered) / Decimal(evaluation_count))
+        width = pct_text(high - low)
     return {
         "sample_count": sample_count,
         "oos_count": len(pairs),
+        "prediction_dates": list(prediction_dates or []),
         "mae_bp": pct_text(mae * Decimal(100)),
         "bias_bp": pct_text(bias * Decimal(100)),
+        "bias_definition": "predicted_minus_actual",
         "direction_accuracy": None if compared == 0 else pct_text(Decimal(hits) / Decimal(compared)),
-        "interval_coverage": pct_text(Decimal(covered) / Decimal(len(pairs))),
-        "interval_width_pct": pct_text(sum(widths) / Decimal(len(widths))),
-        "baseline_mae_bp": pct_text((sum(baseline_errors) / Decimal(len(baseline_errors))) * Decimal(100)),
-        "ridge_mae_bp": pct_text((sum(ridge_errors) / Decimal(len(ridge_errors))) * Decimal(100)),
-        "residual_low_pct": pct_text(low),
-        "residual_high_pct": pct_text(high),
+        "interval_coverage": coverage,
+        "interval_width_pct": width,
+        "residual_low_pct": None if low is None else pct_text(low),
+        "residual_high_pct": None if high is None else pct_text(high),
+        "residual_definition": "actual_minus_predicted",
+        "residuals_pct": [pct_text(residual) for residual in residuals],
+        "interval_calibration_count": calibration_count,
+        "interval_evaluation_count": evaluation_count,
+        "interval_calibration_dates": list((prediction_dates or [])[:calibration_count]),
+        "interval_evaluation_dates": list((prediction_dates or [])[calibration_count:]) if evaluation_count else [],
+        "interval_method": "chronological_prefix_calibration_fixed_holdout" if availability_mode == "point_in_time" else "not_calibrated_retrospective_versions",
+        "validation_scope": "daily_close",
+        "source_family": source_family,
+        "validation_availability": availability_mode,
+        "availability_verified": availability_mode == "point_in_time",
+        "version_limitation": None if availability_mode == "point_in_time" else "当前回补历史版本，未核验其在历史预测时点可见；仅供回顾探索",
+        "intraday_sample_count": 0,
         "ready": False,
     }
 
@@ -558,6 +776,21 @@ def _empty_validation(sample_count, gaps, note):
         "interval_width_pct": None,
         "baseline_mae_bp": None,
         "ridge_mae_bp": None,
+        "prediction_dates": [],
+        "residual_low_pct": None,
+        "residual_high_pct": None,
+        "residual_definition": "actual_minus_predicted",
+        "residuals_pct": [],
+        "bias_definition": "predicted_minus_actual",
+        "interval_calibration_count": 0,
+        "interval_evaluation_count": 0,
+        "interval_calibration_dates": [],
+        "interval_evaluation_dates": [],
+        "validation_scope": "daily_close",
+        "validation_availability": "unverified",
+        "availability_verified": False,
+        "point_in_time_oos_count": 0,
+        "retrospective_oos_count": 0,
         "gaps": gaps,
         "note": note,
         "intraday_sample_count": 0,
@@ -581,7 +814,19 @@ def _model(training, kind, names, coefficients, preprocessing, validation, profi
     }
     preprocessing = dict(preprocessing)
     preprocessing["source_family"] = training.source_family
+    preprocessing["training_window"] = len(training.rows)
+    preprocessing["training_sample_count"] = len(training.rows)
+    preprocessing["training_start"] = training.rows[0]["nav_date"] if training.rows else None
+    preprocessing["training_data_hash"] = hashlib.sha256(json.dumps(training.rows, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     payload["preprocessing"] = preprocessing
+    payload.update(
+        identity=training.identity.to_dict(),
+        # cutoff 精度到日：秒级时间戳会让同数据同日的重复训练产生新版本、模型表单调膨胀。
+        cutoff_at=training.cutoff_at[:10],
+        training_rows=training.rows,
+        source_versions=training.source_versions,
+        profile_version=None if profile is None else profile.profile_version,
+    )
     digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:24]
     through = training.rows[-1]["nav_date"] if training.rows else training.cutoff_at[:10]
     return ModelVersion(
@@ -602,8 +847,14 @@ def _model(training, kind, names, coefficients, preprocessing, validation, profi
 
 
 def _with_validation(model: ModelVersion, validation: dict) -> ModelVersion:
+    validation = dict(model.validation, **validation)
+    payload = model.to_dict()
+    payload.update(validation=validation)
+    payload.pop("model_version")
+    payload.pop("artifact_hash")
+    digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:24]
     return ModelVersion(
-        model_version=model.model_version,
+        model_version=f"{model.model_kind}:{digest}",
         identity=model.identity,
         model_kind=model.model_kind,
         trained_through=model.trained_through,
@@ -615,7 +866,7 @@ def _with_validation(model: ModelVersion, validation: dict) -> ModelVersion:
         source_versions=model.source_versions,
         profile_version=model.profile_version,
         validation=validation,
-        artifact_hash=model.artifact_hash,
+        artifact_hash=digest,
     )
 
 

@@ -161,6 +161,7 @@ class FactorObservation:
     missing_fields: list
     basis_date: Optional[str] = None
     source_version: str = ""
+    mapping_evidence: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return asdict(self)

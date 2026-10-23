@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -157,6 +159,15 @@ CREATE TABLE IF NOT EXISTS ai_model_settings (
     api_key TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS curve_level_versions (
+    source_family TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    quote_time TEXT NOT NULL,
+    version TEXT NOT NULL,
+    levels_json TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (source_family, as_of, quote_time, version)
+);
 """
 
 
@@ -181,6 +192,9 @@ class FundEstimateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(factor_observations)')}
+            if 'mapping_evidence_json' not in columns:
+                conn.execute("ALTER TABLE factor_observations ADD COLUMN mapping_evidence_json TEXT NOT NULL DEFAULT 'null'")
             row = conn.execute(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version'"
             ).fetchone()
@@ -322,6 +336,12 @@ class FundEstimateStore:
         return [_profile_from_row(row) for row in rows]
 
     def save_nav(self, observation: NavObservation) -> None:
+        # 来源净值版本不含分红；完整经济内容必须独立版本化，恢复覆盖不抹掉旧观测。
+        semantic = json.dumps([observation.unit_nav, observation.cash_dividend_per_share,
+                               observation.dividend_coverage, observation.event_status], ensure_ascii=False)
+        digest = hashlib.sha256(semantic.encode()).hexdigest()[:16]
+        base_version = observation.source_version.split(':economic:')[0]
+        observation = replace(observation, source_version=f'{base_version}:economic:{digest}')
         with self._lock, self._connect() as conn:
             conn.execute(
                 """INSERT OR IGNORE INTO nav_observations (
@@ -356,14 +376,14 @@ class FundEstimateStore:
                 latest[row["nav_date"]] = row
         return [_nav_from_row(latest[key]) for key in sorted(latest)]
 
-    def save_factor(self, observation: FactorObservation) -> None:
+    def save_factor(self, observation: FactorObservation) -> bool:
         with self._lock, self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT OR IGNORE INTO factor_observations (
                        factor_set_id, source_family, as_of, basis_date, published_at, fetched_at,
                        market_as_of, values_bp_json, calendar_days, basis_status,
-                       missing_fields_json, source_version
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       missing_fields_json, source_version, mapping_evidence_json
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     observation.factor_set_id,
                     observation.source_family,
@@ -377,8 +397,10 @@ class FundEstimateStore:
                     observation.basis_status,
                     json.dumps(observation.missing_fields, ensure_ascii=False),
                     observation.source_version,
+                    json.dumps(observation.mapping_evidence, ensure_ascii=False, sort_keys=True),
                 ),
             )
+            return cursor.rowcount > 0
 
     def factors_as_of(self, cutoff_at: str, source_family: str | None = None) -> list[FactorObservation]:
         cutoff = parse_time(cutoff_at)
@@ -554,10 +576,12 @@ class FundEstimateStore:
     ) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(
-                """INSERT OR IGNORE INTO verifications (
+                """INSERT INTO verifications (
                        product_id, code, trade_date, snapshot_generated_at,
                        realized_return_pct, recorded_at
-                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(product_id, trade_date, snapshot_generated_at) DO UPDATE SET
+                     realized_return_pct=excluded.realized_return_pct, recorded_at=excluded.recorded_at""",
                 (
                     product_id,
                     code,
@@ -607,7 +631,7 @@ class FundEstimateStore:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
                 """SELECT * FROM jobs
-                   WHERE status = 'queued'
+                   WHERE (status = 'queued' OR (status = 'failed' AND next_retry_at IS NOT NULL))
                      AND (next_retry_at IS NULL OR next_retry_at <= ?)
                    ORDER BY updated_at, idempotency_key""",
                 (now,),
@@ -625,7 +649,7 @@ class FundEstimateStore:
                     continue
                 conn.execute(
                     """UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = ?
-                       WHERE idempotency_key = ? AND status = 'queued'""",
+                       WHERE idempotency_key = ? AND status IN ('queued', 'failed')""",
                     (now, row["idempotency_key"]),
                 )
                 claimed.append(_job_dict(row))
@@ -695,6 +719,27 @@ class FundEstimateStore:
         with self._connect() as conn:
             row = conn.execute("SELECT value FROM watermarks WHERE key = ?", (key,)).fetchone()
         return None if row is None else row["value"]
+
+    def save_curve_levels(self, family: str, day: str, quote_time: str, levels: dict, fetched_at: str) -> None:
+        payload = json.dumps(levels, sort_keys=True, ensure_ascii=False)
+        version = hashlib.sha256(payload.encode()).hexdigest()[:24]
+        with self._lock, self._connect() as conn:
+            conn.execute('''INSERT OR IGNORE INTO curve_level_versions
+                (source_family, as_of, quote_time, version, levels_json, fetched_at) VALUES (?,?,?,?,?,?)''',
+                (family, day, quote_time, version, payload, fetched_at))
+
+    def read_curve_levels(self, family: str, day: str, quote_time: str, cutoff: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute('''SELECT levels_json, fetched_at FROM curve_level_versions
+                WHERE source_family=? AND as_of=? AND quote_time=? AND fetched_at<=?
+                ORDER BY fetched_at DESC, rowid DESC LIMIT 1''', (family, day, quote_time, cutoff)).fetchone()
+        return None if row is None else {'levels': json.loads(row['levels_json']), 'fetched_at': row['fetched_at']}
+
+    def document_by_url(self, source_url: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute('''SELECT document_hash, source_url, content_text, fetched_at
+                FROM raw_documents WHERE source_url=? ORDER BY fetched_at DESC LIMIT 1''', (source_url,)).fetchone()
+        return None if row is None else dict(row)
 
     def remember_document(self, document_hash: str, source_url: str, content_text: str, fetched_at: str) -> bool:
         """返回该哈希是否已经成功提取过。"""
@@ -895,6 +940,7 @@ def _factor_from_row(row) -> FactorObservation:
         missing_fields=json.loads(row["missing_fields_json"]),
         basis_date=row["basis_date"],
         source_version=row["source_version"],
+        mapping_evidence=json.loads(row['mapping_evidence_json']) if 'mapping_evidence_json' in row.keys() else None,
     )
 
 
