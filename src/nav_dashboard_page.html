@@ -1314,8 +1314,11 @@
       const box = $('stockMarketContent');
       if (!box) return;
       if (!data || !data.available) { box.innerHTML = '<div class="empty">股市行情暂未取得，稍后自动更新</div>'; return; }
-      const updated = String(data.fetched_at || '').slice(11, 16);
-      $('stockMarketMeta').textContent = `${updated ? updated + ' 更新' : '交易时段更新'}${data.stale || data.refresh_error ? ' · 更新延迟' : ' · 收盘保留'}`;
+      const updated = data.fetched_at ? new Date(data.fetched_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' }) : '';
+      const statuses = data.indices_status || {};
+      const active = Object.values(statuses).some(s => s && (s.collection_phase === 'morning' || s.collection_phase === 'afternoon'));
+      const delayed = Boolean(data.refresh_error) || (data.indices || []).some(i => i && i.source_delayed);
+      $('stockMarketMeta').textContent = `${updated ? updated + ' 更新' : '交易时段更新'}${active ? (delayed ? ' · 更新延迟' : ' · 交易中') : ' · 收盘保留'}`;
       const marketKeys = { 'A股': 'CN', '港股': 'HK', '美股': 'US' };
       const phaseLabel = phase => phase === 'lunch' ? '午间休市' : (phase === 'morning' || phase === 'afternoon') ? '交易中' : '已收盘';
       const indices = data.indices || [];
