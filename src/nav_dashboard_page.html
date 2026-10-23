@@ -392,6 +392,14 @@
     #transactionsPanel > .transaction-filters { margin-top: 0; }
     #sipPanel > .panel-heading { margin-top: 0; }
     #marketPanel > .card.section { margin-top: 0; }
+    #marketPanel > #heldFundEstimateSection.card.section { margin-top: 14px; }
+    .estimate-list { display: grid; }
+    .estimate-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line-soft); }
+    .estimate-row:last-child { border-bottom: 0; }
+    .estimate-name { font-size: 14px; font-weight: 800; line-height: 1.35; }
+    .estimate-code { margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 700; }
+    .estimate-reason { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .estimate-return { font-size: 16px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
     .panel-heading h2 { font-size: 16px; font-weight: 700; }
     .metric-sub { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 14px; }
 .in-transit-hint { margin: -6px 2px 10px; font-size: 12px; color: var(--muted); min-height: 18px; }
@@ -757,9 +765,9 @@
           <div class="section-head"><h2>债市晴雨表</h2><span class="section-meta" id="barometerMeta">--</span></div>
           <div id="barometerContent"><div class="empty">正在读取行情...</div></div>
         </section>
-        <section class="card section" aria-label="待确认基金参考">
-          <div class="section-head"><h2>待确认基金参考</h2><span class="section-meta">不计入持仓资产</span></div>
-          <div id="estimateWatchList"><div class="empty">没有待确认的基金参考</div></div>
+        <section class="card section" id="heldFundEstimateSection" aria-label="持仓涨跌幅预估">
+          <div class="section-head"><h2>持仓涨跌幅预估</h2><span class="section-meta">试验参考</span></div>
+          <div id="estimateWatchList"><div class="empty">正在读取持仓基金...</div></div>
         </section>
       </section>
 
@@ -1212,13 +1220,38 @@
       if (!item) return '';
       return `<div class="estimate-note">${estimateNotePieces(item)}</div>`;
     }
-    function renderEstimateWatch() {
+    function heldFundEstimateValue(item) {
+      if (!item || item.return_pct == null || item.return_pct === '') return '数据准备中';
+      const text = String(item.return_pct);
+      return `${Number(text) > 0 ? '+' : ''}${text}%`;
+    }
+    function renderHeldFundEstimates() {
       const box = $('estimateWatchList');
       if (!box) return;
       const estimates = state.data?.fund_estimates || {};
-      const shown = new Set((state.data?.products || []).map(item => String(rowValue(item, 'product_id', 'id', 'code'))));
-      const rows = Object.values(estimates).filter(item => item && !shown.has(String(item.product_id)) && (item.status === 'pending' || item.status === 'reference'));
-      box.innerHTML = rows.length ? rows.map(item => `<article class="estimate-watch"><b>${esc(item.code || '')}</b><div class="estimate-note">${estimateNotePieces(item)}</div></article>`).join('') : '<div class="empty">没有待确认的基金参考</div>';
+      const pfPositions = portfolioRows('positions', []);
+      const pfTransactions = portfolioRows('transactions', []);
+      const funds = (state.data?.products || []).filter(item => {
+        const type = String(rowValue(item, 'product_type', 'wealth_type', 'type') || '');
+        if (type !== 'public_fund') return false;
+        const pid = String(rowValue(item, 'product_id', 'id', 'code'));
+        if (isClearedAndSettled(pid, pfPositions, pfTransactions)) return false;
+        const shares = Number(rowValue(item, 'shares', 'total_shares'));
+        if (Number.isFinite(shares) && shares > 0) return true;
+        return pfTransactions.some(t => {
+          if (String(rowValue(t, 'product_id')) !== pid) return false;
+          const kind = String(rowValue(t, 'kind', 'transaction_type', 'type')).toLowerCase();
+          return normalStatus(rowValue(t, 'status')) === 'pending' && kind.includes('purchase');
+        });
+      });
+      box.innerHTML = funds.length ? funds.map(item => {
+        const pid = String(rowValue(item, 'product_id', 'id', 'code'));
+        const estimate = estimates[pid] || estimates[rowValue(item, 'code')] || null;
+        const value = heldFundEstimateValue(estimate);
+        const reason = estimate ? estimateReasonText(estimate) : '正在准备净值、曲线和画像';
+        const toneClass = estimate && estimate.return_pct != null && estimate.return_pct !== '' ? tone(estimate.return_pct) : 'neutral';
+        return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}</div><div class="estimate-reason">${esc(reason)}</div></div><div class="estimate-return ${toneClass}">${esc(value)}</div></article>`;
+      }).join('') : '<div class="empty">没有持有的公募基金</div>';
     }
     function setModelSettingsStatus(message, isError) {
       const status = $('aiSettingsStatus');
@@ -2361,13 +2394,13 @@
         const navDisplay = itemType === 'cash_management'
           ? (cashIncome === '' ? '万份 --' : `万份 ${number(cashIncome).toFixed(4)}`)
           : (item.latest_nav ? number(item.latest_nav).toFixed(6) : '--');
-        return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div></div><div class="nav"><div>${esc(navDisplay)}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change change-value ${tone(item.change_pct)}">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div>${(() => { const h = formatHolding(item.shares, item.latest_nav); const text = h && inTransitText ? `${h} · ${inTransitText}` : (h || inTransitText); return text ? `<div class="holding">${esc(text)}</div>` : ''; })()}${estimateMarkup(pid)}</article>`;
+        return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div></div><div class="nav"><div>${esc(navDisplay)}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change change-value ${tone(item.change_pct)}">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div>${(() => { const h = formatHolding(item.shares, item.latest_nav); const text = h && inTransitText ? `${h} · ${inTransitText}` : (h || inTransitText); return text ? `<div class="holding">${esc(text)}</div>` : ''; })()}</article>`;
       }).join('') : '<div class="empty">暂无已配置的净值产品</div>';
       $('positiveRanking').innerHTML = rankingRows(monthlyPositives, '本月无正贡献');
       $('negativeRanking').innerHTML = rankingRows(monthlyNegatives, '本月无拖累');
       $('statusText').textContent = data.last_error ? `部分数据更新失败：${data.last_error}` : data.refreshing ? '正在更新官网净值...' : '';
       renderManagement(data);
-      renderEstimateWatch();
+      renderHeldFundEstimates();
       setRefreshState(data);
       if (!$('dailyProfitBackdrop').hidden) renderDailyProfits();
     }

@@ -1439,6 +1439,10 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert 'id="aiTestButton"' in html
     assert "status.textContent = message || '';" in html
     assert "function estimateNotePieces" in html
+    market = html[html.index('id="marketPanel"'): html.index('id="positionsPanel"')]
+    assert "持仓涨跌幅预估" in market
+    assert "待确认基金参考" not in market
+    assert "estimateMarkup(pid)" not in html
     # 行情面板首块与其他页签一致，与顶栏保持相同间距。
     assert "#marketPanel > .card.section { margin-top: 0; }" in html
 
