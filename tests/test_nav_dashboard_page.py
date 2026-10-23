@@ -12,6 +12,39 @@ def _read_page() -> str:
     return PAGE_PATH.read_text(encoding="utf-8")
 
 
+def test_stock_market_and_estimates_use_red_up_green_down():
+    html = _read_page()
+    # tone() 输出的 positive/negative 需要有基础颜色规则，股市与预估卡片才是红涨绿跌。
+    assert ".positive { color: var(--positive); }" in html
+    assert ".negative { color: var(--negative); }" in html
+    assert '--positive: #f05a24;' in html and '--negative: #07944f;' in html
+
+
+def test_stock_group_titles_show_market_session_status():
+    html = _read_page()
+    assert "stock-group-status" in html
+    assert "indices_status" in html
+    for label in ("交易中", "午间休市", "已收盘"):
+        assert label in html
+
+
+def test_stock_cards_drop_per_quote_time_and_title_shows_single_update_time():
+    html = _read_page()
+    # 指数卡片不再各显示自己的报价时间；统一的本轮更新时间放在股市行情标题右侧。
+    assert '<div class="stock-index-time">${esc(description)}</div>' not in html
+    assert "stockMarketMeta" in html
+    assert "fetched_at" in html
+    assert ' · 收盘保留' in html
+
+
+def test_estimate_list_shows_single_market_time_beside_title():
+    html = _read_page()
+    # 预估列表的行情时间统一放“持仓涨跌幅预估”标题右侧，不在每只产品下重复。
+    assert 'id="estimateMeta"' in html
+    assert 'estimateMeta' in html
+    assert '行情 ${String(estimate.market_as_of)' not in html
+
+
 def test_selected_logo_is_shared_by_header_and_browser_icon():
     html = _read_page()
     asset = "/nav-assets/private-wealth-logo.png"
@@ -1461,14 +1494,14 @@ def test_estimates_render_profit_below_rate_and_pending_purchase_without_false_p
     logic = page[page.index('const ESTIMATE_REASONS ='):page.index('function setModelSettingsStatus(')]
     script = r'''
 const assert = require('assert');
-const elements={estimateWatchList:{innerHTML:''},stockMarketContent:{innerHTML:''},stockMarketMeta:{textContent:''}};
+const elements={estimateWatchList:{innerHTML:''},estimateMeta:{textContent:''},stockMarketContent:{innerHTML:''},stockMarketMeta:{textContent:''}};
 const $=id=>elements[id];
 const esc=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const tone=v=>Number(v)>0?'positive':Number(v)<0?'negative':'neutral';
 const rowValue=(r,...ks)=>{for(const k of ks)if(r?.[k]!==undefined&&r[k]!==null)return r[k];return '';};
 const portfolioRows=()=>[];
 const isClearedAndSettled=()=>false;
-const state={activeTab:'market',data:{fund_estimates:{a:{product_id:'a',code:'918273',name:'基金<名>',holding_status:'held',return_pct:'-0.024',estimated_profit:'-3.51'},b:{product_id:'b',code:'564738',name:'待确认基金',holding_status:'pending_purchase',pending_purchase:true,return_pct:'0.01',estimated_profit:null,profit_reason:'awaiting_confirmed_shares'}}}};
+const state={activeTab:'market',data:{fund_estimates:{a:{product_id:'a',code:'918273',name:'基金<名>',holding_status:'held',return_pct:'-0.024',estimated_profit:'-3.51',market_as_of:'2026-10-23T16:56:00+08:00'},b:{product_id:'b',code:'564738',name:'待确认基金',holding_status:'pending_purchase',pending_purchase:true,return_pct:'0.01',estimated_profit:null,profit_reason:'awaiting_confirmed_shares',market_as_of:'2026-10-23T16:56:00+08:00'}}}};
 ''' + logic + r'''
 renderHeldFundEstimates();
 const result=elements.estimateWatchList.innerHTML;
@@ -1478,8 +1511,12 @@ assert(result.includes('estimate-amount'));
 assert(result.includes('买入待确认'));
 assert(result.includes('待份额确认'));
 assert(!result.includes('¥0.00'));
-renderStockMarket({available:true,source:'东财',indices:[{name:'标普500',market:'美股',quote_date:'2026-10-22',quote_time:'2026-10-22T16:00:00-04:00',price:'6000',change_pct:'-1.2'}],industries:{quote_date:'2026-10-23',leaders:[{name:'电子<行业>',change_pct:'2'}],laggards:[]}});
-assert(elements.stockMarketContent.innerHTML.includes('2026-10-22 16:00 纽约'));
+assert(!result.includes('行情 2026-10-23 16:56'));
+assert(elements.estimateMeta.textContent.includes('行情 2026-10-23 16:56'));
+renderStockMarket({available:true,source:'东财',fetched_at:'2026-10-23T16:20:00+08:00',indices:[{name:'标普500',market:'美股',quote_date:'2026-10-22',quote_time:'2026-10-22T16:00:00-04:00',price:'6000',change_pct:'-1.2'}],industries:{quote_date:'2026-10-23',leaders:[{name:'电子<行业>',change_pct:'2'}],laggards:[]}});
+assert(!elements.stockMarketContent.innerHTML.includes('2026-10-22 16:00 纽约'));
+assert(elements.stockMarketMeta.textContent.includes('16:20 更新'));
+assert(elements.stockMarketContent.innerHTML.includes('已收盘'));
 assert(elements.stockMarketContent.innerHTML.includes('电子&lt;行业&gt;'));
 assert(elements.stockMarketContent.innerHTML.includes('-1.20%'));
 '''

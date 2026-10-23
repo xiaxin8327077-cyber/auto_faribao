@@ -139,7 +139,8 @@ def test_estimated_profit_uses_only_confirmed_shares(tmp_path):
                                                                         status=TransactionStatus.PENDING_CONFIRMATION)])
     result = estimate_holding_amount(payload, IDENTITY, repo)
     assert result['estimated_profit'] == '-3.51'
-    assert result['pending_purchase'] is True
+    # 已持仓基金即使有买入待确认也不显示“买入待确认”标记，标记只给纯新买。
+    assert result['pending_purchase'] is False
     assert result['holding_status'] == 'held_with_pending_purchase'
 
 

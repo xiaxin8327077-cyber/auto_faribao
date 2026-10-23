@@ -304,8 +304,6 @@ def predict(model: ModelVersion, factors: FactorObservation, base_nav: NavObserv
     confidence_label = _label(status, interval_kind)
     if interval_kind == "empirical" and validation.get("validation_scope") == "daily_close":
         confidence_label += "（日终口径）"
-    if validation.get("validation_availability") == "retrospective_current_versions":
-        confidence_label += "（历史版本回顾，未验证真实时点表现）"
     return EstimateSnapshot(
         product_id=identity.product_id,
         code=identity.code,

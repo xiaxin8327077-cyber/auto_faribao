@@ -580,8 +580,10 @@ def estimate_holding_amount(payload, identity, repository) -> dict:
     shares = repository.get_position(identity.product_id).total_shares
     pending = any(tx.transaction_type in PURCHASE_TYPES and tx.status in PENDING_STATUSES
                   for tx in repository.list_transactions(identity.product_id))
-    item.update(estimated_profit=None, profit_currency=identity.currency, pending_purchase=pending,
-                holding_status=('held_with_pending_purchase' if pending else 'held') if shares > 0 else 'pending_purchase',
+    held = shares > 0
+    # “买入待确认”标记只给纯新买（无已确认份额）；已持仓基金不再重复标记。
+    item.update(estimated_profit=None, profit_currency=identity.currency, pending_purchase=bool(pending and not held),
+                holding_status=('held_with_pending_purchase' if pending else 'held') if held else 'pending_purchase',
                 profit_reason='estimate_unavailable', profit_basis='confirmed_shares_previous_nav')
     if shares <= 0:
         item['profit_reason'] = 'awaiting_confirmed_shares'

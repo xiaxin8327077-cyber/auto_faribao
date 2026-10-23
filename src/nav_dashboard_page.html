@@ -167,6 +167,8 @@
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
+    .positive { color: var(--positive); }
+    .negative { color: var(--negative); }
     .total.positive { color: var(--positive); }
     .total.negative { color: var(--negative); }
     .total.neutral { color: var(--blue); }
@@ -412,6 +414,7 @@
     .stock-index-change { margin-top: 3px; font-size: 12px; font-weight: 750; }
     .stock-index-time { margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.5; }
     .stock-group-title { margin: 14px 0 8px; font-size: 12px; font-weight: 750; }
+    .stock-group-status { margin-left: 6px; color: var(--muted); font-size: 10px; font-weight: 700; }
     .stock-group-title:first-child { margin-top: 2px; }
     .stock-sector-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .stock-sector-row { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 11px; }
@@ -787,7 +790,7 @@
           <div id="barometerContent"><div class="empty">正在读取行情...</div></div>
         </section>
         <section class="card section" id="heldFundEstimateSection" aria-label="持仓涨跌幅预估">
-          <div class="section-head"><h2>持仓涨跌幅预估</h2><span class="section-meta">预估涨跌幅</span></div>
+          <div class="section-head"><h2>持仓涨跌幅预估</h2><span class="section-meta" id="estimateMeta">预估涨跌幅</span></div>
           <div id="estimateWatchList"><div class="empty">正在读取持仓基金...</div></div>
         </section>
       </section>
@@ -1283,6 +1286,7 @@
           return normalStatus(rowValue(t, 'status')) === 'pending' && kind.includes('purchase');
         });
       });
+      let latestEstimateTime = '';
       box.innerHTML = funds.length ? funds.map(item => {
         const pid = String(rowValue(item, 'product_id', 'id', 'code'));
         const estimate = estimates[pid] || estimates[rowValue(item, 'code')] || null;
@@ -1293,11 +1297,14 @@
         const toneClass = estimate && estimate.return_pct != null && estimate.return_pct !== '' ? tone(estimate.return_pct) : 'neutral';
         const reasonHtml = reason ? `<div class="estimate-reason">${esc(reason)}</div>` : '';
         const pendingHtml = estimate?.pending_purchase ? '<span class="estimate-pending">买入待确认</span>' : '';
-        const sourceTime = estimate?.market_as_of ? `行情 ${String(estimate.market_as_of).slice(0,16).replace('T',' ')}` : '';
+        const marketTime = estimate?.market_as_of ? String(estimate.market_as_of).slice(0, 16).replace('T', ' ') : '';
+        if (marketTime && (!latestEstimateTime || marketTime > latestEstimateTime)) latestEstimateTime = marketTime;
         const quality = estimate?.confidence_label || '';
-        const timeHtml = sourceTime || quality ? `<div class="estimate-reason">${esc([quality, sourceTime].filter(Boolean).join(' · '))}</div>` : '';
+        const timeHtml = quality ? `<div class="estimate-reason">${esc(quality)}</div>` : '';
         return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}${pendingHtml}</div>${reasonHtml}${timeHtml}</div><div class="estimate-return ${toneClass}">${esc(value)}${heldFundEstimateAmount(estimate)}</div></article>`;
       }).join('') : '<div class="empty">没有持有的公募基金</div>';
+      const estimateMeta = $('estimateMeta');
+      if (estimateMeta) estimateMeta.textContent = latestEstimateTime ? `预估涨跌幅 · 行情 ${latestEstimateTime}` : '预估涨跌幅';
     }
     function stockPercent(value) {
       if (value == null || value === '' || !Number.isFinite(Number(value))) return '--';
@@ -1307,16 +1314,18 @@
       const box = $('stockMarketContent');
       if (!box) return;
       if (!data || !data.available) { box.innerHTML = '<div class="empty">股市行情暂未取得，稍后自动更新</div>'; return; }
-      $('stockMarketMeta').textContent = data.refresh_error ? '部分行情更新延迟' : '交易时段更新 · 收盘保留';
+      const updated = String(data.fetched_at || '').slice(11, 16);
+      $('stockMarketMeta').textContent = `${updated ? updated + ' 更新' : '交易时段更新'}${data.stale || data.refresh_error ? ' · 更新延迟' : ' · 收盘保留'}`;
+      const marketKeys = { 'A股': 'CN', '港股': 'HK', '美股': 'US' };
+      const phaseLabel = phase => phase === 'lunch' ? '午间休市' : (phase === 'morning' || phase === 'afternoon') ? '交易中' : '已收盘';
       const indices = data.indices || [];
       const groups = ['A股', '港股', '美股'].map(market => {
         const cards = indices.filter(item => item.market === market).map(item => {
           const price = item.price == null || !Number.isFinite(Number(item.price)) ? '--' : Number(item.price).toFixed(2);
-          const stamp = item.quote_date ? `${item.quote_date} ${String(item.quote_time || '').slice(11,16)}` : '暂无报价';
-          const description = `${stamp}${market === '美股' ? ' 纽约' : ''}${item.stale ? ' · 延迟' : ''}`;
-          return `<div class="stock-index"><div class="stock-index-name">${esc(item.name)}</div><div class="stock-index-value ${tone(item.change_pct)}">${esc(price)}</div><div class="stock-index-change ${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</div><div class="stock-index-time">${esc(description)}</div></div>`;
+          return `<div class="stock-index"><div class="stock-index-name">${esc(item.name)}</div><div class="stock-index-value ${tone(item.change_pct)}">${esc(price)}</div><div class="stock-index-change ${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</div></div>`;
         }).join('');
-        return cards ? `<p class="stock-group-title">${esc(market)}${market === '美股' ? ' · 当地市场日期' : ''}</p><div class="stock-grid">${cards}</div>` : '';
+        const status = (data.indices_status || {})[marketKeys[market]] || {};
+        return cards ? `<p class="stock-group-title">${esc(market)}${market === '美股' ? ' · 当地市场日期' : ''} <span class="stock-group-status">${esc(phaseLabel(status.collection_phase))}</span></p><div class="stock-grid">${cards}</div>` : '';
       }).join('');
       const sectors = data.industries || {};
       const sectorColumn = (title, rows) => `<div><p class="stock-group-title">${title}</p>${(rows || []).map(item => `<div class="stock-sector-row"><span>${esc(item.name)}</span><span class="${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</span></div>`).join('') || '<div class="stock-index-time">暂无符合条件板块</div>'}</div>`;

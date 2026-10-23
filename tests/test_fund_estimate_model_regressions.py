@@ -371,6 +371,8 @@ def test_retrospective_residuals_cannot_be_used_as_empirical_intervals():
                        datetime(2026, 10, 23, 21, tzinfo=TZ_CN), {'min_oos_residuals': 5})
     assert snapshot.interval_kind == 'none'
     assert snapshot.status == 'experimental'
+    # 展示标签不再拼接回顾说明长句；回顾限制仍在 validation 记录里，不走界面文案。
+    assert '历史版本回顾' not in (snapshot.confidence_label or '')
 
 def test_known_historical_versions_retain_strict_chronological_validation():
     sample = training_rows(80)
