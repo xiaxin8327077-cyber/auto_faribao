@@ -384,3 +384,31 @@ def test_source_timestamp_missing_is_not_filled_with_fetch_date(conn):
     result = _module().refresh_stock_market(conn, now=_now(), session=_Session(indices=_payload(rows)))
     assert _index(result, "sse")["quote_date"] is None
     assert _index(result, "sse")["available"] is False
+
+
+def test_eastmoney_index_failure_falls_back_to_tencent(conn):
+    module = _module()
+
+    class Text:
+        status_code = 200
+        text = ('v_s_sh000001="1~上证指数~000001~3690.48~32.45~0.89~1~~2~~";\n'
+                'v_s_hkHSI="100~恒生指数~HSI~23093.37~158.69~0.69~1~~2~~";\n')
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {}
+
+    class Session:
+        def get(self, url, *, params, timeout, headers):
+            if "qt.gtimg.cn" in url:
+                return Text()
+            if "/ulist." in url:
+                raise requests.ConnectionError("eastmoney down")
+            return _Response(_payload(_industry_rows()))
+
+    result = module.refresh_stock_market(conn, now=_now(), session=Session())
+    assert result["available"]
+    assert _index(result, "sse")["price"] == "3690.48"
+    assert _index(result, "hsi")["price"] == "23093.37"

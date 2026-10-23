@@ -51,6 +51,38 @@ _INDICES = (
     ("nasdaq", "纳斯达克综合", "US", "100.NDX"),
     ("sp500", "标普500", "US", "100.SPX"),
 )
+_TENCENT_URL = "https://qt.gtimg.cn/q="
+_TENCENT_CODES = {
+    "s_sh000001": (1, "000001"), "s_sz399001": (0, "399001"), "s_sz399006": (0, "399006"),
+    "s_sh000688": (1, "000688"), "s_sz899050": (0, "899050"), "s_hkHSI": (100, "HSI"),
+    "s_hkHSTECH": (124, "HSTECH"), "s_usDJI": (100, "DJIA"), "s_usNDX": (100, "NDX"),
+    "s_usINX": (100, "SPX"),
+}
+
+
+def _tencent_indices(client):
+    """备用源：腾讯行情。转成东财同结构行供解析管道复用，东财失败时兜底指数。"""
+    response = client.get(_TENCENT_URL + ",".join(_TENCENT_CODES), params={},
+                          headers={"User-Agent": "Mozilla/5.0"}, timeout=(3.0, 5.0))
+    response.raise_for_status()
+    rows = []
+    for line in getattr(response, "text", "").splitlines():
+        if '="' not in line:
+            continue
+        variable, _, rest = line.partition('="')
+        key = variable[2:] if variable.startswith("v_") else ""
+        if key not in _TENCENT_CODES:
+            continue
+        parts = rest.rstrip('";').split("~")
+        if len(parts) < 6:
+            continue
+        f13, f12 = _TENCENT_CODES[key]
+        rows.append({"f12": f12, "f13": f13, "f14": parts[1],
+                     "f2": parts[3], "f3": parts[5], "f4": parts[4],
+                     "f124": int(time.time())})
+    if not rows:
+        raise ValueError("tencent fallback returned no quotes")
+    return {"rc": 0, "data": {"diff": rows}}
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS stock_market_cache (
     component TEXT PRIMARY KEY,
@@ -388,7 +420,13 @@ def _fetch(markets, industries_due, session):
                 result = {**result, "data": {**result["data"], "diff": collected}}
             outcome = (result, None)
         except Exception as exc:  # Each public source can fail independently.
-            outcome = (None, f"{type(exc).__name__}: {str(exc)[:180]}")
+            if name == "indices":
+                try:
+                    outcome = (_tencent_indices(client), None)
+                except Exception:
+                    outcome = (None, f"{type(exc).__name__}: {str(exc)[:180]}")
+            else:
+                outcome = (None, f"{type(exc).__name__}: {str(exc)[:180]}")
         finally:
             if session is None and client is not None:
                 client.close()
