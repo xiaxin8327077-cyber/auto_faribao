@@ -51,6 +51,14 @@ def test_market_panel_cards_keep_even_gap_across_notice_element():
     assert "#marketPanel > .card.section ~ .card.section { margin-top: 14px; }" in html
 
 
+def test_verification_section_renders_stats_and_optional_ai_note():
+    html = _read_page()
+    assert 'id="verificationSection"' in html
+    assert 'id="verificationContent"' in html
+    assert "renderVerification" in html
+    assert "/api/portfolio/fund-estimate-verifications" in html
+
+
 def test_selected_logo_is_shared_by_header_and_browser_icon():
     html = _read_page()
     asset = "/nav-assets/private-wealth-logo.png"

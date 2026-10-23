@@ -793,6 +793,10 @@
           <div class="section-head"><h2>持仓涨跌幅预估</h2><span class="section-meta" id="estimateMeta">预估涨跌幅</span></div>
           <div id="estimateWatchList"><div class="empty">正在读取持仓基金...</div></div>
         </section>
+        <section class="card section" id="verificationSection" aria-label="预估验证分析">
+          <div class="section-head"><h2>预估验证分析</h2><span class="section-meta" id="verificationMeta">--</span></div>
+          <div id="verificationContent"><div class="empty">暂无验证样本，净值确认后自动累积</div></div>
+        </section>
       </section>
 
       <section id="positionsPanel" class="management-panel" role="tabpanel" aria-labelledby="positionsTab" hidden>
@@ -1335,6 +1339,30 @@
       const sectorDelayed = Boolean(sectors.refresh_error) || (sectors.items || []).some(i => i && i.source_delayed);
       box.innerHTML = `${groups}<p class="stock-group-title">A股一级行业 <span class="stock-index-time">${esc(sectors.quote_date || '')}${cnActive && sectorDelayed ? ' · 更新延迟' : ''}</span></p><div class="stock-sector-grid">${sectorColumn('领涨', sectors.leaders)}${sectorColumn('领跌', sectors.laggards)}</div><p class="barometer-note">${esc(data.source || '公开行情')} · 按各市场交易时段采集，午间及收盘后保留最近快照。${data.refresh_error ? '来源暂不可用，显示上次成功行情。' : ''}</p>`;
     }
+    function renderVerification(data) {
+      const box = $('verificationContent');
+      if (!box) return;
+      const stats = (data && data.stats) || {};
+      const items = (data && data.items) || [];
+      $('verificationMeta').textContent = stats.pairs ? `样本 ${stats.pairs}` : '--';
+      if (!items.length) { box.innerHTML = '<div class="empty">暂无验证样本，净值确认后自动累积</div>'; return; }
+      const rows = items.slice().reverse().slice(0, 8).map(item => {
+        const predicted = item.predicted_pct == null ? '未出预估' : `${item.predicted_pct}%`;
+        const mark = item.direction_ok == null ? '' : item.direction_ok ? ' ✓' : ' ✗';
+        return `<div class="stock-sector-row"><span>${esc(item.trade_date)} ${esc(item.code)}</span><span>${esc(predicted)} → ${esc(item.realized_pct)}%${mark}</span></div>`;
+      }).join('');
+      const accuracy = stats.direction_accuracy == null ? '--' : `${(Number(stats.direction_accuracy) * 100).toFixed(1)}%`;
+      const summary = `方向准确率 ${accuracy} · 平均偏差 ${stats.bias_pct == null ? '--' : esc(stats.bias_pct) + '%'} · 平均误差 ${stats.mae_pct == null ? '--' : esc(stats.mae_pct) + '%'} · 缺预估 ${stats.missing_predictions || 0} 次`;
+      const ai = data && data.ai_analysis ? `<p class="barometer-note">${esc(data.ai_analysis)}</p>` : '';
+      box.innerHTML = `<p class="estimate-note">${summary}</p>${rows}${ai}`;
+    }
+    async function loadVerification() {
+      try {
+        const response = await api('/api/portfolio/fund-estimate-verifications');
+        if (!response.ok) return;
+        renderVerification(await response.json());
+      } catch (_error) { /* 网络抖动时保留上次内容 */ }
+    }
     async function loadMarketOverview(force = false) {
       if (marketLoading || document.hidden || state.activeTab !== 'market') return;
       marketLoading = true;
@@ -1353,6 +1381,7 @@
         renderStockMarket(payload.stock_market);
         if (payload.bond_barometer) renderBarometer(payload.bond_barometer);
         renderHeldFundEstimates();
+        loadVerification();
       } catch (_error) {
         $('stockMarketMeta').textContent = '连接延迟，保留上次行情';
       } finally {

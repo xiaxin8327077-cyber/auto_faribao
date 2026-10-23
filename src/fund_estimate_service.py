@@ -263,6 +263,68 @@ class FundEstimateService:
             result[identity.product_id] = payload
         return result
 
+    def verification_report(self) -> dict:
+        """预估与真实涨跌对比：确定性统计为准，AI只做点评且不改动任何数字。"""
+        from src.fund_estimate_types import decimal_text
+
+        rows = self.store.read_verifications()
+        items, errors = [], []
+        hits = predicted_count = missing = 0
+        for row in rows:
+            realized = row.get('realized_return_pct')
+            if realized in (None, ''):
+                continue
+            predicted = row.get('predicted')
+            entry = {'code': row['code'], 'trade_date': row['trade_date'],
+                     'snapshot_generated_at': row['snapshot_generated_at'],
+                     'predicted_pct': predicted, 'realized_pct': realized,
+                     'error_pct': None, 'direction_ok': None}
+            if predicted in (None, ''):
+                missing += 1
+            else:
+                predicted_count += 1
+                error = Decimal(str(predicted)) - Decimal(str(realized))
+                errors.append(error)
+                entry['error_pct'] = decimal_text(error)
+                if (Decimal(str(predicted)) > 0) - (Decimal(str(predicted)) < 0) == \
+                        (Decimal(str(realized)) > 0) - (Decimal(str(realized)) < 0):
+                    hits += 1
+                    entry['direction_ok'] = True
+                else:
+                    entry['direction_ok'] = False
+            items.append(entry)
+        stats = {
+            'pairs': len(items),
+            'predicted_count': predicted_count,
+            'missing_predictions': missing,
+            'direction_hits': hits,
+            'direction_accuracy': decimal_text(Decimal(hits) / Decimal(predicted_count)) if predicted_count else None,
+            'mae_pct': decimal_text(sum((abs(e) for e in errors), Decimal(0)) / Decimal(len(errors))) if errors else None,
+            'bias_pct': decimal_text(sum(errors, Decimal(0)) / Decimal(len(errors))) if errors else None,
+        }
+        return {'items': items, 'stats': stats, 'ai_analysis': self._verification_analysis(items, stats),
+                'generated_at': iso_now(datetime.now(TZ_CN))}
+
+    def _verification_analysis(self, items: list, stats: dict):
+        if not items:
+            return None
+        digest = hashlib.sha256(json.dumps([items, stats], ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+        cached = self.store.get_watermark(f'verification-analysis:{digest}')
+        if cached:
+            return cached
+        try:
+            if self.ai is None or not self.ai.is_enabled():
+                return None
+            payload = json.dumps({'stats': stats, 'items': items[-20:]}, ensure_ascii=False)
+            text = self.ai.complete([
+                {'role': 'system', 'content': '你是基金预估的数据点评助手。只依据给定数据写简短中文分析，绝不改动或虚构任何数字，不做未来收益承诺。'},
+                {'role': 'user', 'content': '以下是基金盘中预估涨跌幅与真实涨跌的对比数据（单位：%）。请写3-5句分析：整体准确率评价、偏差方向与幅度、值得留意的样本。数据：' + payload},
+            ])
+        except Exception:
+            return None
+        self.store.set_watermark(f'verification-analysis:{digest}', text, iso_now(datetime.now(TZ_CN)))
+        return text
+
     def save_model_settings(self, body: dict, now: datetime) -> dict:
         base_url = chat_completions_url(str(body.get("base_url") or "")) if str(body.get("base_url") or "").strip() else ""
         if base_url:

@@ -2250,6 +2250,18 @@ def create_portfolio_blueprint(runtime, provider_factory, estimate_service=None)
             items = []
         return jsonify({"generated_at": generated_at, "items": items})
 
+    @blueprint.get("/api/portfolio/fund-estimate-verifications")
+    def fund_estimate_verifications():
+        guard = read_guard()
+        if guard:
+            return guard
+        if estimate_service is None:
+            return jsonify({"items": [], "stats": {}, "ai_analysis": None})
+        try:
+            return jsonify(estimate_service.verification_report())
+        except Exception:
+            return jsonify({"items": [], "stats": {}, "ai_analysis": None})
+
     @blueprint.get("/api/portfolio/fund-estimate-model-settings")
     def fund_estimate_model_settings():
         guard = read_guard()

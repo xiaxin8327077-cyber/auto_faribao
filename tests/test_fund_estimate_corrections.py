@@ -125,6 +125,66 @@ def test_read_snapshots_strips_unverified_cross_source_numbers(tmp_path):
     assert payload['confidence_label'] == '同类参考'
 
 
+def test_verification_report_pairs_predictions_with_realized_and_stats(tmp_path):
+    from src.fund_estimate_types import EstimateSnapshot
+    store = store_at(tmp_path)
+
+    def snap(day, gen, ret):
+        return EstimateSnapshot('p-new', '918273', day, 'mark_to_market_total_return', 'experimental',
+                                [], day, '1', gen, None, None, None, 'm', ret, None, None,
+                                'none', '试验', None, gen)
+
+    rows = [('2026-10-20', '0.10', '0.20'), ('2026-10-21', '0.10', '-0.20'),
+            ('2026-10-22', None, '0.30'), ('2026-10-23', '0', '0')]
+    for day, pred, real in rows:
+        gen = f'{day}T15:00:00+08:00'
+        store.save_snapshot(snap(day, gen, pred), slot=f'{day}T15:00', source_version='m')
+        store.save_verification(product_id='p-new', code='918273', trade_date=day,
+                                snapshot_generated_at=gen, realized_return_pct=real,
+                                recorded_at=f'{day}T20:00:00+08:00')
+    service = FundEstimateService(None, store, EstimateSources(), ProfileService(store, MemoryDocuments()))
+    report = service.verification_report()
+    stats = report['stats']
+    assert stats['pairs'] == 4
+    assert stats['predicted_count'] == 3
+    assert stats['missing_predictions'] == 1
+    # 方向一致：0.10/0.20 同向、0/0 一致；0.10/-0.20 相反；缺预测不计方向。
+    assert stats['direction_hits'] == 2
+    assert float(stats['direction_accuracy']) == pytest.approx(2 / 3, abs=1e-3)
+    assert float(stats['mae_pct']) == pytest.approx((0.10 + 0.30 + 0) / 3, abs=1e-3)
+    assert float(stats['bias_pct']) == pytest.approx((-0.10 + 0.30 + 0) / 3, abs=1e-3)
+    assert [item['trade_date'] for item in report['items']] == [r[0] for r in rows]
+    assert report['ai_analysis'] is None  # 未配置AI时降级为空，统计不受影响
+
+
+def test_verification_analysis_uses_ai_without_changing_numbers(tmp_path):
+    from src.fund_estimate_types import EstimateSnapshot
+    store = store_at(tmp_path)
+    gen = '2026-10-22T15:00:00+08:00'
+    snapshot = EstimateSnapshot('p-new', '918273', '2026-10-22', 'mark_to_market_total_return', 'experimental',
+                                [], '2026-10-21', '1', gen, None, None, None, 'm', '0.10', None, None,
+                                'none', '试验', None, gen)
+    store.save_snapshot(snapshot, slot='2026-10-22T15:00', source_version='m')
+    store.save_verification(product_id='p-new', code='918273', trade_date='2026-10-22',
+                            snapshot_generated_at=gen, realized_return_pct='0.20',
+                            recorded_at='2026-10-22T20:00:00+08:00')
+
+    class FakeAi:
+        def is_enabled(self):
+            return True
+
+        def complete(self, messages):
+            assert '0.10' in messages[-1]['content']  # 数据必须进提示词
+            return '预估整体略偏保守，建议关注偏差幅度。'
+
+    service = FundEstimateService(None, store, EstimateSources(), ProfileService(store, MemoryDocuments()), ai=FakeAi())
+    report = service.verification_report()
+    assert report['ai_analysis'] == '预估整体略偏保守，建议关注偏差幅度。'
+    assert report['stats']['pairs'] == 1
+    # AI 点评不改动任何统计数字。
+    assert float(report['stats']['bias_pct']) == pytest.approx(-0.10, abs=1e-3)
+
+
 def test_production_service_uses_trading_calendar(tmp_path):
     service = create_fund_estimate_service(None, path=tmp_path / 'fund.db')
     assert service.bond_trading_day(date(2026, 10, 1)) is False

@@ -592,6 +592,30 @@ class FundEstimateStore:
                 ),
             )
 
+    def read_verifications(self) -> list[dict]:
+        """预估快照与真实收益的配对明细；predicted 为当时快照的 return_pct。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT v.product_id, v.code, v.trade_date, v.snapshot_generated_at,
+                          v.realized_return_pct, v.recorded_at, s.payload_json
+                   FROM verifications v LEFT JOIN estimate_snapshots s
+                     ON s.product_id = v.product_id AND s.generated_at = v.snapshot_generated_at
+                   ORDER BY v.trade_date, v.snapshot_generated_at"""
+            ).fetchall()
+        result = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+            except (TypeError, ValueError):
+                payload = {}
+            result.append({
+                "product_id": row["product_id"], "code": row["code"],
+                "trade_date": row["trade_date"], "snapshot_generated_at": row["snapshot_generated_at"],
+                "realized_return_pct": row["realized_return_pct"], "recorded_at": row["recorded_at"],
+                "predicted": payload.get("return_pct"),
+            })
+        return result
+
     def enqueue_job(self, key: str, job_type: str, product_id: str, code: str, payload: dict, now: str) -> bool:
         with self._lock, self._connect() as conn:
             existing = conn.execute(

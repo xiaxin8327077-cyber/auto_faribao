@@ -125,3 +125,16 @@ def test_estimate_fields_do_not_change_confirmed_profit(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert database.path.read_bytes() == before
     assert repository.get_product("p918273").name == "新买入纯债A"
+
+
+def test_verification_endpoint_requires_key_and_returns_report(tmp_path, monkeypatch):
+    store = FundEstimateStore(tmp_path / "fund_estimation.db")
+    store.initialize()
+    service = FundEstimateService(None, store, EstimateSources(), ProfileService(store, MemoryDocuments()))
+    client, _repo, _db = client_for(tmp_path, monkeypatch, service)
+    assert client.get("/api/portfolio/fund-estimate-verifications").status_code == 403
+    response = client.get("/api/portfolio/fund-estimate-verifications", headers={"X-Nav-Dashboard-Key": "secret"})
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["items"] == []
+    assert payload["stats"]["pairs"] == 0
