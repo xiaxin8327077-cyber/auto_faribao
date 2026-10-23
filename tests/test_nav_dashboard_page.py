@@ -1534,6 +1534,8 @@ assert(!elements.stockMarketContent.innerHTML.includes('2026-10-22 16:00 纽约'
 assert(elements.stockMarketMeta.textContent.includes('16:20 更新'));
 assert(elements.stockMarketMeta.textContent.includes('收盘保留'));
 assert(!elements.stockMarketContent.innerHTML.includes('更新延迟'));
+assert(elements.stockMarketContent.innerHTML.includes('2026.10.22'));
+assert(!elements.stockMarketContent.innerHTML.includes('当地市场日期'));
 assert(elements.stockMarketContent.innerHTML.includes('已收盘'));
 assert(elements.stockMarketContent.innerHTML.includes('电子&lt;行业&gt;'));
 assert(elements.stockMarketContent.innerHTML.includes('-1.20%'));

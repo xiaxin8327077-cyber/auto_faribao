@@ -1325,12 +1325,15 @@
       const phaseLabel = phase => phase === 'lunch' ? '午间休市' : (phase === 'morning' || phase === 'afternoon') ? '交易中' : '已收盘';
       const indices = data.indices || [];
       const groups = ['A股', '港股', '美股'].map(market => {
-        const cards = indices.filter(item => item.market === market).map(item => {
+        const members = indices.filter(item => item.market === market);
+        const cards = members.map(item => {
           const price = item.price == null || !Number.isFinite(Number(item.price)) ? '--' : Number(item.price).toFixed(2);
           return `<div class="stock-index"><div class="stock-index-name">${esc(item.name)}</div><div class="stock-index-value ${tone(item.change_pct)}">${esc(price)}</div><div class="stock-index-change ${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</div></div>`;
         }).join('');
         const status = (data.indices_status || {})[marketKeys[market]] || {};
-        return cards ? `<p class="stock-group-title">${esc(market)}${market === '美股' ? ' · 当地市场日期' : ''} <span class="stock-group-status">${esc(phaseLabel(status.collection_phase))}</span></p><div class="stock-grid">${cards}</div>` : '';
+        const dates = members.map(i => i.quote_date).filter(Boolean).sort();
+        const dateText = dates.length ? dates[dates.length - 1].replace(/-/g, '.') : '';
+        return cards ? `<p class="stock-group-title">${esc(market)} <span class="stock-group-status">${esc(dateText)} ${esc(phaseLabel(status.collection_phase))}</span></p><div class="stock-grid">${cards}</div>` : '';
       }).join('');
       const sectors = data.industries || {};
       const sectorColumn = (title, rows) => `<div><p class="stock-group-title">${title}</p>${(rows || []).map(item => `<div class="stock-sector-row"><span>${esc(item.name)}</span><span class="${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</span></div>`).join('') || '<div class="stock-index-time">暂无符合条件板块</div>'}</div>`;
