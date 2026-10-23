@@ -1434,3 +1434,5 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert "红=收益率下行、绿=上行、灰=变动≤0.05bp" in html
     assert "交易时段（工作日 9:00-17:30）内每 30 分钟自动更新" in html
     assert "grid-template-columns: repeat(5, 1fr);" in html
+    # 行情面板首块与其他页签一致，与顶栏保持相同间距。
+    assert "#marketPanel > .card.section { margin-top: 0; }" in html
