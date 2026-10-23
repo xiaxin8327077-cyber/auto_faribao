@@ -1253,9 +1253,12 @@
         const pid = String(rowValue(item, 'product_id', 'id', 'code'));
         const estimate = estimates[pid] || estimates[rowValue(item, 'code')] || null;
         const value = heldFundEstimateValue(estimate);
-        const reason = estimate ? estimateReasonText(estimate) : '正在准备净值、曲线和画像';
+        const reason = estimate
+          ? estimateReasonText({...estimate, reason_codes: (estimate.reason_codes || []).filter(code => code !== 'basis_unverified')})
+          : (value === '数据准备中' ? '正在准备净值、曲线和画像' : '');
         const toneClass = estimate && estimate.return_pct != null && estimate.return_pct !== '' ? tone(estimate.return_pct) : 'neutral';
-        return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}</div><div class="estimate-reason">${esc(reason)}</div></div><div class="estimate-return ${toneClass}">${esc(value)}</div></article>`;
+        const reasonHtml = reason ? `<div class="estimate-reason">${esc(reason)}</div>` : '';
+        return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}</div>${reasonHtml}</div><div class="estimate-return ${toneClass}">${esc(value)}</div></article>`;
       }).join('') : '<div class="empty">没有持有的公募基金</div>';
     }
     function setModelSettingsStatus(message, isError) {

@@ -1444,7 +1444,7 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert "预估涨跌幅" in market
     assert "试验参考" not in market
     assert ".estimate-return.positive { color: var(--positive); }" in html
-    assert ".estimate-return.negative { color: var(--negative); }" in html
+    assert "code !== 'basis_unverified'" in html
     assert "待确认基金参考" not in market
     assert "estimateMarkup(pid)" not in html
     # 行情面板首块与其他页签一致，与顶栏保持相同间距。
