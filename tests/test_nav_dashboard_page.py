@@ -45,6 +45,12 @@ def test_estimate_list_shows_single_market_time_beside_title():
     assert '行情 ${String(estimate.market_as_of)' not in html
 
 
+def test_market_panel_cards_keep_even_gap_across_notice_element():
+    html = _read_page()
+    # 股市与债市之间隔着 write-notice，用通用兄弟选择器保证卡片间距一致。
+    assert "#marketPanel > .card.section ~ .card.section { margin-top: 14px; }" in html
+
+
 def test_selected_logo_is_shared_by_header_and_browser_icon():
     html = _read_page()
     asset = "/nav-assets/private-wealth-logo.png"
