@@ -106,6 +106,20 @@ def test_trade_window_holiday_and_cross_midnight_nav_poll():
     assert intraday_session(datetime(2026, 10, 25, 10, 0, tzinfo=TZ_CN), calendar) is True
 
 
+def test_snapshot_queue_keeps_only_the_latest_minute(tmp_path):
+    repo = repository(tmp_path)
+    pending_fund(repo)
+    service = build(tmp_path, repo)
+    service.tick(datetime(2026, 10, 23, 10, 0, tzinfo=TZ_CN))
+    service.tick(datetime(2026, 10, 23, 10, 5, tzinfo=TZ_CN))
+    queued = [
+        item for item in service.store.list_jobs("918273")
+        if item["job_type"] == "intraday_snapshot" and item["status"] == "queued"
+    ]
+    assert len(queued) == 1
+    assert queued[0]["idempotency_key"].endswith("2026-10-23T10:05")
+
+
 def test_slow_ai_does_not_block_barometer_or_portfolio_cycle(tmp_path):
     repo = repository(tmp_path)
     pending_fund(repo)

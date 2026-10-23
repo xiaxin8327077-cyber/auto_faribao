@@ -5,6 +5,8 @@ from datetime import date, datetime, time, timedelta
 import json
 import logging
 from pathlib import Path
+import threading
+import time as time_module
 
 from src.beijing_time import TZ_CN
 from src.fund_estimate_ai import AiSettingsError, EstimateAi, chat_completions_url, scrub_secret
@@ -119,6 +121,8 @@ class FundEstimateService:
         self.bond_trading_day = bond_trading_day or weekday_bond_day
         self.ai = ai or EstimateAi(store)
         self._resumed = False
+        self._worker = None
+        self._worker_guard = threading.Lock()
 
     def jobs_enabled(self) -> bool:
         if self.config.get("enabled"):
@@ -148,8 +152,10 @@ class FundEstimateService:
             )
             if intraday_session(now, self.bond_trading_day):
                 slot = ensure_aware(now, TZ_CN).strftime("%Y-%m-%dT%H:%M")
+                snapshot_key = f"snapshot:{identity.code}:{identity.share_class}:{slot}"
+                self.store.cancel_older_queued("intraday_snapshot", identity.code, snapshot_key, stamp)
                 self.store.enqueue_job(
-                    f"snapshot:{identity.code}:{identity.share_class}:{slot}",
+                    snapshot_key,
                     "intraday_snapshot",
                     identity.product_id,
                     identity.code,
@@ -197,6 +203,30 @@ class FundEstimateService:
                 self.store.record_profile_failure(job.get("code") or "", "", message, stamp)
             done += 1
         return done
+
+    def ensure_worker(self) -> None:
+        """只启动一次后台执行线程。tick 本身仍然只负责入队。"""
+        if not self.jobs_enabled():
+            return
+        with self._worker_guard:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._worker = threading.Thread(
+                target=self._worker_loop,
+                name="fund-estimate",
+                daemon=True,
+            )
+            self._worker.start()
+
+    def _worker_loop(self) -> None:
+        while self.jobs_enabled():
+            try:
+                processed = self.run_pending(datetime.now(TZ_CN), max_jobs=1)
+            except Exception:
+                logger.warning("基金估值任务执行失败", exc_info=True)
+                processed = 0
+            if processed == 0:
+                time_module.sleep(2)
 
     def read_snapshots(self, product_ids, now: datetime) -> dict[str, dict]:
         identities = discover_funds(self.repository, now)

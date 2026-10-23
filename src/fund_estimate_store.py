@@ -670,6 +670,19 @@ class FundEstimateStore:
                         (now, row["idempotency_key"]),
                     )
 
+    def cancel_older_queued(self, job_type: str, code: str, keep_key: str, now: str) -> None:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """SELECT idempotency_key FROM jobs
+                   WHERE job_type = ? AND code = ? AND status = 'queued' AND idempotency_key != ?""",
+                (job_type, code, keep_key),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "UPDATE jobs SET status = 'cancelled', updated_at = ? WHERE idempotency_key = ?",
+                    (now, row["idempotency_key"]),
+                )
+
     def set_watermark(self, key: str, value: str, at: str) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(

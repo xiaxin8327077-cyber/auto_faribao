@@ -188,6 +188,7 @@ def _estimate_due(last_slot, now):
 def _tick_fund_estimate(service, now):
     try:
         service.tick(now)
+        service.ensure_worker()
     except Exception:
         logger.warning("Fund estimate tick failed", exc_info=True)
 
