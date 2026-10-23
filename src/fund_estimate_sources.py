@@ -134,6 +134,9 @@ def align_southern_basis(factors: FactorObservation, base_nav_date: str | None, 
         basis_date=nav_day.isoformat(),
         calendar_days=(as_of - nav_day).days,
     )
+
+
+def _curve_point(curves, key, tenor):
     series = curves.get(key) if isinstance(curves, dict) else None
     if not isinstance(series, dict):
         return None
