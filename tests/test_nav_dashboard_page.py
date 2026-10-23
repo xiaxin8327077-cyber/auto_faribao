@@ -1414,13 +1414,13 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     market = html.index('data-tab="market"')
     positions = html.index('data-tab="positions"')
     assert overview < market < positions
-    assert "const MANAGEMENT_TABS = ['overview', 'market', 'positions', 'transactions', 'sip'];" in html
+    assert "const MANAGEMENT_TABS = ['overview', 'market', 'positions', 'transactions', 'sip', 'settings'];" in html
     assert 'id="marketPanel"' in html
     # 行情刷新与顶部导航刷新共用，不再有独立更新按钮。
     assert "barometerRefreshButton" not in html
     assert "async function loadBarometer(force = false)" in html
     assert "function renderBarometer(data)" in html
-    # 本地缓存：进入页面先渲染上次数据，非交易时段或 30 分钟内不重复请求。
+    # 行情通过服务端快照提供，非交易时段不主动刷新。
     # 行情由服务端库内快照提供，页面不再维护浏览器缓存。
     assert "BAROMETER_CACHE_KEY" not in html
     assert "restoreBarometerCache" not in html
@@ -1431,8 +1431,47 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert "#marketPanel .section-head { border-bottom: 0; }" in html
     assert "<h2>行情</h2>" not in html
     assert "/api/portfolio/bond-barometer" in html
-    assert "红=收益率下行、绿=上行、灰=变动≤0.05bp" in html
-    assert "交易时段（工作日 9:00-17:30）内每 30 分钟自动更新" in html
-    assert "grid-template-columns: repeat(5, 1fr);" in html
+    assert "grid-template-columns: repeat(6, 1fr);" in html
+    assert 'id="settingsTab"' in html
+    assert 'id="settingsPanel"' in html
+    assert 'id="aiBaseUrl"' in html
+    assert 'id="aiApiKey"' in html
+    assert 'id="aiTestButton"' in html
+    assert "status.textContent = message || '';" in html
+    assert "function estimateNotePieces" in html
     # 行情面板首块与其他页签一致，与顶栏保持相同间距。
     assert "#marketPanel > .card.section { margin-top: 0; }" in html
+
+
+def test_barometer_renders_source_time_egg_ranges_and_missing_quotes():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for JavaScript behavior checks")
+    page = _read_page()
+    logic = page[page.index("const BAROMETER_WEATHER ="):page.index("async function loadBarometer(")]
+    script = r"""
+const assert = require('assert');
+const elements = {barometerMeta:{textContent:''},barometerContent:{innerHTML:''}};
+const $ = id => elements[id];
+const esc = value => String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+""" + logic + r"""
+renderBarometer({available:true,as_of:'2026-10-23',source_id:'southernfund',source:'南方基金<行情>',
+  source_updated_at:'2026-10-23T09:46:00',snapshot_at:'2026-10-23T09:50:00',change_unit:'bp',
+  rate:{counts:{red:0,green:0,flat:1,missing:1},weather:'cloud',rows:[{label:'国债',cells:[
+    {tenor:'1年',change:'0',color:'flat'},{tenor:'3年',change:null,color:'missing'}]}]},
+  credit:{rows:[]},egg_estimates:{available:true,as_of:'2026-10-23',source_updated_at:'2026-10-23T09:49:00',
+    items:[{label:'信用债·中长期',display:'预计收蛋3–6个',color:'red'}]}});
+assert(elements.barometerMeta.textContent.includes('09:46'));
+assert(!elements.barometerMeta.textContent.includes('09:50'));
+const html = elements.barometerContent.innerHTML;
+assert(html.includes('预计收蛋3–6个'));
+assert(html.includes('2026-10-23 09:49'));
+assert(html.includes('暂无报价'));
+assert(html.includes('0 bp'));
+assert(html.includes('南方基金&lt;行情&gt;'));
+renderBarometer({available:true,as_of:'2026-10-22',source_id:'chinabond',is_fallback:true,rate:{rows:[]},credit:{rows:[]}});
+assert(elements.barometerMeta.textContent.includes('日终'));
+assert(elements.barometerContent.innerHTML.includes('日终备用'));
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr

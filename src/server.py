@@ -1048,6 +1048,7 @@ def create_app(
     ai_assistant=None,
     portfolio_runtime=None,
     portfolio_provider_factory=None,
+    estimate_service=None,
 ) -> Flask:
     app = Flask(__name__)
 
@@ -1068,6 +1069,7 @@ def create_app(
         create_portfolio_blueprint(
             portfolio_runtime,
             portfolio_provider_factory,
+            estimate_service=estimate_service,
         )
     )
 

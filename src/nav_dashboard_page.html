@@ -235,6 +235,18 @@
       border-bottom: 1px solid var(--line-soft);
     }
     .product:last-child { border-bottom: 0; }
+    .estimate-note { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 8px; color: var(--muted); font-size: 11px; line-height: 1.45; font-weight: 650; }
+    .settings-block { margin-top: 8px; }
+    .settings-block h3 { margin: 0 0 8px; font-size: 15px; font-weight: 800; }
+    .settings-check { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; color: var(--text); font-size: 13px; font-weight: 700; }
+    .settings-check input { width: 18px; height: 18px; min-height: 0; accent-color: var(--blue); }
+    .settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .settings-status { min-height: 18px; margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+    .settings-status.error { color: #b91c1c; }
+    @media (max-width: 420px) {
+      .management-tab { font-size: 10px; }
+      .management-tab svg { width: 18px; height: 18px; }
+    }
     .rank { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; background: var(--blue-soft); color: var(--blue); font-size: 13px; font-weight: 850; }
     .name { overflow: hidden; font-size: 12px; line-height: 1.35; font-weight: 800; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     .code { margin-top: 4px; color: var(--muted); font-size: 10px; }
@@ -350,7 +362,7 @@
       flex: 0 0 auto;
       z-index: 40;
       display: grid;
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(6, 1fr);
       background: rgba(255, 255, 255, 0.66);
       -webkit-backdrop-filter: saturate(180%) blur(18px);
       backdrop-filter: saturate(180%) blur(18px);
@@ -443,9 +455,14 @@
     .barometer-cell.red { background: rgba(229, 72, 77, .16); }
     .barometer-cell.green { background: rgba(48, 164, 108, .16); }
     .barometer-cell.flat { background: #f2f4f7; }
+    .barometer-cell.missing { background: repeating-linear-gradient(135deg, #f2f4f7, #f2f4f7 4px, #e3e7ed 4px, #e3e7ed 5px); }
     .barometer-row-label { display: flex; align-items: center; justify-content: center; min-height: 32px; border-radius: 6px; background: var(--bg); color: var(--text); font-size: 10px; font-weight: 800; }
     .barometer-subtitle { margin: 10px 0 2px; color: var(--text); font-size: 12px; font-weight: 800; }
     .barometer-note { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .barometer-egg-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 6px 0 12px; }
+    .barometer-egg-card { padding: 9px 10px; border-radius: 8px; background: var(--bg); }
+    .barometer-egg-card span { display: block; color: var(--muted); font-size: 10px; }
+    .barometer-egg-card b { display: block; margin-top: 4px; font-size: 13px; }
     #marketPanel .section-head { border-bottom: 0; }
     .fund-dividend-content { display: grid; gap: 12px; }
     .fund-dividend-list { display: grid; gap: 8px; padding: 1px 2px 2px 0; }
@@ -689,6 +706,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
           定投
         </button>
+        <button class="management-tab" id="settingsTab" type="button" role="tab" aria-selected="false" aria-controls="settingsPanel" data-tab="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          设置
+        </button>
       </nav>
 
       <section id="overviewPanel" class="management-panel" role="tabpanel" aria-labelledby="overviewTab">
@@ -736,6 +757,10 @@
           <div class="section-head"><h2>债市晴雨表</h2><span class="section-meta" id="barometerMeta">--</span></div>
           <div id="barometerContent"><div class="empty">正在读取行情...</div></div>
         </section>
+        <section class="card section" aria-label="待确认基金参考">
+          <div class="section-head"><h2>待确认基金参考</h2><span class="section-meta">不计入持仓资产</span></div>
+          <div id="estimateWatchList"><div class="empty">没有待确认的基金参考</div></div>
+        </section>
       </section>
 
       <section id="positionsPanel" class="management-panel" role="tabpanel" aria-labelledby="positionsTab" hidden>
@@ -765,6 +790,28 @@
         <div class="panel-heading"><h2>定投计划</h2><button class="action-button" type="button" data-write-action="sip">新增定投</button></div>
         <div class="write-notice" id="sipWriteNotice" hidden></div>
         <div class="manage-list" id="sipList"><div class="empty">暂无定投计划</div></div>
+      </section>
+
+      <section id="settingsPanel" class="management-panel" role="tabpanel" aria-labelledby="settingsTab" hidden>
+        <div class="panel-heading"><h2>设置</h2></div>
+        <section class="card section settings-block" aria-label="模型设置">
+          <h3>模型设置</h3>
+          <p class="form-field-hint">用于公开报告的字段提取。这里的地址和密钥只保存在本机估值库，不沿用旧的助手提供方，也不参与涨跌幅数值计算。</p>
+          <form id="modelSettingsForm">
+            <label class="settings-check"><input id="estimateJobsEnabled" type="checkbox">启用盘中预估后台任务</label>
+            <label class="form-field">接口地址<input id="aiBaseUrl" name="base_url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/v1"></label>
+            <label class="form-field">API Key<input id="aiApiKey" name="api_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="留空则保留已保存的密钥"></label>
+            <p class="form-field-hint" id="aiKeyHint"></p>
+            <label class="form-field">模型名称<input id="aiModel" name="model" type="text" autocomplete="off" spellcheck="false" placeholder="供应商要求的模型名"></label>
+            <label class="settings-check"><input id="aiEnabled" type="checkbox">启用报告提取</label>
+            <div class="settings-actions">
+              <button class="action-button secondary" id="aiTestButton" type="button">测试连接</button>
+              <button class="action-button" id="aiSaveButton" type="submit">保存</button>
+            </div>
+            <p class="settings-status" id="aiSettingsStatus" role="status"></p>
+            <p class="settings-status" id="estimateJobStatus"></p>
+          </form>
+        </section>
       </section>
     </div>
   </main>
@@ -937,7 +984,7 @@
     let lastRefreshToastKey = '';
     let refreshStateInitialized = false;
     let userRefreshInProgress = false;
-    const MANAGEMENT_TABS = ['overview', 'market', 'positions', 'transactions', 'sip'];
+    const MANAGEMENT_TABS = ['overview', 'market', 'positions', 'transactions', 'sip', 'settings'];
     const ACTIVE_TAB_STORAGE_KEY = 'nav-dashboard-active-tab';
     function readStoredActiveTab() {
       try {
@@ -1078,19 +1125,29 @@
         return;
       }
       barometerReady = true;
-      const generated = (data.snapshot_at || data.generated_at) ? String(data.snapshot_at || data.generated_at).slice(11, 16) : '';
-      meta.textContent = `${esc(data.as_of)}${generated ? ` · 更新 ${esc(generated)}` : ''}`;
+      const sourceTime = String(data.source_updated_at || '').slice(11, 16);
+      const daily = data.source_id !== 'southernfund';
+      meta.textContent = `${data.as_of}${daily ? ' · 日终数据' : sourceTime ? ` · 行情 ${sourceTime}` : ''}`;
       const grid = (title, block, cols) => {
         const rows = block.rows || [];
         const heads = rows.length ? rows[0].cells.map(cell => `<span>${esc(cell.tenor)}</span>`).join('') : '';
-        const body = rows.map(row => `<span class="barometer-row-label">${esc(row.label)}</span>${row.cells.map(cell => `<span class="barometer-cell ${esc(cell.color)}" title="${esc(row.label)} · ${esc(cell.tenor)}：收益率 ${esc(cell.yield || '--')}（${esc(cell.change || '--')}）"></span>`).join('')}`).join('');
+        const body = rows.map(row => `<span class="barometer-row-label">${esc(row.label)}</span>${row.cells.map(cell => {
+          const quote = cell.change === null || cell.change === undefined ? '暂无报价' : data.change_unit === 'bp' ? `收益率变动 ${cell.change} bp` : `收益率 ${cell.yield ?? '--'}% · 变动 ${cell.change} 个百分点`;
+          const description = `${row.label} · ${cell.tenor}：${quote}`;
+          return `<span class="barometer-cell ${esc(cell.color)}" title="${esc(description)}" aria-label="${esc(description)}"></span>`;
+        }).join('')}`).join('');
         return `<p class="barometer-subtitle">${esc(title)}</p><div class="barometer-grid" style="--cols:${cols}"><span></span>${heads}${body}</div>`;
       };
       const weatherCard = (label, block) => {
         const counts = block.counts || {red: 0, green: 0, flat: 0};
-        return `<div class="barometer-weather-card"><span>${esc(label)}</span><b>${BAROMETER_WEATHER[block.weather] || '—'}</b><small><span class="barometer-red">${counts.red}红</span> <span class="barometer-green">${counts.green}绿</span> <span class="barometer-flat">${counts.flat}灰</span></small></div>`;
+        return `<div class="barometer-weather-card"><span>${esc(label)}</span><b>${BAROMETER_WEATHER[block.weather] || '—'}</b><small><span class="barometer-red">${counts.red}红</span> <span class="barometer-green">${counts.green}绿</span> <span class="barometer-flat">${counts.flat}灰${counts.missing ? ` · ${counts.missing}缺` : ''}</span></small></div>`;
       };
-      content.innerHTML = `<div class="barometer-weather-row">${weatherCard('利率债', data.rate || {})}${weatherCard('信用债', data.credit || {})}</div>${grid('利率债', data.rate || {}, 5)}${grid('信用债', data.credit || {}, 6)}<p class="barometer-note">红色格子越多表示债市行情越好。数据来源：${esc(data.source || '中国债券信息网')}；与前一日相比，红=收益率下行、绿=上行、灰=变动≤0.05bp。交易时段（工作日 9:00-17:30）内每 30 分钟自动更新。</p>`;
+      const eggs = data.egg_estimates || {};
+      const eggTime = String(eggs.source_updated_at || '').replace('T', ' ').slice(0, 16);
+      const eggCards = eggs.available ? `<p class="barometer-subtitle">收蛋预估 <span class="barometer-note">${esc(eggTime)}</span></p><div class="barometer-egg-row">${(eggs.items || []).map(item => `<div class="barometer-egg-card"><span>${esc(item.label)}</span><b class="barometer-${esc(item.color)}">${esc(item.display)}</b></div>`).join('')}</div><p class="barometer-note">南方基金四类债基市场参考，1蛋=0.01%。按上游区间显示，预估与实际收益可能不同。</p>` : '<p class="barometer-note">收蛋预估暂不可用</p>';
+      const fetchedTime = String(data.snapshot_at || data.generated_at || '').replace('T', ' ').slice(0, 16);
+      const status = data.refresh_error || (daily ? '当前展示中债日终备用数据' : '');
+      content.innerHTML = `<div class="barometer-weather-row">${weatherCard('利率债', data.rate || {})}${weatherCard('信用债', data.credit || {})}</div>${eggCards}${grid('利率债', data.rate || {}, 5)}${grid('信用债', data.credit || {}, 6)}${status ? `<p class="barometer-note">${esc(status)}</p>` : ''}<p class="barometer-note">数据来源：${esc(data.source || '中国债券信息网')}。${esc(data.method || '')} 交易时段（工作日 9:00-17:30）每分钟尝试更新；行情时间以源端为准。${fetchedTime ? `最近抓取 ${esc(fetchedTime)}。` : ''}</p>`;
     }
     async function loadBarometer(force = false) {
       if (barometerLoading) return;
@@ -1127,6 +1184,107 @@
         }
       });
       if (tab === 'market' && !barometerReady) loadBarometer();
+      if (tab === 'settings') loadModelSettings();
+    }
+    const ESTIMATE_REASONS = {
+      history_backfill_pending: '正在补历史',
+      insufficient_history: '历史样本不足',
+      profile_unavailable: '画像不足',
+      market_missing: '行情缺失',
+      market_stale: '行情陈旧',
+      nav_delayed: '净值延迟',
+      basis_unverified: '口径未核验',
+      validation_insufficient: '验证样本不足',
+      unsupported_asset_mix: '资产类型不适用纯债模型',
+      ai_extraction_failed: '报告提取失败'
+    };
+    function estimateReasonText(item) {
+      const codes = Array.isArray(item?.reason_codes) ? item.reason_codes : [];
+      return codes.map(code => ESTIMATE_REASONS[code] || String(code || '')).filter(Boolean).join('、');
+    }
+    function estimateNotePieces(item) {
+      const value = item.return_pct == null || item.return_pct === '' ? '数值暂缺' : `${item.return_pct}%`;
+      return `<span>盘中参考 ${esc(value)}</span><span>${esc(item.confidence_label || item.status || '')}</span><span>${esc(estimateReasonText(item))}</span><span>行情 ${esc(item.market_as_of || '--')}</span><span>画像 ${esc(item.profile_as_of || '--')}</span><span>训练至 ${esc(item.trained_through || '--')}</span>`;
+    }
+    function estimateMarkup(productId) {
+      const estimates = state.data?.fund_estimates || {};
+      const item = estimates[productId];
+      if (!item) return '';
+      return `<div class="estimate-note">${estimateNotePieces(item)}</div>`;
+    }
+    function renderEstimateWatch() {
+      const box = $('estimateWatchList');
+      if (!box) return;
+      const estimates = state.data?.fund_estimates || {};
+      const shown = new Set((state.data?.products || []).map(item => String(rowValue(item, 'product_id', 'id', 'code'))));
+      const rows = Object.values(estimates).filter(item => item && !shown.has(String(item.product_id)) && (item.status === 'pending' || item.status === 'reference'));
+      box.innerHTML = rows.length ? rows.map(item => `<article class="estimate-watch"><b>${esc(item.code || '')}</b><div class="estimate-note">${estimateNotePieces(item)}</div></article>`).join('') : '<div class="empty">没有待确认的基金参考</div>';
+    }
+    function setModelSettingsStatus(message, isError) {
+      const status = $('aiSettingsStatus');
+      if (!status) return;
+      status.textContent = message || '';
+      status.classList.toggle('error', Boolean(isError));
+    }
+    async function loadModelSettings() {
+      try {
+        const response = await api('/api/portfolio/fund-estimate-model-settings');
+        const data = await response.json();
+        if (!response.ok) {
+          setModelSettingsStatus(data.message || '模型设置读取失败', true);
+          return;
+        }
+        $('aiBaseUrl').value = data.base_url || '';
+        $('aiModel').value = data.model || '';
+        $('aiEnabled').checked = Boolean(data.enabled);
+        $('estimateJobsEnabled').checked = Boolean(data.jobs_enabled);
+        $('aiApiKey').value = '';
+        $('aiKeyHint').textContent = data.api_key_configured ? `已保存密钥 ${data.api_key_hint || ''}` : '尚未保存密钥';
+        const job = data.status || {};
+        $('estimateJobStatus').textContent = `后台：排队 ${job.queued || 0}，失败 ${job.failed || 0}${job.last_error ? `，最近错误 ${job.last_error}` : ''}`;
+      } catch (_error) {
+        setModelSettingsStatus('模型设置读取失败', true);
+      }
+    }
+    async function saveModelSettings(event) {
+      event.preventDefault();
+      const body = {
+        base_url: $('aiBaseUrl').value.trim(),
+        model: $('aiModel').value.trim(),
+        enabled: $('aiEnabled').checked,
+        jobs_enabled: $('estimateJobsEnabled').checked
+      };
+      const key = $('aiApiKey').value;
+      if (key) body.api_key = key;
+      const response = await api('/api/portfolio/fund-estimate-model-settings', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setModelSettingsStatus(data.message || '保存失败', true);
+        return;
+      }
+      $('aiApiKey').value = '';
+      $('aiKeyHint').textContent = data.api_key_configured ? `已保存密钥 ${data.api_key_hint || ''}` : '尚未保存密钥';
+      setModelSettingsStatus('已保存', false);
+    }
+    async function testModelSettings() {
+      const body = {
+        base_url: $('aiBaseUrl').value.trim(),
+        model: $('aiModel').value.trim()
+      };
+      const key = $('aiApiKey').value;
+      if (key) body.api_key = key;
+      setModelSettingsStatus('正在测试连接', false);
+      const response = await api('/api/portfolio/fund-estimate-model-settings/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      const data = await response.json();
+      setModelSettingsStatus(data.message || (data.ok ? '连接成功' : '连接失败'), !data.ok);
     }
     function positionTypeLabel(value) {
       return ({wealth_nav: '净值型理财', cash_management: '现金管理', public_fund: '公募基金'})[value] || '其他产品';
@@ -2203,12 +2361,13 @@
         const navDisplay = itemType === 'cash_management'
           ? (cashIncome === '' ? '万份 --' : `万份 ${number(cashIncome).toFixed(4)}`)
           : (item.latest_nav ? number(item.latest_nav).toFixed(6) : '--');
-        return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div></div><div class="nav"><div>${esc(navDisplay)}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change change-value ${tone(item.change_pct)}">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div>${(() => { const h = formatHolding(item.shares, item.latest_nav); const text = h && inTransitText ? `${h} · ${inTransitText}` : (h || inTransitText); return text ? `<div class="holding">${esc(text)}</div>` : ''; })()}</article>`;
+        return `<article class="product"><div class="rank">${index + 1}</div><div><div class="name" title="${esc(item.name)}">${esc(item.name)}</div><div class="code">${esc(item.code)}</div></div><div class="nav"><div>${esc(navDisplay)}</div><div class="date">${shortDate(item.nav_date)}</div></div><div class="income ${tone(profit)}"><div>${profit ? `${signedMoney(profit)} 元` : '--'}</div><div class="change change-value ${tone(item.change_pct)}">${item.change_pct ? signedPercent(item.change_pct) : '--'}</div></div>${(() => { const h = formatHolding(item.shares, item.latest_nav); const text = h && inTransitText ? `${h} · ${inTransitText}` : (h || inTransitText); return text ? `<div class="holding">${esc(text)}</div>` : ''; })()}${estimateMarkup(pid)}</article>`;
       }).join('') : '<div class="empty">暂无已配置的净值产品</div>';
       $('positiveRanking').innerHTML = rankingRows(monthlyPositives, '本月无正贡献');
       $('negativeRanking').innerHTML = rankingRows(monthlyNegatives, '本月无拖累');
       $('statusText').textContent = data.last_error ? `部分数据更新失败：${data.last_error}` : data.refreshing ? '正在更新官网净值...' : '';
       renderManagement(data);
+      renderEstimateWatch();
       setRefreshState(data);
       if (!$('dailyProfitBackdrop').hidden) renderDailyProfits();
     }
@@ -3137,6 +3296,8 @@
       tab.addEventListener('click', () => setProfitView(tab.dataset.profitView));
     });
     document.querySelectorAll('[data-tab]').forEach(tab => tab.addEventListener('click', () => setActiveTab(tab.dataset.tab)));
+    $('modelSettingsForm').addEventListener('submit', saveModelSettings);
+    $('aiTestButton').addEventListener('click', testModelSettings);
     $('dashboardContent').addEventListener('touchstart', event => {
       const target = event.target;
       const blocked = target.closest('dialog, input, select, textarea, .transaction-filters, .product-suggestion-panel, .daily-profit-list');

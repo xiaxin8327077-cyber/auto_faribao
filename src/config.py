@@ -161,6 +161,7 @@ class Config:
         self.wechat = WechatConfig(data.get("wechat", {}))
         self.scheduler = SchedulerConfig(data.get("scheduler", {}))
         self.nav_monitor = NavMonitorConfig(data.get("nav_monitor", {}))
+        self.fund_estimate = data.get("fund_estimate") or {}
         self.host = data.get("host", "0.0.0.0")
         self.port = int(data.get("port", 8080))
 

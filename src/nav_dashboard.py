@@ -753,6 +753,12 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
     payload["bond_barometer"] = (
         barometer_snapshot["payload"] if barometer_snapshot else None
     )
+    try:
+        from src.fund_estimate_service import read_published_estimates
+
+        payload["fund_estimates"] = read_published_estimates(repository)
+    except Exception:
+        payload["fund_estimates"] = {}
     portfolio["write_enabled"] = write_enabled
     if not write_enabled:
         portfolio["write_disabled_reason"] = "portfolio_migration_failed"

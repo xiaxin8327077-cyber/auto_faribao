@@ -13,6 +13,7 @@ _BAROMETER_END = clock_time(17, 30)
 _scheduler_lock = threading.Lock()
 _runtime_cfg = None
 _portfolio_runtime = None
+_estimate_service = None
 
 
 def _get_times(cfg):
@@ -25,10 +26,11 @@ def _get_times(cfg):
     )
 
 
-def start(cfg, portfolio_runtime=None):
-    global _runtime_cfg, _portfolio_runtime
+def start(cfg, portfolio_runtime=None, estimate_service=None):
+    global _runtime_cfg, _portfolio_runtime, _estimate_service
     _runtime_cfg = cfg
     _portfolio_runtime = portfolio_runtime
+    _estimate_service = estimate_service
     thread = threading.Thread(
         target=_run, args=(cfg,), daemon=True, name="scheduler"
     )
@@ -78,10 +80,13 @@ def _run(cfg):
     last_calendar_update_year = None
     last_portfolio_slot = None
     last_barometer_slot = None
+    last_estimate_slot = None
 
     while True:
         with _scheduler_lock:
             current_cfg = _runtime_cfg or cfg
+            runtime = _portfolio_runtime
+            estimate_service = _estimate_service
 
         # 检查待确认超时（定时提交发现 cookies 过期时的交互确认）
         handle_pending_timeout_if_needed(current_cfg)
@@ -89,18 +94,24 @@ def _run(cfg):
         now = beijing_now()
         today_str = now.strftime("%Y-%m-%d")
 
-        # 行情预热：交易时段内每个 30 分钟槽后台刷新一次债市晴雨表，
+        # 行情预热：交易时段内每分钟后台刷新一次债市晴雨表，
         # 不阻塞定时推送；非交易时段不自动更新。
         if _barometer_due(last_barometer_slot, now):
-            last_barometer_slot = _portfolio_slot(now)
+            last_barometer_slot = now.strftime("%Y-%m-%dT%H:%M")
             threading.Thread(target=_warm_bond_barometer, args=(runtime,), daemon=True).start()
+
+        if estimate_service is not None and _estimate_due(last_estimate_slot, now):
+            last_estimate_slot = now.strftime("%Y-%m-%dT%H:%M")
+            threading.Thread(
+                target=_tick_fund_estimate,
+                args=(estimate_service, now),
+                daemon=True,
+            ).start()
 
         ch, cm, rh, rm, sh, sm, cch, ccm = _get_times(current_cfg)
 
         # 收益查询和推送完全以组合账本为准，因此先完成当前时段的
         # 行情/交易/收益同步，避免先发送旧持仓、随后才刷新看板。
-        with _scheduler_lock:
-            runtime = _portfolio_runtime
         last_portfolio_slot, portfolio_ready = _prepare_portfolio_cycle(
             runtime,
             last_portfolio_slot,
@@ -167,7 +178,18 @@ def _barometer_due(last_slot, now):
         return False
     if not (_BAROMETER_START <= now.time() <= _BAROMETER_END):
         return False
-    return _portfolio_slot(now) != last_slot
+    return now.strftime("%Y-%m-%dT%H:%M") != last_slot
+
+
+def _estimate_due(last_slot, now):
+    return now.strftime("%Y-%m-%dT%H:%M") != last_slot
+
+
+def _tick_fund_estimate(service, now):
+    try:
+        service.tick(now)
+    except Exception:
+        logger.warning("Fund estimate tick failed", exc_info=True)
 
 
 def _warm_bond_barometer(runtime=None):
@@ -177,7 +199,7 @@ def _warm_bond_barometer(runtime=None):
         repository = getattr(runtime, "repository", None)
         if repository is None:
             return
-        # 槽刚切换时快照可能恰好未过期，强制刷新保证每 30 分钟一次。
+        # 分钟刚切换时快照可能恰好未过期，强制刷新保持盘中时效。
         with repository.database.connection() as conn:
             latest_barometer(force=True, conn=conn)
     except Exception:

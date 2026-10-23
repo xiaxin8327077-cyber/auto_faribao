@@ -187,7 +187,7 @@ def _today():
     return beijing_now().date()
 
 
-def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
+def create_portfolio_blueprint(runtime, provider_factory, estimate_service=None) -> Blueprint:
     blueprint = Blueprint("portfolio_api", __name__)
     rate_buckets = defaultdict(deque)
     rate_lock = threading.Lock()
@@ -2188,4 +2188,78 @@ def create_portfolio_blueprint(runtime, provider_factory) -> Blueprint:
     def resume_sip_plan(plan_id):
         return sip_operation(plan_id, "resume")
 
+    @blueprint.get("/api/portfolio/fund-estimates")
+    def fund_estimates():
+        guard = read_guard()
+        if guard:
+            return guard
+        generated_at = beijing_now().isoformat(timespec="seconds")
+        if estimate_service is None:
+            return jsonify({"generated_at": generated_at, "items": []})
+        try:
+            items = list(estimate_service.read_snapshots(None, beijing_now()).values())
+        except Exception:
+            items = []
+        return jsonify({"generated_at": generated_at, "items": items})
+
+    @blueprint.get("/api/portfolio/fund-estimate-model-settings")
+    def fund_estimate_model_settings():
+        guard = read_guard()
+        if guard:
+            return guard
+        if estimate_service is None:
+            return jsonify(_empty_model_settings())
+        payload = estimate_service.store.public_ai_settings()
+        payload["status"] = estimate_service.status()
+        return jsonify(payload)
+
+    @blueprint.put("/api/portfolio/fund-estimate-model-settings")
+    def save_fund_estimate_model_settings():
+        guard = read_guard()
+        if guard:
+            return guard
+        if estimate_service is None:
+            return _error("estimate_unavailable", "估值模块未初始化", 503)
+        body = request.get_json(silent=True) or {}
+        try:
+            saved = estimate_service.save_model_settings(body, beijing_now())
+        except Exception as exc:
+            return _error("estimate_settings_invalid", _safe_settings_error(exc, body), 400)
+        saved["status"] = estimate_service.status()
+        return jsonify(saved)
+
+    @blueprint.post("/api/portfolio/fund-estimate-model-settings/test")
+    def test_fund_estimate_model_settings():
+        guard = read_guard()
+        if guard:
+            return guard
+        if estimate_service is None:
+            return _error("estimate_unavailable", "估值模块未初始化", 503)
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(estimate_service.test_model_connection(body))
+        except Exception as exc:
+            return jsonify({"ok": False, "message": _safe_settings_error(exc, body)})
+
     return blueprint
+
+
+def _empty_model_settings() -> dict:
+    return {
+        "available": False,
+        "enabled": False,
+        "jobs_enabled": False,
+        "base_url": "",
+        "model": "",
+        "api_key_configured": False,
+        "api_key_hint": "",
+        "status": {},
+    }
+
+
+def _safe_settings_error(exc, body) -> str:
+    message = str(exc)[:200]
+    secret = str((body or {}).get("api_key") or "")
+    if secret:
+        message = message.replace(secret, "［密钥已隐藏］")
+    return message or "模型设置无效"

@@ -85,12 +85,28 @@ def main():
 
     portfolio_runtime = initialize_portfolio(cfg)
 
+    estimate_service = None
+    try:
+        from src.fund_estimate_service import create_fund_estimate_service
+
+        estimate_service = create_fund_estimate_service(portfolio_runtime, cfg)
+    except Exception:
+        logger.exception("基金估值模块未启用，正式交易和行情任务保持原状")
+
     # Start scheduler for cookies check (17:00) and auto-submit (17:30)
     from src.scheduler import start as start_scheduler
 
-    start_scheduler(cfg, portfolio_runtime=portfolio_runtime)
+    start_scheduler(
+        cfg,
+        portfolio_runtime=portfolio_runtime,
+        estimate_service=estimate_service,
+    )
 
-    app = create_app(cfg, portfolio_runtime=portfolio_runtime)
+    app = create_app(
+        cfg,
+        portfolio_runtime=portfolio_runtime,
+        estimate_service=estimate_service,
+    )
     logger.info(f"Starting server on {cfg.host}:{cfg.port}")
     app.run(host=cfg.host, port=cfg.port, debug=False)
 
