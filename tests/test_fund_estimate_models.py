@@ -219,3 +219,45 @@ def test_insufficient_history_returns_reference(tmp_path):
     assert snapshot.status == "reference"
     assert snapshot.return_pct is None
     assert snapshot.market_reference["note"].startswith("四类")
+
+
+def _stale_payload():
+    return {
+        "status": "experimental",
+        "return_pct": "0.0163",
+        "lower_pct": "-0.0100",
+        "upper_pct": "0.0400",
+        "interval_kind": "scenario",
+        "confidence_label": "试验",
+        "reason_codes": [],
+        "market_as_of": "2026-10-23T09:41:00+08:00",
+    }
+
+
+def test_present_snapshot_keeps_value_and_marks_stale_beyond_window():
+    from src.fund_estimate_models import present_snapshot
+    now = datetime(2026, 10, 23, 10, 0, tzinfo=TZ_CN)  # 距 09:41 共 19 分钟
+    result = present_snapshot(_stale_payload(), now, {"stale_minutes": 15}, True)
+    # 行情时点落后但快照本身有值：保留数值并明确标注陈旧，不能退回"数据准备中"。
+    assert result["return_pct"] == "0.0163"
+    assert result["status"] == "stale"
+    assert result["confidence_label"] == "陈旧"
+    assert "market_stale" in result["reason_codes"]
+
+
+def test_present_snapshot_within_window_unchanged():
+    from src.fund_estimate_models import present_snapshot
+    now = datetime(2026, 10, 23, 9, 50, tzinfo=TZ_CN)  # 距 09:41 共 9 分钟
+    result = present_snapshot(_stale_payload(), now, {"stale_minutes": 15}, True)
+    assert result["return_pct"] == "0.0163"
+    assert result["status"] == "experimental"
+    assert "market_stale" not in result["reason_codes"]
+
+
+def test_present_snapshot_outside_bond_session_unchanged():
+    from src.fund_estimate_models import present_snapshot
+    now = datetime(2026, 10, 23, 10, 0, tzinfo=TZ_CN)
+    result = present_snapshot(_stale_payload(), now, {"stale_minutes": 15}, False)
+    assert result["return_pct"] == "0.0163"
+    assert result["status"] == "experimental"
+    assert "market_stale" not in result["reason_codes"]

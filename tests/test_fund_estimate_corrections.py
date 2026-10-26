@@ -125,6 +125,33 @@ def test_read_snapshots_strips_unverified_cross_source_numbers(tmp_path):
     assert payload['confidence_label'] == '同类参考'
 
 
+def test_read_snapshots_keeps_value_and_marks_market_stale(tmp_path):
+    from src.fund_estimate_types import EstimateSnapshot
+    from src.portfolio_models import Position, Product, ProductType
+    store = store_at(tmp_path)
+    snapshot = EstimateSnapshot('p-new', '918273', '2026-10-23', 'mark_to_market_total_return', 'experimental',
+                                [], '2026-10-22', '1.0000', '2026-10-23T09:30:00+08:00',
+                                None, None, None, 'm1', '0.5', None, None, 'none', '试验',
+                                None, '2026-10-23T09:30:00+08:00')
+    store.save_snapshot(snapshot, slot='2026-10-23T09:30', source_version='m1')
+    product = Product('p-new', 'eastmoney_fund', '918273', '稳健纯债A', ProductType.PUBLIC_FUND,
+                      metadata_json='{"fund_type":"债券型"}')
+    repo = SimpleNamespace(
+        list_products=lambda: [product],
+        get_product=lambda _pid: product,
+        get_position=lambda _pid: Position('p-new', Decimal('0'), Decimal('0'), Decimal('10000'), Decimal('0')),
+        list_transactions=lambda _pid: [])
+    sources = EstimateSources(nav_fetcher=lambda *_: {'total': 0, 'rows': []}, factor_fetcher=lambda *_: [])
+    service = FundEstimateService(repo, store, sources, ProfileService(store, MemoryDocuments()))
+    now = datetime(2026, 10, 23, 10, 0, tzinfo=TZ_CN)  # 距快照行情时点 30 分钟
+    payload = service.read_snapshots(None, now)['p-new']
+    # 行情时点落后但快照有值：保留预估并标注行情陈旧，不能退回"数据准备中"。
+    assert payload['return_pct'] == '0.5'
+    assert payload['status'] == 'stale'
+    assert payload['confidence_label'] == '陈旧'
+    assert 'market_stale' in payload['reason_codes']
+
+
 def test_verification_report_pairs_predictions_with_realized_and_stats(tmp_path):
     from src.fund_estimate_types import EstimateSnapshot
     store = store_at(tmp_path)

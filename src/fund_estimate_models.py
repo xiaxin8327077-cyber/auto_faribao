@@ -408,18 +408,14 @@ def _support_block(identity: FundIdentity) -> str | None:
 
 
 def present_snapshot(payload: dict, now: datetime, config: dict, bond_session: bool) -> dict:
-    """读路径上的陈旧降级，不写库。"""
+    """读路径上的陈旧标注，不写库；保留已有数值，避免陈旧时退回"数据准备中"。"""
     item = dict(payload)
     market_as_of = item.get("market_as_of")
     if not bond_session or not market_as_of or item.get("return_pct") is None:
         return item
     age = (parse_time(iso_now(now)) - parse_time(market_as_of)).total_seconds()
-    if age > int(config.get("stale_minutes", 5)) * 60:
+    if age > int(config.get("stale_minutes", 15)) * 60:
         item["status"] = "stale"
-        item["return_pct"] = None
-        item["lower_pct"] = None
-        item["upper_pct"] = None
-        item["interval_kind"] = "none"
         item["confidence_label"] = CONFIDENCE_LABELS["stale"]
         reasons = list(item.get("reason_codes") or [])
         if "market_stale" not in reasons:

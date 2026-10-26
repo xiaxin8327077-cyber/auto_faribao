@@ -538,7 +538,7 @@ def create_fund_estimate_service(portfolio_runtime, config=None, *, path=None):
     if isinstance(raw, dict):
         settings.update(raw)
     settings['source_family'] = CFETS_REALTIME
-    curve_source = CfetsCurveSource(store)
+    curve_source = CfetsCurveSource(store, intraday_stale_minutes=settings.get('intraday_stale_minutes', 15))
     sources = EstimateSources(
         dividend_fetcher=live_dividend_coverage,
         factor_fetcher=curve_source.fetch_daily_factors,

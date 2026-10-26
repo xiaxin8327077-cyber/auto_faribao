@@ -126,13 +126,25 @@ def test_close_reference_marks_curve_published_before_final_close(tmp_path):
     assert live.basis_date == '2026-10-22'
 
 
-def test_intraday_gap_over_five_minutes_remains_missing(tmp_path):
+def test_intraday_gap_within_window_stays_usable(tmp_path):
     from src.fund_estimate_store import FundEstimateStore
     store = FundEstimateStore(tmp_path / 'e.db'); store.initialize()
     now = datetime(2026, 10, 23, 10, 0, tzinfo=TZ_CN)
     source = _source(store, now, session=_LatestSession(latest_time='09:50'))
     live = source.read_intraday_factors(now)
-    # 盘中数据落后超过 5 分钟仍是不可用的陈旧值，保持 missing。
+    # cfets 盘中曲线约每 2-10 分钟才推进一个时点，10 分钟滞后仍应给出可用估值。
+    assert live.basis_status == 'native'
+    assert live.missing_fields == []
+    assert live.market_as_of == '2026-10-23T09:50:00+08:00'
+
+
+def test_intraday_gap_beyond_window_remains_missing(tmp_path):
+    from src.fund_estimate_store import FundEstimateStore
+    store = FundEstimateStore(tmp_path / 'e.db'); store.initialize()
+    now = datetime(2026, 10, 23, 10, 0, tzinfo=TZ_CN)
+    source = _source(store, now, session=_LatestSession(latest_time='09:40'))
+    live = source.read_intraday_factors(now)
+    # 超过 15 分钟仍无新时点，按接口停更处理，保持 missing。
     assert live.basis_status == 'missing'
     assert live.missing_fields
 

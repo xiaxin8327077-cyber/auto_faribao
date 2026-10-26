@@ -54,12 +54,13 @@ def parse_curve(payload: dict, day: date, quote_time: str) -> dict[float, Decima
 
 
 class CfetsCurveSource:
-    def __init__(self, store, *, fetcher=None, clock=None, calendar=None):
+    def __init__(self, store, *, fetcher=None, clock=None, calendar=None, intraday_stale_minutes=15):
         self.store = store
         self.clock = clock or (lambda: datetime.now(TZ_CN))
         self.calendar = calendar or is_trading_day
         self.session = requests.Session() if fetcher is None else None
         self.fetcher = fetcher or self._fetch
+        self.intraday_stale_minutes = max(1, int(intraday_stale_minutes))
         self._failed = {}
         self._transient = set()
         self._live_cache = None
@@ -160,8 +161,9 @@ class CfetsCurveSource:
             if market_time > now:
                 raise CurveUnavailable('实时曲线尚未更新')
             closed = now.time() >= time(17, 0)
-            # 5 分钟新鲜度只约束盘中实时值；收盘后 17:00 定格值/最后时点不需要"继续更新"。
-            if not closed and (now - market_time) > timedelta(minutes=5):
+            # cfets 盘中曲线约每 2-10 分钟才推进一个时点，按可配置窗口（默认 15 分钟）判定停更；
+            # 收盘后 17:00 定格值/最后时点不需要"继续更新"。
+            if not closed and (now - market_time) > timedelta(minutes=self.intraday_stale_minutes):
                 raise CurveUnavailable('实时曲线尚未更新')
             current = self._levels(day, quote_time)
             observation = self._observation(day, quote_time, previous, current, base)
