@@ -99,6 +99,69 @@ def test_previous_day_nav_revision_updates_next_day_verification(tmp_path):
     assert _verifications(store)['2026-10-22'] == pytest.approx(-0.0998, abs=1e-3)
 
 
+def _verification_fixture(tmp_path, *, available_at):
+    from src.fund_estimate_types import EstimateSnapshot
+
+    store = store_at(tmp_path)
+    previous = replace(observation(), cash_dividend_per_share='0', event_status='ordinary',
+                       dividend_coverage='verified_none')
+    current = replace(previous, nav_date='2026-10-23', unit_nav='1.0010',
+                      source_version='nav-today', available_at=available_at)
+    generated = '2026-10-23T15:00:00+08:00'
+    snapshot = EstimateSnapshot('p-new', '918273', '2026-10-23', 'mark_to_market_total_return',
+                                'experimental', [], '2026-10-22', '1.0000', generated,
+                                None, None, None, 'm1', '0.08', None, None, 'none', '试验',
+                                None, generated)
+    store.save_nav(previous)
+    store.save_snapshot(snapshot, slot='2026-10-23T15:00', source_version='m1')
+    sources = EstimateSources(factor_fetcher=lambda *_: [], clock=lambda: NOW + timedelta(seconds=25))
+    sources.fetch_nav_history = lambda *_: [previous, current]
+    service = FundEstimateService(None, store, sources, ProfileService(store, MemoryDocuments()))
+    return service, current
+
+
+def test_new_nav_fetched_after_job_start_is_verified_immediately(tmp_path):
+    fetched_at = NOW + timedelta(seconds=24)
+    service, _ = _verification_fixture(tmp_path, available_at=fetched_at.isoformat())
+
+    service._backfill(IDENTITY, NOW, enqueue_train=True)
+
+    rows = service.store.read_verifications()
+    assert len(rows) == 1
+    assert float(rows[0]['realized_return_pct']) == pytest.approx(0.1)
+    assert rows[0]['predicted'] == '0.08'
+    assert datetime.fromisoformat(rows[0]['recorded_at']) >= fetched_at
+    # 历史可见时间仍保持真实抓取时间，不能通过提前 available_at 绕开问题。
+    assert all(item.nav_date != '2026-10-23'
+               for item in service.store.nav_as_of(IDENTITY.code, NOW.isoformat()))
+
+
+@pytest.mark.parametrize('enqueue_train', [True, False])
+def test_unchanged_nav_recovers_missing_verification_without_retraining(tmp_path, enqueue_train):
+    service, current = _verification_fixture(tmp_path, available_at=NOW.isoformat())
+    service.store.save_nav(current)
+
+    service._backfill(IDENTITY, NOW, enqueue_train=enqueue_train)
+    service._backfill(IDENTITY, NOW + timedelta(minutes=30), enqueue_train=enqueue_train)
+
+    rows = service.store.read_verifications()
+    assert len(rows) == 1
+    assert float(rows[0]['realized_return_pct']) == pytest.approx(0.1)
+    assert not service.store.list_jobs(IDENTITY.code)
+
+
+def test_missing_dividend_coverage_remains_pending_until_recovered(tmp_path):
+    service, current = _verification_fixture(tmp_path, available_at=NOW.isoformat())
+    service.sources.fetch_nav_history = lambda *_: [replace(current, cash_dividend_per_share=None,
+                                                            dividend_coverage='missing')]
+    service._backfill(IDENTITY, NOW, enqueue_train=False)
+    assert service.store.read_verifications() == []
+
+    service.sources.fetch_nav_history = lambda *_: [current]
+    service._backfill(IDENTITY, NOW, enqueue_train=False)
+    assert len(service.store.read_verifications()) == 1
+
+
 def test_read_snapshots_strips_unverified_cross_source_numbers(tmp_path):
     from src.fund_estimate_types import EstimateSnapshot
     from src.portfolio_models import Position, Product, ProductType
@@ -210,6 +273,96 @@ def test_verification_analysis_uses_ai_without_changing_numbers(tmp_path):
     assert report['stats']['pairs'] == 1
     # AI 点评不改动任何统计数字。
     assert float(report['stats']['bias_pct']) == pytest.approx(-0.10, abs=1e-3)
+
+
+def test_verification_report_counts_only_final_valid_prediction_per_fund_day(tmp_path):
+    from src.fund_estimate_types import EstimateSnapshot
+    store = store_at(tmp_path)
+    rows = [
+        ('2026-10-22', '09:00', None, '0.10'),
+        ('2026-10-22', '10:00', '-0.20', '0.10'),
+        ('2026-10-22', '17:00', '0.08', '0.10'),
+        ('2026-10-22', '17:01', None, '0.10'),
+        ('2026-10-23', '10:00', '0.30', '-0.20'),
+        ('2026-10-23', '17:00', '-0.18', '-0.20'),
+    ]
+    for day, clock, predicted, realized in rows:
+        generated = f'{day}T{clock}:00+08:00'
+        snapshot = EstimateSnapshot('p-new', '918273', day, 'mark_to_market_total_return',
+                                    'experimental', [], day, '1', generated, None, None, None,
+                                    'm', predicted, None, None, 'none', '试验', None, generated)
+        store.save_snapshot(snapshot, slot=f'{day}T{clock}', source_version='m')
+        store.save_verification(product_id='p-new', code='918273', trade_date=day,
+                                snapshot_generated_at=generated, realized_return_pct=realized,
+                                recorded_at=f'{day}T20:00:00+08:00')
+    ai_inputs = []
+    ai = SimpleNamespace(is_enabled=lambda: True,
+                         complete=lambda messages: ai_inputs.append(messages[-1]['content']) or '按每日最终预估分析。')
+    repo = SimpleNamespace(get_product=lambda _: SimpleNamespace(name='测试纯债A'))
+    service = FundEstimateService(repo, store, EstimateSources(), None, ai=ai)
+
+    report = service.verification_report()
+
+    assert report['stats']['pairs'] == 2
+    assert report['stats']['predicted_count'] == 2
+    assert report['stats']['missing_predictions'] == 0
+    assert report['stats']['direction_hits'] == 2
+    assert float(report['stats']['mae_pct']) == pytest.approx(0.02)
+    assert float(report['stats']['bias_pct']) == pytest.approx(0)
+    assert [item['predicted_pct'] for item in report['items']] == ['0.08', '-0.18']
+    assert all(item['name'] == '测试纯债A' for item in report['items'])
+    assert all('T17:00:00' in item['snapshot_generated_at'] for item in report['items'])
+    assert '-0.20' not in ai_inputs[0].split('"predicted_pct"')[1].split('}')[0]
+    assert '"pairs": 2' in ai_inputs[0]
+    assert len(report['snapshot_items']) == 6
+
+
+def test_overall_analysis_covers_all_dates_beyond_latest_twenty_results(tmp_path):
+    import json
+    from src.fund_estimate_types import EstimateSnapshot
+
+    store = store_at(tmp_path)
+    start = date(2026, 9, 1)
+    for offset in range(25):
+        day = (start + timedelta(days=offset)).isoformat()
+        generated = f'{day}T17:00:00+08:00'
+        predicted = '-1.0' if offset == 0 else '0.10'
+        snapshot = EstimateSnapshot('p-new', '918273', day, 'mark_to_market_total_return',
+                                    'experimental', [], day, '1', generated, None, None, None,
+                                    'm', predicted, None, None, 'none', '试验', None, generated)
+        store.save_snapshot(snapshot, slot=f'{day}T17:00', source_version='m')
+        store.save_verification(product_id='p-new', code='918273', trade_date=day,
+                                snapshot_generated_at=generated, realized_return_pct='0.20',
+                                recorded_at=f'{day}T20:00:00+08:00')
+    prompts = []
+    ai = SimpleNamespace(is_enabled=lambda: True,
+                         complete=lambda messages: prompts.append(messages[-1]['content']) or '累计分析。')
+    service = FundEstimateService(None, store, EstimateSources(), None, ai=ai)
+
+    report = service.verification_report()
+
+    overall = report['overall']
+    assert overall['start_date'] == '2026-09-01'
+    assert overall['end_date'] == '2026-09-25'
+    assert overall['day_count'] == 25
+    assert overall['fund_count'] == 1
+    assert len(overall['by_day']) == 25
+    assert overall['by_day'][0]['direction_hits'] == 0
+    assert float(overall['by_day'][0]['mae_pct']) == pytest.approx(1.2)
+    assert overall['by_fund'][0]['predicted_count'] == 25
+    assert float(report['stats']['mae_pct']) == pytest.approx(0.144)
+    payload = json.loads(prompts[0].split('数据：', 1)[1])
+    assert payload['by_day'][0]['trade_date'] == '2026-09-01'
+    assert payload['by_fund'][0]['predicted_count'] == 25
+    assert payload['period']['day_count'] == 25
+    diagnostics = report['overall']['diagnostics']
+    assert float(diagnostics['mean_abs_realized_pct']) == pytest.approx(0.2)
+    assert float(diagnostics['error_to_realized_movement_ratio']) == pytest.approx(0.72)
+    assert diagnostics['negative_errors'] == 25
+    assert float(diagnostics['majority_direction_accuracy']) == pytest.approx(1)
+    assert float(diagnostics['direction_accuracy_above_baseline']) == pytest.approx(-0.04)
+    assert payload['diagnostics'] == diagnostics
+    assert '4个自然段' in prompts[0]
 
 
 def test_production_service_uses_trading_calendar(tmp_path):

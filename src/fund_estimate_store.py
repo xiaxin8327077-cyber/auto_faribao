@@ -564,6 +564,22 @@ class FundEstimateStore:
             ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 
+    def pending_verification_dates(self, product_id: str) -> list[str]:
+        """找出尚未配到正式收益的快照日期，供净值轮询幂等补跑。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT s.trade_date FROM estimate_snapshots s
+                   LEFT JOIN verifications v
+                     ON v.product_id = s.product_id AND v.trade_date = s.trade_date
+                    AND v.snapshot_generated_at = s.generated_at
+                   WHERE s.product_id = ?
+                     AND (v.id IS NULL OR v.realized_return_pct IS NULL
+                          OR v.realized_return_pct = '')
+                   ORDER BY s.trade_date""",
+                (product_id,),
+            ).fetchall()
+        return [row["trade_date"] for row in rows]
+
     def save_verification(
         self,
         *,
@@ -613,6 +629,8 @@ class FundEstimateStore:
                 "trade_date": row["trade_date"], "snapshot_generated_at": row["snapshot_generated_at"],
                 "realized_return_pct": row["realized_return_pct"], "recorded_at": row["recorded_at"],
                 "predicted": payload.get("return_pct"),
+                "base_nav": payload.get("base_nav"),
+                "base_nav_date": payload.get("base_nav_date"),
             })
         return result
 

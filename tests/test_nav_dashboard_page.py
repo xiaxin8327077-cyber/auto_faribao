@@ -20,6 +20,38 @@ def test_stock_market_and_estimates_use_red_up_green_down():
     assert '--positive: #f05a24;' in html and '--negative: #07944f;' in html
 
 
+def test_stock_sparklines_use_actual_same_day_points_and_change_on_live_update():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js is required for dashboard behavior checks')
+    html = _read_page()
+    assert 'function stockSparkline(' in html
+    source = html[html.index('function stockSparkline('):html.index('function renderStockMarket(')]
+    script = r"""
+const assert = require('node:assert/strict');
+const esc = value => String(value).replaceAll('<', '&lt;').replaceAll('"', '&quot;');
+const tone = value => Number(value) > 0 ? 'positive' : Number(value) < 0 ? 'negative' : 'neutral';
+SOURCE
+const item = {name: '上证指数', market_id: 'CN', quote_date: '2026-10-23', change_pct: '1',
+  trend: {quote_date: '2026-10-23', pre_close: '100', points: [
+    {time: '2026-10-23T09:30:00+08:00', price: '99'},
+    {time: '2026-10-23T09:31:00+08:00', price: '101'}]}};
+const first = stockSparkline(item);
+assert.ok(first.includes('<svg'));
+assert.ok(first.includes('当日走势'));
+assert.ok(first.includes('positive'));
+item.trend.points[1].price = '102';
+assert.notEqual(stockSparkline(item), first);
+item.trend.points[1].price = '99';
+assert.ok(!stockSparkline(item).includes('NaN'));
+assert.ok(!stockSparkline(item).includes('Infinity'));
+item.trend.quote_date = '2026-10-22';
+assert.ok(!stockSparkline(item).includes('<svg'));
+""".replace('SOURCE', source)
+    result = subprocess.run([node, '-e', script], capture_output=True, text=True, encoding='utf-8')
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_stock_group_titles_show_market_session_status():
     html = _read_page()
     assert "stock-group-status" in html
@@ -43,6 +75,8 @@ def test_estimate_list_shows_single_market_time_beside_title():
     assert 'id="estimateMeta"' in html
     assert 'estimateMeta' in html
     assert '行情 ${String(estimate.market_as_of)' not in html
+    assert "latestEstimateTime.slice(-5)" in html
+    assert '预估涨跌幅 · 行情 ${latestEstimateTime}' not in html
 
 
 def test_market_panel_cards_keep_even_gap_across_notice_element():
@@ -57,6 +91,95 @@ def test_verification_section_renders_stats_and_optional_ai_note():
     assert 'id="verificationContent"' in html
     assert "renderVerification" in html
     assert "/api/portfolio/fund-estimate-verifications" in html
+
+
+@pytest.mark.parametrize('status', [304, 200])
+def test_verification_refreshes_when_market_payload_is_unchanged(status):
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js is required for dashboard behavior checks')
+    html = _read_page()
+    source = html[html.index('async function loadMarketOverview('):
+                  html.index('function setModelSettingsStatus(')]
+    script = """
+const assert = require('node:assert/strict');
+let marketLoading = false, marketEtag = 'same', marketPollTimer;
+const document = {hidden: false}, state = {activeTab: 'market'};
+const payload = {same: true};
+let lastMarketPayload = JSON.stringify(payload), verificationCalls = 0;
+const api = async () => ({status: STATUS, ok: STATUS === 200,
+  headers: {get: () => 'same'}, json: async () => payload});
+const loadVerification = () => { verificationCalls++; };
+const setTimeout = () => 1, clearTimeout = () => {};
+const $ = () => ({textContent: ''});
+SOURCE
+loadMarketOverview().then(() => {
+  assert.equal(verificationCalls, 1, 'unchanged market must still refresh verifications');
+  assert.equal(marketLoading, false);
+}).catch(error => { console.error(error); process.exitCode = 1; });
+""".replace('STATUS', str(status)).replace('SOURCE', source)
+    result = subprocess.run([node, '-e', script], capture_output=True, text=True, encoding='utf-8')
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_verification_daily_rows_have_names_three_decimals_and_no_minute_records():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js is required for dashboard behavior checks')
+    html = _read_page()
+    start = html.index('function verificationPercent(') if 'function verificationPercent(' in html else html.index('function renderVerification(')
+    source = html[start:html.index('async function loadVerification(')]
+    script = r"""
+const assert = require('node:assert/strict');
+const box = {innerHTML: '', querySelectorAll: () => [], querySelector: () => null};
+const meta = {textContent: ''};
+const $ = id => id === 'verificationContent' ? box : meta;
+const esc = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
+const tone = value => Number(value) > 0 ? 'positive' : Number(value) < 0 ? 'negative' : 'neutral';
+SOURCE
+const row = {product_id: 'p', code: '918273', name: '测试纯债A', trade_date: '2026-10-23',
+  snapshot_generated_at: '2026-10-23T17:29:00+08:00', predicted_pct: '0.08', realized_pct: '0.1',
+  error_pct: '-0.020000000000000000000001', direction_ok: true};
+renderVerification({items: [row], stats: {pairs: 1, predicted_count: 1, direction_hits: 1,
+  bias_pct: row.error_pct, mae_pct: '0.020000000000000000000001'},
+  snapshot_items: [row, {...row, predicted_pct: null}], ai_analysis: '每日最终结果分析'});
+assert.equal((box.innerHTML.match(/class="verification-fund"/g) || []).length, 1);
+assert.ok(box.innerHTML.includes('测试纯债A'));
+for (const value of ['+0.080%', '+0.100%', '0.020%']) assert.ok(box.innerHTML.includes(value), value);
+assert.ok(!box.innerHTML.includes('000000000000000000001'));
+assert.ok(!box.innerHTML.includes('缺预估'));
+assert.ok(!box.innerHTML.includes('平均偏差'));
+assert.ok(!box.innerHTML.includes('<details'));
+assert.ok(!box.innerHTML.includes('分钟记录'));
+assert.ok(!box.innerHTML.includes('每天每只基金仅计一次'));
+assert.ok(box.innerHTML.includes('累计分析'));
+assert.ok(box.innerHTML.includes('😐'));
+assert.ok(meta.textContent.includes('1只基金'));
+assert.equal(verificationPercent('-0.0000001', true), '0.000%');
+renderVerification({items: [{...row, direction_ok: false}], stats: {pairs: 1,
+  predicted_count: 1, direction_hits: 0, mae_pct: '0.02'}});
+assert.ok(box.innerHTML.includes('🙁'));
+renderVerification({items: [{...row, error_pct: '0.0072', direction_ok: true}], stats: {pairs: 1,
+  predicted_count: 1, direction_hits: 1, mae_pct: '0.0072'}});
+assert.ok(box.innerHTML.includes('🙂'));
+const history = {...row, trade_date: '2026-10-22', predicted_pct: '0.24',
+  error_pct: '0.14', direction_ok: false};
+const cumulative = {items: [history, row], stats: {pairs: 2, predicted_count: 2,
+  direction_hits: 1, mae_pct: '0.08'}, overall: {day_count: 2, fund_count: 1,
+  start_date: '2026-10-22', end_date: '2026-10-23', summary: '累计覆盖全部日期。'}};
+renderVerification(cumulative);
+assert.ok(box.innerHTML.includes('50.000%'));
+assert.ok(box.innerHTML.includes('0.080%'));
+assert.equal((box.innerHTML.match(/class="verification-fund"/g) || []).length, 1);
+renderVerification.selectedDate = '2026-10-22';
+renderVerification(cumulative);
+assert.ok(box.innerHTML.includes('50.000%'));
+assert.ok(box.innerHTML.includes('0.080%'));
+assert.ok(box.innerHTML.includes('+0.240%'));
+assert.ok(!box.innerHTML.includes('+0.080%'));
+""".replace('SOURCE', source)
+    result = subprocess.run([node, '-e', script], capture_output=True, text=True, encoding='utf-8')
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_selected_logo_is_shared_by_header_and_browser_icon():
@@ -1528,7 +1651,7 @@ assert(!result.includes('¥0.00'));
 assert(!result.includes('行情 2026-10-23 16:56'));
 assert(!result.includes('情景范围'));
 assert(!result.includes('试验'));
-assert(elements.estimateMeta.textContent.includes('行情 2026-10-23 16:56'));
+assert.strictEqual(elements.estimateMeta.textContent, '16:56');
 renderStockMarket({available:true,source:'东财',fetched_at:'2026-10-23T16:20:00+08:00',indices:[{name:'标普500',market:'美股',quote_date:'2026-10-22',quote_time:'2026-10-22T16:00:00-04:00',price:'6000',change_pct:'-1.2'}],indices_status:{US:{collection_phase:'close'}},industries:{quote_date:'2026-10-23',stale:true,leaders:[{name:'电子<行业>',change_pct:'2'}],laggards:[]}});
 assert(!elements.stockMarketContent.innerHTML.includes('2026-10-22 16:00 纽约'));
 assert(elements.stockMarketMeta.textContent.includes('16:20 更新'));
