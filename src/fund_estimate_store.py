@@ -116,6 +116,8 @@ CREATE TABLE IF NOT EXISTS current_snapshots (
     payload_json TEXT NOT NULL,
     source_version TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_estimate_snapshots_verification
+    ON estimate_snapshots(product_id, generated_at);
 CREATE TABLE IF NOT EXISTS verifications (
     id INTEGER PRIMARY KEY,
     product_id TEXT NOT NULL,

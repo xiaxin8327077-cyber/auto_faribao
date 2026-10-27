@@ -2258,7 +2258,8 @@ def create_portfolio_blueprint(runtime, provider_factory, estimate_service=None)
         if estimate_service is None:
             return jsonify({"status": "error", "message": "验证分析暂时不可用，请重试"}), 503
         try:
-            response = jsonify(estimate_service.verification_report())
+            report = estimate_service.verification_report()
+            response = jsonify({key: value for key, value in report.items() if key != 'snapshot_items'})
             response.headers['Cache-Control'] = 'private, no-store'
             return response
         except Exception:

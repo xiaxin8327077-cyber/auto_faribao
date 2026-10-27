@@ -138,6 +138,7 @@ def test_verification_endpoint_requires_key_and_returns_report(tmp_path, monkeyp
     assert response.status_code == 200
     assert payload["items"] == []
     assert payload["stats"]["pairs"] == 0
+    assert 'snapshot_items' not in payload  # 页面只消费每日结果，分钟记录不随轮询传输。
 
 
 def test_verification_failure_is_not_disguised_as_empty_success(tmp_path, monkeypatch):
