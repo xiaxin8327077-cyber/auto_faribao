@@ -2225,7 +2225,9 @@ def create_portfolio_blueprint(runtime, provider_factory, estimate_service=None)
 
         def canonical(value):
             if isinstance(value, dict):
-                return {k: canonical(v) for k, v in value.items() if k not in age_only}
+                return {k: (canonical({key: item for key, item in v.items() if key != 'as_of'})
+                            if k == 'live_session' and isinstance(v, dict) else canonical(v))
+                        for k, v in value.items() if k not in age_only}
             if isinstance(value, list):
                 return [canonical(v) for v in value]
             return value

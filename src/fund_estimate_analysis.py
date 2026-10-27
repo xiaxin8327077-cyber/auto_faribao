@@ -13,8 +13,9 @@ from time import time
 
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "short-v1"
-AI_TOKEN_BUDGET = 512
+CACHE_VERSION = "short-v2"
+# 兼容推理模型：输出预算可能同时包含reasoning，正文长度由后续字符及短句校验控制。
+AI_TOKEN_BUDGET = 4096
 RETRY_SECONDS = 60
 MAX_RETRY_SECONDS = 900
 
@@ -46,7 +47,7 @@ class VerificationAnalysis:
         self._pending = {}
         self._cache = {}
 
-    def read(self, items, stats, overall) -> dict:
+    def read(self, items, stats, overall, *, retry_failed=True) -> dict:
         if not items:
             return {"ai_analysis": None, "ai_status": "ready"}
         payload = _analysis_payload(items, stats, overall)
@@ -71,7 +72,7 @@ class VerificationAnalysis:
                     self._cache[key] = cached
             if cached is not None and cached["status"] == "ready":
                 return {"ai_analysis": cached["analysis"], "ai_status": "ready"}
-            if cached is not None and cached.get("retry_at", 0) > time():
+            if cached is not None and (not retry_failed or cached.get("retry_at", 0) > time()):
                 return {"ai_analysis": summary, "ai_status": "failed"}
             if key != self._active and key not in self._pending:
                 attempts = int((cached or {}).get("attempts", 0)) + 1

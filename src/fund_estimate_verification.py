@@ -1,7 +1,7 @@
 """只读正式净值，在独立估值库幂等保存逐基金每日验证。"""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 import hashlib
 import json
@@ -52,9 +52,11 @@ def official_nav_version(repository, identities, now: datetime) -> str:
 def read_official_nav_state(repository, identities, now: datetime) -> dict:
     """首屏可读取已确认净值状态，无需等待每日对账或写入估值库。"""
     now = ensure_aware(now, TZ_CN).astimezone(TZ_CN)
+    identities = list(identities)
     versions = []
     confirmed_today = set()
     latest_confirmed = None
+    latest_by_product = {}
     errors = []
     for identity in identities:
         try:
@@ -62,6 +64,7 @@ def read_official_nav_state(repository, identities, now: datetime) -> dict:
             if quotes:
                 versions.append(_quote_version_component(identity, quotes))
                 latest = quotes[-1].quote_date.isoformat()
+                latest_by_product[identity.product_id] = latest
                 latest_confirmed = max(latest_confirmed or latest, latest)
                 if quotes[-1].quote_date == now.date():
                     confirmed_today.add(identity.product_id)
@@ -71,8 +74,68 @@ def read_official_nav_state(repository, identities, now: datetime) -> dict:
         "confirmed_nav_version": _official_version(versions),
         "today_confirmed_count": len(confirmed_today),
         "latest_confirmed_date": latest_confirmed,
+        "latest_confirmed_by_product": latest_by_product,
+        "expected_fund_count": len(identities),
         "errors": errors,
     }
+
+
+def verification_refresh_state(identities, current_state, items, now: datetime, *,
+                               is_trading_day, analysis_status, status,
+                               version_pending=False) -> dict:
+    """全部持仓验证及点评完成后，冻结至之后首个交易日收盘。"""
+    identities = list(identities)
+    product_ids = {identity.product_id for identity in identities}
+    result = {
+        "refresh_complete": False, "next_refresh_at": None,
+        "expected_fund_count": len(identities), "verified_fund_count": 0,
+    }
+    if not identities:
+        return result
+    now = ensure_aware(now, TZ_CN).astimezone(TZ_CN)
+    latest_by_product = current_state.get("latest_confirmed_by_product") or {}
+    try:
+        confirmed_days = {product_id: date.fromisoformat(latest_by_product[product_id])
+                          for product_id in product_ids if latest_by_product.get(product_id)}
+    except (TypeError, ValueError):
+        return result
+    if not confirmed_days:
+        return result
+    target = max(confirmed_days.values())
+    if target > now.date():
+        return result
+    target_text = target.isoformat()
+    matching_items = {product_id: [] for product_id in product_ids}
+    for item in items:
+        if item.get("product_id") in product_ids and item.get("trade_date") == target_text:
+            matching_items[item["product_id"]].append(item)
+    complete_products = {
+        product_id for product_id, rows in matching_items.items()
+        if confirmed_days.get(product_id) == target and rows
+        and all(row.get("verification_status") in {"verified", "missing_estimate"}
+                and _number(row.get("realized_pct")) is not None
+                and row.get("profit_status") not in {"pending_dividend_ledger", "error"} for row in rows)
+    }
+    result["verified_fund_count"] = len(complete_products)
+    if (len(complete_products) != len(identities)
+            or current_state.get("errors") or status != "ready" or version_pending
+            or analysis_status not in {"ready", "disabled", "failed"}):
+        return result
+    # 日历不可用时保持轮询，不自行以星期几推断交易日。
+    try:
+        for offset in range(1, 367):
+            next_day = target + timedelta(days=offset)
+            trading = is_trading_day(next_day)
+            if trading is True:
+                resume_at = datetime.combine(next_day, time(15), TZ_CN)
+                if now < resume_at:
+                    result.update(refresh_complete=True, next_refresh_at=iso_now(resume_at))
+                return result
+            if trading is not False:
+                return result
+    except Exception:
+        return result
+    return result
 
 
 def _last_valid_snapshot(store, product_id, day, now):

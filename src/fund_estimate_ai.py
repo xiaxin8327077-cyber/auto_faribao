@@ -79,13 +79,19 @@ class EstimateAi:
         try:
             payload = json.loads(text)
             choice = payload["choices"][0]
-            content = choice["message"]["content"]
+            if not isinstance(choice, dict):
+                raise ValueError("invalid completion choice")
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise AiUnavailable("模型响应无法解析") from exc
+        # 推理模型可能在预算耗尽时只返回reasoning_content，先检查终止原因才能正确报告截断。
         if choice.get("finish_reason") == "length":
             raise AiUnavailable("模型响应被截断，请提高输出预算后重试")
         if choice.get("finish_reason") not in {None, "stop"}:
             raise AiUnavailable("模型未正常完成报告提取")
+        try:
+            content = choice["message"]["content"]
+        except (KeyError, TypeError) as exc:
+            raise AiUnavailable("模型响应无法解析") from exc
         if not isinstance(content, str) or not content.strip():
             raise AiUnavailable("模型响应为空")
         return content.strip()

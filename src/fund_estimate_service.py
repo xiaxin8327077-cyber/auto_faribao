@@ -51,7 +51,7 @@ def notify_official_nav_update() -> None:
         _verification_service.start_official_verification_sync(force=True)
 
 
-def discover_funds(repository, now: datetime | None = None) -> list[FundIdentity]:
+def discover_funds(repository, now: datetime | None = None, *, errors=None) -> list[FundIdentity]:
     """持有份额大于 0，或存在有效待确认买入的公募基金。不按代码白名单过滤。"""
     del now
     if repository is None:
@@ -63,8 +63,10 @@ def discover_funds(repository, now: datetime | None = None) -> list[FundIdentity
         try:
             position = repository.get_position(product.id)
             transactions = repository.list_transactions(product.id)
-        except Exception:
+        except Exception as exc:
             logger.warning('基金发现失败，继续处理其他基金: %s', product.code, exc_info=True)
+            if errors is not None:
+                errors.append({'product_id': product.id, 'code': str(product.code), 'error': str(exc)[:300]})
             continue
         pending = any(
             item.transaction_type in PURCHASE_TYPES and item.status in PENDING_STATUSES
@@ -154,6 +156,9 @@ class FundEstimateService:
         from src.fund_estimate_verification import sync_confirmed_verifications
         current = now or datetime.now(TZ_CN)
         with self._official_sync_lock:
+            generation = str(time_module.time_ns())
+            self.store.set_watermark('official-nav-verification-generation:v1',
+                                     'running:' + generation, iso_now(current))
             identities = discover_funds(self.repository, current)
             active_ids = {item.product_id for item in identities}
             historical_ids = {row['product_id'] for row in
@@ -168,6 +173,8 @@ class FundEstimateService:
                 self.repository, self.store, identities, current, active_product_ids=active_ids)
             self.store.set_watermark('official-nav-verification-meta:v1',
                                      json.dumps(metadata, ensure_ascii=False), iso_now(current))
+            self.store.set_watermark('official-nav-verification-generation:v1',
+                                     'ready:' + generation, iso_now(current))
             return metadata
 
     def start_official_verification_sync(self, now: datetime | None = None, *, force=False) -> None:
@@ -334,17 +341,18 @@ class FundEstimateService:
 
     def verification_report(self) -> dict:
         """失败保留持久化的最后成功报告；明细不等待 AI。"""
-        self.start_official_verification_sync()
         cache_key = 'verification-report:latest:v1'
         try:
-            report = self._build_verification_report()
             previous = self._last_verification_report
             if previous is None:
                 cached = self.store.get_watermark(cache_key)
                 previous = json.loads(cached) if cached else None
+                self._last_verification_report = previous
+            report = self._build_verification_report()
             if not report['items'] and previous and previous.get('items'):
                 self._last_verification_report = previous
-                return dict(previous, status='stale', message='正在恢复验证数据，保留上次内容')
+                return dict(previous, status='stale', message='正在恢复验证数据，保留上次内容',
+                            refresh_complete=False, next_refresh_at=None)
             serialized = json.dumps(report, ensure_ascii=False, sort_keys=True)
             if self.store.get_watermark(cache_key) != serialized:
                 self.store.set_watermark(cache_key, serialized, report['generated_at'])
@@ -360,13 +368,17 @@ class FundEstimateService:
                 except Exception:
                     previous = None
             if previous and previous.get('items'):
-                return dict(previous, status='stale', message='更新失败，已保留上次数据')
+                return dict(previous, status='stale', message='更新失败，已保留上次数据',
+                            refresh_complete=False, next_refresh_at=None)
             raise
 
     def _build_verification_report(self) -> dict:
         """预估与真实涨跌对比：确定性统计为准，AI只做点评且不改动任何数字。"""
         from src.fund_estimate_types import decimal_text
 
+        generation_key = 'official-nav-verification-generation:v1'
+        generation_before = self.store.get_watermark(generation_key)
+        meta_before = self.store.get_watermark('official-nav-verification-meta:v1')
         rows = self.store.read_verifications()
         snapshot_items = []
         names = {}
@@ -409,7 +421,14 @@ class FundEstimateService:
         stats = _verification_statistics(items)
         overall = _verification_overall(items, stats)
         # AI 仅接收涨跌幅和误差；持仓份额及收益金额不进入模型请求或缓存键。
-        analysis = self._analysis.read(items, stats, overall)
+        now = datetime.now(TZ_CN)
+        previous = self._last_verification_report or {}
+        try:
+            freeze_until = parse_time(previous.get('next_refresh_at'))
+            frozen_analysis = previous.get('refresh_complete') is True and now < freeze_until
+        except (ValueError, TypeError, AttributeError):
+            frozen_analysis = False
+        analysis = self._analysis.read(items, stats, overall, retry_failed=not frozen_analysis)
         try:
             enriched = self._verification_amounts(items, items + rows)
         except Exception:
@@ -419,28 +438,46 @@ class FundEstimateService:
                     enriched.extend(self._verification_amounts([item], items + rows))
                 except Exception:
                     logger.warning('基金验证金额补充失败: %s', item.get('code'), exc_info=True)
-                    enriched.append(dict(item, predicted_profit=None, realized_profit=None, profit_error=None))
+                    enriched.append(dict(item, predicted_profit=None, realized_profit=None,
+                                         profit_error=None, profit_status='error'))
         items = enriched
         latest = max((item['trade_date'] for item in items), default=None)
-        today = datetime.now(TZ_CN).date().isoformat()
+        today = now.date().isoformat()
         version = hashlib.sha256(json.dumps(items, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:20]
         raw_meta = self.store.get_watermark('official-nav-verification-meta:v1')
+        generation_after = self.store.get_watermark(generation_key)
+        publication_pending = (generation_before != generation_after or meta_before != raw_meta
+                               or bool(generation_after and generation_after.startswith('running:')))
         metadata = json.loads(raw_meta) if raw_meta else {}
         current_state = {}
+        active_identities = []
         if self.repository is not None and hasattr(self.repository, 'list_quotes') and hasattr(self.repository, 'list_products'):
             from src.fund_estimate_verification import read_official_nav_state
-            current_state = read_official_nav_state(self.repository, discover_funds(self.repository), datetime.now(TZ_CN))
+            discovery_errors = []
+            active_identities = discover_funds(self.repository, now, errors=discovery_errors)
+            current_state = read_official_nav_state(self.repository, active_identities, now)
+            current_state['errors'].extend(discovery_errors)
         shown_today = sum(item['trade_date'] == today for item in items)
         confirmed_today = max(shown_today, current_state.get('today_confirmed_count', 0))
-        errors = metadata.get('errors') or current_state.get('errors')
+        errors = list(metadata.get('errors') or []) + list(current_state.get('errors') or [])
+        errors.extend({'product_id': item['product_id'], 'error': 'profit_enrichment_failed'}
+                      for item in items if item.get('profit_status') == 'error')
         version_pending = bool(current_state.get('confirmed_nav_version') and
             current_state['confirmed_nav_version'] != metadata.get('processed_active_nav_version'))
-        status = 'stale' if items and errors else 'updating' if errors or version_pending or confirmed_today > shown_today else 'ready' if items else 'empty'
+        status = 'stale' if items and errors else 'updating' if errors or version_pending or publication_pending or confirmed_today > shown_today else 'ready' if items else 'empty'
+        if version_pending or errors or not items:
+            self.start_official_verification_sync()
         if not items and self._official_worker is not None and self._official_worker.is_alive():
             status = 'updating'
+        from src.fund_estimate_verification import verification_refresh_state
+        refresh_state = verification_refresh_state(
+            active_identities, current_state, items, now,
+            is_trading_day=self.bond_trading_day, analysis_status=analysis.get('ai_status'),
+            status=status, version_pending=version_pending)
         return {'items': items, 'stats': stats, 'snapshot_items': snapshot_items,
                 'overall': overall,
                 **analysis,
+                **refresh_state,
                 'status': status,
                 'message': '部分基金正在重新核验，已保留现有内容' if errors else '',
                 'data_version': version,
@@ -448,7 +485,7 @@ class FundEstimateService:
                 'latest_available_date': latest, 'display_date': latest,
                 'today_date': today,
                 'today_confirmed_count': confirmed_today,
-                'generated_at': iso_now(datetime.now(TZ_CN))}
+                'generated_at': iso_now(now)}
 
     def _verification_amounts(self, items, snapshots):
         """按对应披露日的收益份额还原金额，沿用正式收益账本口径。"""

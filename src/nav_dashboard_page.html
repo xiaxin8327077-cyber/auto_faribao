@@ -465,6 +465,11 @@
     .loading-spinner { display: inline-block; flex: 0 0 auto; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--blue); border-radius: 50%; animation: panel-spin .85s linear infinite; vertical-align: middle; }
     .loading-spinner[hidden] { display: none; }
     .section-head h2 .loading-spinner { margin-left: 6px; }
+    .stock-market-heading { flex-wrap: nowrap; gap: 7px; }
+    .stock-market-heading h2 { flex: 0 0 auto; }
+    .stock-market-loading { display: inline-flex; align-items: center; gap: 5px; min-width: 0; color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .stock-market-heading .section-meta { flex: 0 0 auto; font-size: 10px; white-space: nowrap; }
+    @media (max-width: 370px) { .stock-market-loading { gap: 4px; font-size: 9px; } .stock-market-heading { gap: 5px; } }
     .panel-loading { position: relative; padding: 10px 0; }
     .panel-loading-message { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 12px 0; color: var(--muted); font-size: 12px; }
     .loading-skeleton { height: 58px; margin: 10px 0; border-radius: 8px; background: linear-gradient(100deg, var(--bg) 20%, var(--line-soft) 45%, var(--bg) 70%); background-size: 220% 100%; animation: panel-shimmer 1.7s ease-in-out infinite; }
@@ -844,9 +849,9 @@
 
       <section id="marketPanel" class="management-panel" role="tabpanel" aria-labelledby="marketTab" hidden>
         <section class="card section" aria-label="股市行情">
-          <div class="section-head"><h2>股市行情<span class="loading-spinner" id="stockMarketSpinner" aria-hidden="true" hidden></span></h2><span class="section-meta" id="stockMarketMeta">最近行情</span></div>
+          <div class="section-head stock-market-heading"><h2>股市行情</h2><span class="stock-market-loading"><span class="loading-spinner" id="stockMarketSpinner" aria-hidden="true"></span><span id="stockMarketLoadingText">正在读取股市行情…</span></span><span class="section-meta" id="stockMarketMeta">--</span></div>
           <div id="stockMarketStatus" class="panel-load-status" role="status" aria-live="polite"></div>
-          <div id="stockMarketContent" aria-busy="true"><div class="panel-loading"><p class="panel-loading-message"><span class="loading-spinner" aria-hidden="true"></span>正在读取股市行情…</p><div class="loading-skeleton" aria-hidden="true"></div><div class="loading-skeleton" aria-hidden="true"></div></div></div>
+          <div id="stockMarketContent" aria-busy="true"><div class="panel-loading"><div class="loading-skeleton" aria-hidden="true"></div><div class="loading-skeleton" aria-hidden="true"></div></div></div>
         </section>
         <div class="write-notice" id="marketWriteNotice" hidden></div>
         <section class="card section" aria-label="债市晴雨表">
@@ -1290,7 +1295,7 @@
         }
       });
       clearTimeout(marketPollTimer);
-      clearTimeout(verificationState().pollTimer);
+      scheduleVerificationPoll();
       if (tab === 'market') loadMarketOverview();
       if (tab === 'market') loadVerification();
       if (tab === 'settings') loadModelSettings();
@@ -1414,29 +1419,82 @@
       const trading = ['morning', 'afternoon'].includes(marketStatus.collection_phase);
       // 心跳只代表5分钟内真实走势，延迟/失败/休市行情始终静止。
       const live = trading && !marketStatus.stale && !marketStatus.refresh_error && !item.stale && !item.source_delayed && !item.refresh_error && lastAge >= -60000 && lastAge <= 5 * 60000;
-      const dot = `<circle class="stock-trend-endpoint" cx="${endpoint[0].toFixed(2)}" cy="${endpoint[1].toFixed(2)}" r="1.8"/>`;
+      const dot = live ? `<circle class="stock-trend-endpoint" cx="${endpoint[0].toFixed(2)}" cy="${endpoint[1].toFixed(2)}" r="1.8"/>` : '';
       const pulse = live ? `<circle class="stock-trend-pulse" cx="${endpoint[0].toFixed(2)}" cy="${endpoint[1].toFixed(2)}" r="3"/>` : '';
       return `<svg class="stock-sparkline ${tone(item.change_pct)}" viewBox="0 0 120 36" role="img" aria-label="${label}" preserveAspectRatio="none"><title>${label}</title><path d="${area}" fill="currentColor" opacity="0.10"/>${hasBase ? `<line x1="2" x2="118" y1="${baseline}" y2="${baseline}" stroke="var(--line)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ''}<path d="${path}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>${pulse}${dot}</svg>`;
     }
     function panelLoadingMarkup(message) {
-      return `<div class="panel-loading"><p class="panel-loading-message"><span class="loading-spinner" aria-hidden="true"></span>${esc(message)}</p><div class="loading-skeleton" aria-hidden="true"></div><div class="loading-skeleton" aria-hidden="true"></div></div>`;
+      return `<div class="panel-loading">${message ? `<p class="panel-loading-message"><span class="loading-spinner" aria-hidden="true"></span>${esc(message)}</p>` : ''}<div class="loading-skeleton" aria-hidden="true"></div><div class="loading-skeleton" aria-hidden="true"></div></div>`;
+    }
+    function marketSessionState() {
+      return renderStockMarket.sessionState ||= {session: null, receivedAt: 0, bootstrapAttempted: false, dashboardPending: false, dashboardTimer: null};
+    }
+    function rememberMarketSession(data) {
+      const session = data?.live_session;
+      if (!session || typeof session.any_active !== 'boolean') return;
+      const view = marketSessionState();
+      const incoming = Date.parse(session.as_of || '');
+      const previous = Date.parse(view.session?.as_of || '');
+      if (!view.session || incoming > previous || !Number.isFinite(previous)) {
+        view.session = session;
+        view.receivedAt = Date.now();
+      }
+    }
+    function currentMarketSession() {
+      const view = marketSessionState();
+      const snapshot = renderStockMarket.lastData || state.data?.stock_market;
+      rememberMarketSession(snapshot);
+      if (view.session) {
+        const asOf = Date.parse(view.session.as_of || '');
+        const now = Number.isFinite(asOf) ? asOf + Math.max(0, Date.now() - view.receivedAt) : Date.now();
+        const boundaries = [view.session.next_transition_at, view.session.next_open_at].map(value => Date.parse(value || '')).filter(Number.isFinite);
+        const next = boundaries.length ? Math.min(...boundaries) : null;
+        return {active: view.session.any_active, boundaryReached: next != null && next <= now, nextDelay: next == null ? null : Math.max(1, next - now)};
+      }
+      const statuses = snapshot?.indices_status || {};
+      const phases = ['CN', 'HK', 'US'].map(market => statuses[market]?.collection_phase);
+      const known = phases.every(Boolean);
+      const active = phases.some(phase => phase === 'morning' || phase === 'afternoon');
+      return {active: active || !known && Boolean(snapshot?.available), boundaryReached: false, nextDelay: null};
+    }
+    function scheduleMarketPoll() {
+      clearTimeout(marketPollTimer);
+      marketPollTimer = null;
+      if (document.hidden || state.activeTab !== 'market') return;
+      const session = currentMarketSession();
+      const active = session.active || session.boundaryReached;
+      const delay = active ? Math.min(30000, session.boundaryReached ? 30000 : session.nextDelay ?? 30000) : session.nextDelay;
+      if (delay != null) marketPollTimer = setTimeout(loadMarketOverview, Math.min(2147483647, Math.max(1, delay)));
+    }
+    function pollDashboardSnapshot() {
+      if (document.hidden) return;
+      const session = currentMarketSession();
+      if (state.activeTab !== 'market' || !session.active && !session.boundaryReached) loadDashboard();
     }
     function preserveMarketSnapshot(incoming, previous = {}) {
+      rememberMarketSession(incoming.stock_market);
       for (const key of ['stock_market', 'bond_barometer', 'fund_estimates']) {
         const previousTime = Date.parse(previous[key]?.fetched_at || '');
         const incomingTime = Date.parse(incoming[key]?.fetched_at || '');
-        if (previous[key] != null && (incoming[key] == null || previousTime > incomingTime)) incoming[key] = previous[key];
+        if (previous[key] != null && (incoming[key] == null || previousTime > incomingTime)) {
+          const sessionIsNewer = key === 'stock_market' && Date.parse(incoming[key]?.live_session?.as_of || '') > Date.parse(previous[key]?.live_session?.as_of || '');
+          incoming[key] = sessionIsNewer ? {...previous[key], live_session: incoming[key].live_session,
+            indices_status: incoming[key].indices_status || previous[key].indices_status} : previous[key];
+        }
       }
       return incoming;
     }
     function stockMarketStatus(message = '', busy = false, retry = false) {
       const status = $('stockMarketStatus');
       const spinner = $('stockMarketSpinner');
+      if (busy && renderStockMarket.lastData) { busy = false; message = ''; }
       if (spinner) spinner.hidden = !busy;
+      const progress = $('stockMarketLoadingText');
+      if (progress) progress.textContent = busy ? message : '';
       $('stockMarketContent')?.setAttribute?.('aria-busy', String(busy));
-      if (retry) $('stockMarketContent')?.querySelectorAll?.('.stock-trend-pulse').forEach(dot => dot.remove());
+      if (retry) $('stockMarketContent')?.querySelectorAll?.('.stock-trend-pulse, .stock-trend-endpoint').forEach(dot => dot.remove());
       if (!status) return;
-      status.innerHTML = `${esc(message)}${retry ? '<button type="button" class="panel-retry stock-market-retry">重试</button>' : ''}`;
+      status.innerHTML = `${busy ? '' : esc(message)}${retry ? '<button type="button" class="panel-retry stock-market-retry">重试</button>' : ''}`;
       status.querySelector?.('.stock-market-retry')?.addEventListener('click', () => loadMarketOverview(true));
     }
     function stockFlipNumber(previous, value) {
@@ -1460,6 +1518,7 @@
     function renderStockMarket(data) {
       const box = $('stockMarketContent');
       if (!box) return;
+      rememberMarketSession(data);
       if (!data || !data.available) {
         if (renderStockMarket.lastData) { stockMarketStatus('行情暂不可用，已保留上次行情', false, true); return; }
         box.innerHTML = '<div class="empty">股市行情暂未取得，稍后自动更新</div>';
@@ -1469,12 +1528,10 @@
       const previousValues = renderStockMarket.values || {};
       const nextValues = {};
       renderStockMarket.lastData = data;
-      stockMarketStatus('', marketLoading);
+      stockMarketStatus('', false);
       const updated = data.fetched_at ? new Date(data.fetched_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' }) : '';
       const statuses = data.indices_status || {};
-      const active = Object.values(statuses).some(s => s && (s.collection_phase === 'morning' || s.collection_phase === 'afternoon'));
-      const delayed = Boolean(data.refresh_error) || (data.indices || []).some(i => i && i.source_delayed);
-      $('stockMarketMeta').textContent = `${updated ? updated + ' 更新' : '交易时段更新'}${active ? (delayed ? ' · 更新延迟' : ' · 交易中') : ' · 收盘保留'}`;
+      $('stockMarketMeta').textContent = updated ? `${updated} 更新` : '--';
       const marketKeys = { 'A股': 'CN', '港股': 'HK', '美股': 'US' };
       const phaseLabel = phase => phase === 'lunch' ? '午间休市' : (phase === 'morning' || phase === 'afternoon') ? '交易中' : '已收盘';
       const indices = data.indices || [];
@@ -1486,7 +1543,8 @@
           const change = stockPercent(item.change_pct);
           nextValues[key] = {price, change};
           // 根级 stale/error 汇总其他市场，活跃判断只使用该指数及其所属市场。
-          const trendStatus = statuses[marketKeys[market]] || {};
+          const trendStatus = {...(statuses[marketKeys[market]] || {})};
+          if (marketSessionState().session?.any_active === false) trendStatus.collection_phase = 'closed';
           return `<div class="stock-index"><div class="stock-index-name">${esc(item.name)}</div><div class="stock-index-value ${tone(item.change_pct)}">${stockFlipNumber(previousValues[key]?.price, price)}</div><div class="stock-index-change ${tone(item.change_pct)}">${stockFlipNumber(previousValues[key]?.change, change)}</div>${stockSparkline(item, trendStatus)}</div>`;
         }).join('');
         const status = (data.indices_status || {})[marketKeys[market]] || {};
@@ -1497,10 +1555,7 @@
       }).join('');
       const sectors = data.industries || {};
       const sectorColumn = (title, rows) => `<div><p class="stock-group-title">${title}</p>${(rows || []).map(item => `<div class="stock-sector-row"><span>${esc(item.name)}</span><span class="${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</span></div>`).join('') || '<div class="stock-index-time">暂无符合条件板块</div>'}</div>`;
-      const cnPhase = ((data.indices_status || {}).CN || {}).collection_phase;
-      const cnActive = cnPhase === 'morning' || cnPhase === 'afternoon';
-      const sectorDelayed = Boolean(sectors.refresh_error) || (sectors.items || []).some(i => i && i.source_delayed);
-      box.innerHTML = `${groups}<section class="stock-market-group"><div class="stock-group-heading"><h3 class="stock-market-title">A股一级行业</h3><div class="stock-group-meta">${esc(sectors.quote_date || '')}${cnActive && sectorDelayed ? ' · 更新延迟' : ''}</div></div><div class="stock-sector-grid">${sectorColumn('领涨', sectors.leaders)}${sectorColumn('领跌', sectors.laggards)}</div></section><p class="barometer-note">${esc(data.source || '公开行情')} · 按各市场交易时段采集，午间及收盘后保留最近快照。${data.refresh_error ? '来源暂不可用，显示上次成功行情。' : ''}</p>`;
+      box.innerHTML = `${groups}<section class="stock-market-group"><div class="stock-group-heading"><h3 class="stock-market-title">A股一级行业</h3><div class="stock-group-meta">${esc(sectors.quote_date || '')}</div></div><div class="stock-sector-grid">${sectorColumn('领涨', sectors.leaders)}${sectorColumn('领跌', sectors.laggards)}</div></section><p class="barometer-note">${esc(data.source || '公开行情')} · 按各市场交易时段采集，午间及收盘后保留最近快照。${data.refresh_error ? '来源暂不可用，显示上次成功行情。' : ''}</p>`;
       renderStockMarket.values = nextValues;
       box.querySelectorAll?.('.stock-digit-flip').forEach(digit => digit.addEventListener('animationend', () => {
         digit.textContent = digit.lastElementChild?.lastElementChild?.textContent || '';
@@ -1523,8 +1578,13 @@
     }
     function verificationState() {
       return renderVerification.viewState ||= {loading: false, inFlight: null, requestId: 0,
-        refreshQueued: false, lastData: null, lastSuccessAt: '', error: '', pollTimer: null,
+        refreshQueued: false, forceQueued: false, lastData: null, lastSuccessAt: '', error: '', pollTimer: null,
         selectedDate: '', manualDate: '', dashboardVersion: ''};
+    }
+    function verificationPauseUntil(data = verificationState().lastData) {
+      if (data?.refresh_complete !== true || data.ai_status === 'generating' || ['updating', 'stale'].includes(data.status)) return 0;
+      const next = Date.parse(data.next_refresh_at || '');
+      return Number.isFinite(next) && next > Date.now() ? next : 0;
     }
     function verificationToday(data) {
       if (data?.today_date) return String(data.today_date).slice(0, 10);
@@ -1536,14 +1596,19 @@
       const view = verificationState();
       const data = view.lastData;
       const status = $('verificationStatus');
-      const updating = data?.status === 'updating';
-      const busy = !view.error && (view.loading || updating);
+      const completed = Boolean(verificationPauseUntil(data));
+      const updating = !completed && data?.status === 'updating';
+      const busy = !completed && !view.error && (view.loading || updating);
       const spinner = $('verificationSpinner');
       if (spinner) spinner.hidden = !busy;
       $('verificationSection')?.setAttribute?.('aria-busy', String(busy));
       if (!status) return;
       let message = '';
       if (view.error) message = data?.items?.length ? '更新失败，已保留上次数据' : '验证分析加载失败';
+      else if (completed) {
+        const count = Number(data.expected_fund_count ?? data.verified_fund_count);
+        message = Number.isFinite(count) && count > 0 ? `全部 ${count} 只基金验证分析已完成` : '本轮验证分析已完成';
+      }
       else if (view.loading) message = data?.items?.length ? '正在更新…' : '正在加载验证分析…';
       else if (updating) message = Number(data.today_confirmed_count) > 0 ? '当日净值已更新，正在生成验证…' : '正在更新验证…';
       else if (data?.items?.length) {
@@ -1553,13 +1618,16 @@
       }
       const updated = view.error && view.lastSuccessAt ? ` · 上次成功 ${view.lastSuccessAt}` : '';
       status.innerHTML = `${esc(message + updated)}${view.error ? '<button type="button" class="panel-retry verification-retry">重试</button>' : ''}`;
-      status.querySelector?.('.verification-retry')?.addEventListener('click', () => loadVerification());
+      status.querySelector?.('.verification-retry')?.addEventListener('click', () => loadVerification({force: true}));
     }
     function scheduleVerificationPoll() {
       const view = verificationState();
       clearTimeout(view.pollTimer);
       view.pollTimer = null;
-      if (!document.hidden && state.activeTab === 'market') view.pollTimer = setTimeout(loadVerification, 30000);
+      if (document.hidden) return;
+      const pausedUntil = verificationPauseUntil();
+      if (pausedUntil) view.pollTimer = setTimeout(loadVerification, Math.min(2147483647, Math.max(1, pausedUntil - Date.now())));
+      else if (state.activeTab === 'market') view.pollTimer = setTimeout(loadVerification, 30000);
     }
     function refreshVerificationFromDashboard(data) {
       const view = verificationState();
@@ -1657,8 +1725,17 @@
     async function loadVerification(options = {}) {
       const view = verificationState();
       if (view.inFlight) {
-        if (options.queue) view.refreshQueued = true;
+        if (options.force || options.queue && !verificationPauseUntil()) {
+          view.refreshQueued = true;
+          view.forceQueued = view.forceQueued || Boolean(options.force);
+        }
         return view.inFlight;
+      }
+      // 已完成的本轮结果保持静止；所有自动入口共用这一暂停判断。
+      if (!options.force && verificationPauseUntil()) {
+        updateVerificationStatus();
+        scheduleVerificationPoll();
+        return;
       }
       const requestId = ++view.requestId;
       const controller = new AbortController();
@@ -1691,7 +1768,12 @@
             view.inFlight = null;
             updateVerificationStatus();
             scheduleVerificationPoll();
-            if (view.refreshQueued) { view.refreshQueued = false; loadVerification(); }
+            if (view.refreshQueued) {
+              const force = view.forceQueued;
+              view.refreshQueued = false;
+              view.forceQueued = false;
+              loadVerification({force});
+            }
           }
         }
       })();
@@ -1699,14 +1781,26 @@
     }
     async function loadMarketOverview(force = false) {
       if (marketLoading || document.hidden || state.activeTab !== 'market') return;
-      marketLoading = true;
       // 验证独立读取，即使行情失败或缓存命中也能恢复并逐只更新。
       loadVerification();
+      const view = marketSessionState();
+      if (view.dashboardPending && !force) return;
+      const cached = renderStockMarket.lastData || state.data?.stock_market;
+      if (!renderStockMarket.lastData && cached?.available) renderStockMarket(cached);
+      const session = currentMarketSession();
+      if (!force && !session.active && !session.boundaryReached && (cached?.available || view.bootstrapAttempted)) {
+        scheduleMarketPoll();
+        return;
+      }
+      marketLoading = true;
+      view.bootstrapAttempted = true;
       const controller = new AbortController();
       let timeout;
       let loadError = '';
-      if (!renderStockMarket.lastData) $('stockMarketContent').innerHTML = panelLoadingMarkup('正在读取股市行情…');
-      stockMarketStatus(renderStockMarket.lastData ? '正在更新行情…' : '正在读取股市行情…', true);
+      if (!renderStockMarket.lastData) {
+        $('stockMarketContent').innerHTML = panelLoadingMarkup('');
+        stockMarketStatus('正在读取股市行情…', true);
+      }
       try {
         const headers = marketEtag && !force ? {'If-None-Match': marketEtag} : {};
         const result = await Promise.race([
@@ -1739,13 +1833,11 @@
       } catch (error) {
         loadError = renderStockMarket.lastData ? '更新失败，已保留上次行情' : '股市行情加载失败';
         if (!renderStockMarket.lastData) $('stockMarketContent').innerHTML = '';
-        $('stockMarketMeta').textContent = '连接延迟，保留上次行情';
       } finally {
         clearTimeout(timeout);
         marketLoading = false;
         stockMarketStatus(loadError, false, Boolean(loadError));
-        clearTimeout(marketPollTimer);
-        if (!document.hidden && state.activeTab === 'market') marketPollTimer = setTimeout(loadMarketOverview, 30000);
+        scheduleMarketPoll();
       }
     }
     function setModelSettingsStatus(message, isError) {
@@ -2937,10 +3029,17 @@
         disableWrites('组合数据读取失败，写操作已关闭。');
         setAccessState(true);
         $('statusText').textContent = `读取失败：${error.message}`;
+      } finally {
+        const marketView = marketSessionState();
+        marketView.dashboardPending = false;
+        clearTimeout(marketView.dashboardTimer);
+        if (state.activeTab === 'market') loadMarketOverview();
       }
     }
     async function refresh() {
       if ($('refreshButton').disabled) return;
+      loadVerification({force: true});
+      if (state.activeTab === 'market') loadMarketOverview(true);
       // 顶部刷新与行情共用同一个更新入口：同时强制刷新债市晴雨表。
       loadBarometer(true);
       refreshRequestPending = true;
@@ -4026,18 +4125,23 @@
     });
     window.addEventListener('hashchange', () => location.reload());
     window.addEventListener('resize', () => setActiveTab(state.activeTab));
+    marketSessionState().dashboardPending = true;
+    marketSessionState().dashboardTimer = setTimeout(() => {
+      marketSessionState().dashboardPending = false;
+      if (state.activeTab === 'market') loadMarketOverview();
+    }, 15000);
     setActiveTab(state.activeTab);
     updateWriteControls();
     loadDashboard();
     loadVerification();
     setInterval(updateRefreshControls, 1000);
-    setInterval(() => { if (!document.hidden && state.activeTab !== 'market') loadDashboard(); }, 60000);
+    setInterval(pollDashboardSnapshot, 60000);
     document.addEventListener('visibilitychange', () => {
       clearTimeout(marketPollTimer);
       clearTimeout(verificationState().pollTimer);
       if (document.hidden) return;
       loadVerification();
-      if (state.activeTab === 'market') loadMarketOverview(true);
+      if (state.activeTab === 'market') loadMarketOverview();
       else loadDashboard();
     });
   </script>

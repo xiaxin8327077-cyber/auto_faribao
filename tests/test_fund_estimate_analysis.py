@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from src.fund_estimate_ai import EstimateAi
+from src.fund_estimate_ai import AiUnavailable, EstimateAi
 from src.fund_estimate_service import _verification_overall, _verification_statistics
 from src.fund_estimate_store import FundEstimateStore
 
@@ -174,12 +174,12 @@ def test_failed_generation_persists_cooldown_and_can_retry_after_deadline(store,
     assert len(ai.calls) == 2
 
 
-def test_long_review_gets_one_compression_request_with_reduced_budget(store):
+def test_long_review_gets_one_compression_request_with_compatible_reasoning_budget(store):
     ai = RecordingAi(["这是超长点评，需要压缩。" * 60, SHORT_REVIEW])
     result = completed(analysis_for(store, ai), sample_data())
     assert result["ai_analysis"] == SHORT_REVIEW
     assert len(ai.calls) == 2
-    assert all(budget <= 600 for _, budget in ai.calls)
+    assert all(budget == 4096 for _, budget in ai.calls)
     assert "压缩" in ai.calls[1][0][-1]["content"]
 
 
@@ -352,6 +352,30 @@ def test_longest_summary_labels_and_missing_diagnostics_still_fit_short_budget(s
     assert_compact(analysis_for(store, None).read(items, stats, overall)["ai_analysis"])
 
 
+def test_reasoning_budget_upgrade_ignores_old_failure_cooldown_and_persists_new_version(store):
+    from src.fund_estimate_analysis import _analysis_payload
+    data = sample_data()
+    payload = _analysis_payload(*data)
+
+    def key_for(version):
+        digest = hashlib.sha256(json.dumps([version, payload], ensure_ascii=False,
+                                          sort_keys=True, default=str).encode()).hexdigest()[:24]
+        return f"verification-analysis:{version}:{digest}"
+
+    store.set_watermark(key_for("short-v1"), json.dumps({
+        "version": "short-v1", "status": "failed", "analysis": "旧512预算失败摘要",
+        "attempts": 9, "retry_at": 9_999_999_999.0,
+    }), "2026-10-27T21:26:50+08:00")
+    ai = RecordingAi()
+    analysis = analysis_for(store, ai)
+    assert analysis.read(*data)["ai_status"] == "generating"
+    assert completed(analysis, data)["ai_analysis"] == SHORT_REVIEW
+    assert len(ai.calls) == 1 and ai.calls[0][1] == 4096
+    cached = json.loads(store.get_watermark(key_for("short-v2")))
+    assert cached["version"] == "short-v2"
+    assert cached["status"] == "ready"
+
+
 def test_estimate_ai_allows_short_budget_and_keeps_default_document_budget():
     class Settings:
         def secret_ai_settings(self):
@@ -367,3 +391,16 @@ def test_estimate_ai_allows_short_budget_and_keeps_default_document_budget():
     assert ai.complete([{"role": "user", "content": "短评"}], max_tokens=512) == "结果"
     assert ai.complete([{"role": "user", "content": "提取报告"}]) == "结果"
     assert budgets == [512, 4096]
+
+
+def test_estimate_ai_reports_length_before_missing_content_for_reasoning_only_response():
+    class Settings:
+        def secret_ai_settings(self):
+            return {"enabled": True, "base_url": "https://example.invalid/v1", "api_key": "key", "model": "m"}
+
+    def poster(settings, messages, max_tokens):
+        return 200, json.dumps({"choices": [{"message": {"role": "assistant", "reasoning_content": "推理正文尚未完成"},
+                                            "finish_reason": "length"}]})
+
+    with pytest.raises(AiUnavailable, match="截断"):
+        EstimateAi(Settings(), poster=poster).complete([{"role": "user", "content": "短评"}], max_tokens=512)

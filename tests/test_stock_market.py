@@ -16,6 +16,27 @@ def _module():
         pytest.fail(f"stock-market cache has not been implemented: {exc}")
 
 
+@pytest.mark.parametrize('stamp,active,next_open', [
+    ('2026-10-27T20:00:00+08:00', False, '2026-10-27T13:30:00+00:00'),
+    ('2026-10-27T12:15:00+08:00', False, '2026-10-27T05:00:00+00:00'),
+    ('2026-11-10T20:00:00+08:00', False, '2026-11-10T14:30:00+00:00'),
+    ('2026-10-25T20:00:00+08:00', False, '2026-10-26T01:30:00+00:00'),
+])
+def test_session_clock_sleeps_until_real_next_open_including_us_dst(stamp, active, next_open):
+    calendar = {market: lambda day: day.weekday() < 5 for market in ('CN', 'HK', 'US')}
+    session = _module().stock_market_session(_now(stamp), trading_calendars=calendar)
+    assert session['any_active'] is active
+    assert session['next_open_at'] == next_open
+    assert session['next_transition_at'] == next_open
+
+
+def test_session_clock_keeps_hk_active_during_cn_lunch():
+    calendar = {market: lambda day: day.weekday() < 5 for market in ('CN', 'HK', 'US')}
+    session = _module().stock_market_session(_now('2026-10-27T11:45:00+08:00'), trading_calendars=calendar)
+    assert session['any_active'] is True
+    assert session['next_transition_at'] == '2026-10-27T04:00:00+00:00'
+
+
 def _now(value="2026-10-23T10:00:00+08:00"):
     return datetime.fromisoformat(value)
 

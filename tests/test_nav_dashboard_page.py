@@ -31,7 +31,7 @@ class Element {
 }
 const elements = Object.fromEntries(['verificationContent', 'verificationMeta', 'verificationSection',
   'verificationStatus', 'verificationSpinner', 'stockMarketContent', 'stockMarketMeta',
-  'stockMarketStatus', 'stockMarketSpinner'].map(id => [id, new Element()]));
+  'stockMarketStatus', 'stockMarketSpinner', 'stockMarketLoadingText'].map(id => [id, new Element()]));
 const $ = id => elements[id];
 const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
 const tone = value => Number(value) > 0 ? 'positive' : Number(value) < 0 ? 'negative' : 'neutral';
@@ -201,6 +201,160 @@ assert.ok(elements.stockMarketStatus.innerHTML.includes('已保留上次行情')
 """)
 
 
+def test_closed_markets_use_saved_snapshot_and_verification_still_polls():
+    _run_continuity_behavior(r"""
+let now = Date.parse('2026-10-27T18:00:00+08:00');
+Date.now = () => now;
+const opens = now + 3 * 3600000;
+const stock = {available: true, live_session: {as_of: new Date(now).toISOString(), any_active: false,
+  next_open_at: new Date(opens).toISOString(), next_transition_at: new Date(opens).toISOString()},
+  indices_status: {CN: {collection_phase: 'close'}, HK: {collection_phase: 'close'}, US: {collection_phase: 'closed'}},
+  indices: [{name: '上证指数', market: 'A股', price: '3300.01', change_pct: '0.1'}]};
+state.data = {stock_market: stock};
+renderStockMarket(stock);
+const saved = elements.stockMarketContent.innerHTML;
+handler = async () => response(report());
+await loadMarketOverview(); await flush();
+await loadMarketOverview(); await flush();
+assert.equal(calls.filter(call => call.path.includes('market-overview')).length, 0);
+assert.equal(elements.stockMarketContent.innerHTML, saved);
+assert.equal(elements.stockMarketSpinner.hidden, true);
+assert.equal(elements.stockMarketLoadingText.textContent, '');
+assert.ok(![...timers.values()].some(timer => timer.callback === loadMarketOverview && timer.delay === 30000));
+const verificationPoll = [...timers.values()].find(timer => timer.callback === loadVerification && timer.delay === 30000);
+assert.ok(verificationPoll, 'closed stock markets must not stop verification polling');
+const before = calls.filter(call => call.path.includes('verifications')).length;
+verificationPoll.fn(); await flush();
+assert.ok(calls.filter(call => call.path.includes('verifications')).length > before);
+const wake = [...timers.values()].find(timer => timer.callback === loadMarketOverview);
+assert.ok(wake && wake.delay > 30000, 'wake at the real server-provided next session');
+now = opens + 1000;
+handler = async path => response(path.includes('market-overview') ? {stock_market: {...stock,
+  live_session: {as_of: new Date(now).toISOString(), any_active: true, next_transition_at: new Date(now + 3600000).toISOString()},
+  indices: [{...stock.indices[0], price: '3300.02'}]}} : report());
+wake.fn(); await flush();
+assert.equal(calls.filter(call => call.path.includes('market-overview')).length, 1);
+assert.ok(elements.stockMarketContent.innerHTML.includes('stock-digit-flip'));
+assert.ok([...timers.values()].some(timer => timer.callback === loadMarketOverview && timer.delay === 30000));
+""")
+
+
+def test_closed_markets_skip_visibility_refresh_and_only_allow_explicit_force():
+    html = _read_page()
+    start = html.index("document.addEventListener('visibilitychange'")
+    listener = html[start:html.index("\n    });", start) + len("\n    });")]
+    _run_continuity_behavior(r"""
+Date.now = () => Date.parse('2026-10-27T18:00:00+08:00');
+const stock = {available: true, live_session: {as_of: '2026-10-27T18:00:00+08:00', any_active: false,
+  next_open_at: '2026-10-27T21:30:00+08:00', next_transition_at: '2026-10-27T21:30:00+08:00'},
+  indices: [{name: '上证指数', market: 'A股', price: '3300'}]};
+state.data = {stock_market: stock}; renderStockMarket(stock);
+handler = async path => response(path.includes('market-overview') ? {stock_market: stock} : report());
+document.hidden = true; document.onVisibility(); await flush();
+document.hidden = false; document.onVisibility(); await flush();
+assert.equal(calls.filter(call => call.path.includes('market-overview')).length, 0);
+assert.equal(elements.stockMarketSpinner.hidden, true);
+await loadMarketOverview(true); await flush();
+assert.equal(calls.filter(call => call.path.includes('market-overview')).length, 1);
+await loadMarketOverview(); await flush();
+assert.equal(calls.filter(call => call.path.includes('market-overview')).length, 1);
+""", "document.addEventListener = (name, fn) => { document.onVisibility = fn; }; const loadDashboard = () => {};\n" + listener)
+
+
+def test_stock_first_read_waits_for_dashboard_cache_and_does_not_repeat_without_cache():
+    _run_continuity_behavior(r"""
+marketSessionState().dashboardPending = true;
+await loadMarketOverview();
+assert.equal(calls.filter(call => call.path.includes('market-overview')).length, 0);
+marketSessionState().dashboardPending = false;
+handler = async path => response(path.includes('market-overview') ? {stock_market: {available: false,
+  live_session: {as_of: new Date().toISOString(), any_active: false}}} : report());
+await loadMarketOverview();
+assert.equal(calls.filter(call => call.path.includes('market-overview')).length, 1);
+await loadMarketOverview();
+assert.equal(calls.filter(call => call.path.includes('market-overview')).length, 1);
+assert.equal(elements.stockMarketSpinner.hidden, true);
+assert.ok(elements.stockMarketStatus.innerHTML.includes('重试'));
+""")
+
+
+def test_existing_stock_background_read_is_silent_until_real_numbers_arrive():
+    _run_continuity_behavior(r"""
+const stock = {available: true, live_session: {as_of: new Date().toISOString(), any_active: true},
+  indices: [{name: '上证指数', market: 'A股', price: '3300.01'}]};
+state.data = {stock_market: stock}; renderStockMarket(stock);
+let finishRead;
+handler = path => path.includes('market-overview') ? new Promise(resolve => { finishRead = resolve; }) : Promise.resolve(response(report()));
+const content = elements.stockMarketContent.innerHTML;
+const pending = loadMarketOverview();
+assert.equal(elements.stockMarketContent.innerHTML, content);
+assert.equal(elements.stockMarketSpinner.hidden, true);
+assert.equal(elements.stockMarketLoadingText.textContent, '');
+assert.equal(elements.stockMarketStatus.innerHTML, '');
+finishRead(response({stock_market: {...stock, indices: [{...stock.indices[0], price: '3300.02'}]}}));
+await pending;
+assert.ok(elements.stockMarketContent.innerHTML.includes('stock-digit-flip'));
+""")
+
+
+def test_closed_markets_continue_reading_dashboard_cache_for_other_cards():
+    _run_continuity_behavior(r"""
+let now = Date.parse('2026-10-27T09:00:00+08:00');
+Date.now = () => now;
+renderStockMarket({available: true, live_session: {as_of: new Date(now).toISOString(), any_active: false,
+  next_transition_at: '2026-10-27T09:30:00+08:00'}, indices: []});
+pollDashboardSnapshot();
+assert.equal(dashboardReads, 1, 'bond and estimates still need local dashboard snapshots while stocks are closed');
+now += 1800001;
+rememberMarketSession({live_session: {as_of: new Date(now).toISOString(), any_active: true}});
+pollDashboardSnapshot();
+assert.equal(dashboardReads, 1, 'active markets already refresh all cards through market-overview');
+document.hidden = true; state.activeTab = 'overview'; pollDashboardSnapshot();
+assert.equal(dashboardReads, 1);
+""", "let dashboardReads = 0; const loadDashboard = () => { dashboardReads++; };")
+
+
+def test_new_session_metadata_survives_retaining_a_newer_quote_snapshot():
+    _run_continuity_behavior(r"""
+Date.now = () => Date.parse('2026-10-27T18:00:00+08:00');
+const newer = {available: true, fetched_at: '2026-10-27T16:00:00+08:00',
+  live_session: {as_of: '2026-10-27T14:00:00+08:00', any_active: true},
+  indices_status: {CN: {collection_phase: 'afternoon'}},
+  indices: [{name: '较新报价', market: 'A股', price: '3300.01'}]};
+const currentSession = {as_of: '2026-10-27T18:00:00+08:00', any_active: false,
+  next_transition_at: '2026-10-27T21:30:00+08:00'};
+const incoming = {stock_market: {...newer, fetched_at: '2026-10-27T15:00:00+08:00',
+  live_session: currentSession, indices_status: {CN: {collection_phase: 'close'}},
+  indices: [{name: '旧报价', market: 'A股', price: '3290'}]}};
+state.data = preserveMarketSnapshot(incoming, {stock_market: newer});
+assert.equal(state.data.stock_market.indices[0].name, '较新报价');
+assert.equal(state.data.stock_market.live_session, currentSession);
+assert.equal(state.data.stock_market.indices_status.CN.collection_phase, 'close');
+renderStockMarket(state.data.stock_market);
+await loadMarketOverview(); await flush();
+assert.equal(calls.filter(call => call.path.includes('market-overview')).length, 0);
+""")
+
+
+def test_stock_progress_sits_beside_title_and_top_meta_only_shows_update_time():
+    _run_continuity_behavior(r"""
+stockMarketStatus('正在读取股市行情…', true);
+assert.equal(elements.stockMarketLoadingText.textContent, '正在读取股市行情…');
+assert.equal(elements.stockMarketStatus.innerHTML, '');
+assert.equal(elements.stockMarketSpinner.hidden, false);
+renderStockMarket({available: true, fetched_at: '2026-10-27T16:00:00+08:00',
+  indices_status: {CN: {collection_phase: 'close'}}, indices: [{name: '上证指数', market: 'A股', price: '3300'}]});
+assert.equal(elements.stockMarketMeta.textContent, '16:00 更新');
+stockMarketStatus('正在更新行情…', true);
+assert.equal(elements.stockMarketLoadingText.textContent, '');
+assert.equal(elements.stockMarketStatus.innerHTML, '');
+assert.equal(elements.stockMarketSpinner.hidden, true);
+""")
+    html = _read_page()
+    header = html[html.index('class="section-head stock-market-heading"'):html.index('id="stockMarketStatus"')]
+    assert header.index('股市行情') < header.index('stockMarketSpinner') < header.index('stockMarketLoadingText') < header.index('stockMarketMeta')
+
+
 def test_dashboard_render_preserves_market_fields_and_renders_saved_stock_snapshot():
     html = _read_page()
     start = html.index("function render(data) {")
@@ -251,6 +405,7 @@ assert.ok(live.includes('class="stock-trend-endpoint" cx="118.00" cy="2.00"'));
 for (const status of [{collection_phase: 'close'}, {collection_phase: 'lunch'},
   {collection_phase: 'morning', stale: true}, {collection_phase: 'morning', refresh_error: 'offline'}]) {
   assert.ok(!stockSparkline(item, status, now).includes('class="stock-trend-pulse"'));
+  assert.ok(!stockSparkline(item, status, now).includes('class="stock-trend-endpoint"'));
 }
 assert.ok(!stockSparkline({...item, source_delayed: true}, {collection_phase: 'morning'}, now).includes('class="stock-trend-pulse"'));
 assert.ok(!stockSparkline(item, {collection_phase: 'morning'}, now + 6 * 60000).includes('class="stock-trend-pulse"'));
@@ -418,7 +573,7 @@ def test_stock_cards_drop_per_quote_time_and_title_shows_single_update_time():
     assert '<div class="stock-index-time">${esc(description)}</div>' not in html
     assert "stockMarketMeta" in html
     assert "fetched_at" in html
-    assert ' · 收盘保留' in html
+    assert ' · 收盘保留' not in html
 
 
 def test_estimate_list_shows_single_market_time_beside_title():
@@ -447,34 +602,17 @@ def test_verification_section_renders_stats_and_optional_ai_note():
 
 @pytest.mark.parametrize('status', [304, 200])
 def test_verification_refreshes_when_market_payload_is_unchanged(status):
-    node = shutil.which('node')
-    if not node:
-        pytest.skip('Node.js is required for dashboard behavior checks')
-    html = _read_page()
-    source = html[html.index('async function loadMarketOverview('):
-                  html.index('function setModelSettingsStatus(')]
-    script = """
-const assert = require('node:assert/strict');
-let marketLoading = false, marketEtag = 'same', marketPollTimer;
-const document = {hidden: false}, state = {activeTab: 'market'};
-const payload = {same: true};
-let lastMarketPayload = JSON.stringify(payload), verificationCalls = 0;
-const api = async () => ({status: STATUS, ok: STATUS === 200,
-  headers: {get: () => 'same'}, json: async () => payload});
-const loadVerification = () => { verificationCalls++; };
-const renderStockMarket = () => {};
-renderStockMarket.lastData = {available: true};
-const stockMarketStatus = () => {};
-const setTimeout = () => 1, clearTimeout = () => {};
-const $ = () => ({textContent: ''});
-SOURCE
-loadMarketOverview().then(() => {
-  assert.equal(verificationCalls, 1, 'unchanged market must still refresh verifications');
-  assert.equal(marketLoading, false);
-}).catch(error => { console.error(error); process.exitCode = 1; });
-""".replace('STATUS', str(status)).replace('SOURCE', source)
-    result = subprocess.run([node, '-e', script], capture_output=True, text=True, encoding='utf-8')
-    assert result.returncode == 0, result.stdout + result.stderr
+    _run_continuity_behavior(r"""
+const stock = {available: true, indices: [{name: '上证指数', market: 'A股', price: '3300'}]};
+renderStockMarket(stock);
+const payload = {stock_market: stock};
+lastMarketPayload = JSON.stringify(payload);
+handler = async path => path.includes('market-overview') ? {status: STATUS, ok: STATUS === 200,
+  headers: {get: () => 'same'}, json: async () => payload} : response(report());
+await loadMarketOverview(); await flush();
+assert.equal(calls.filter(call => call.path.includes('verifications')).length, 1);
+assert.equal(marketLoading, false);
+""".replace('STATUS', str(status)))
 
 
 def test_verification_daily_rows_have_names_three_decimals_and_no_minute_records():
@@ -2011,7 +2149,7 @@ assert.strictEqual(elements.estimateMeta.textContent, '16:56');
 renderStockMarket({available:true,source:'东财',fetched_at:'2026-10-23T16:20:00+08:00',indices:[{name:'标普500',market:'美股',quote_date:'2026-10-22',quote_time:'2026-10-22T16:00:00-04:00',price:'6000',change_pct:'-1.2'}],indices_status:{US:{collection_phase:'close'}},industries:{quote_date:'2026-10-23',stale:true,leaders:[{name:'电子<行业>',change_pct:'2'}],laggards:[]}});
 assert(!elements.stockMarketContent.innerHTML.includes('2026-10-22 16:00 纽约'));
 assert(elements.stockMarketMeta.textContent.includes('16:20 更新'));
-assert(elements.stockMarketMeta.textContent.includes('收盘保留'));
+assert.strictEqual(elements.stockMarketMeta.textContent, '16:20 更新');
 assert(!elements.stockMarketContent.innerHTML.includes('更新延迟'));
 assert(elements.stockMarketContent.innerHTML.includes('2026.10.22'));
 assert(!elements.stockMarketContent.innerHTML.includes('当地市场日期'));
@@ -2019,9 +2157,9 @@ assert(elements.stockMarketContent.innerHTML.includes('已收盘'));
 assert(elements.stockMarketContent.innerHTML.includes('电子&lt;行业&gt;'));
 assert(elements.stockMarketContent.innerHTML.includes('-1.20%'));
 renderStockMarket({available:true,source:'东财',fetched_at:'2026-10-23T10:05:00+08:00',refresh_error:'部分失败',indices:[{name:'上证指数',market:'A股',quote_date:'2026-10-23',quote_time:'2026-10-23T10:00:00+08:00',price:'3690',change_pct:'0.5',source_delayed:true}],indices_status:{CN:{collection_phase:'morning'}},industries:{quote_date:'2026-10-23',stale:true,items:[{name:'机械',change_pct:'1',source_delayed:true}],leaders:[],laggards:[]}});
-assert(elements.stockMarketMeta.textContent.includes('更新延迟'));
+assert.strictEqual(elements.stockMarketMeta.textContent, '10:05 更新');
 assert(elements.stockMarketContent.innerHTML.includes('交易中'));
-assert(elements.stockMarketContent.innerHTML.includes('更新延迟'));
+assert(!elements.stockMarketContent.innerHTML.includes('更新延迟'));
 '''
     result = subprocess.run([node], input=script, capture_output=True, text=True, encoding='utf-8')
     assert result.returncode == 0, result.stderr

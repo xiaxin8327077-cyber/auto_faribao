@@ -213,6 +213,37 @@ def stock_market_due(now=None, snapshot=None, *, trading_calendars=None) -> bool
     return _is_due(snapshot.get("industries"), _market_slot("CN", at, trading_calendars), at)
 
 
+def stock_market_session(now=None, *, trading_calendars=None) -> dict:
+    """供浏览器休眠至下次开盘；沿用采集交易日历及各市场时区。"""
+    at = _now(now)
+    trading_calendars = trading_calendars or {}
+    active = any(_market_slot(market, at, trading_calendars)['active'] for market in _MARKETS)
+    openings, transitions = [], []
+    for market, spec in _MARKETS.items():
+        zone = ZoneInfo(spec['timezone'])
+        day = at.astimezone(zone).date()
+        for offset in range(370):
+            candidate_day = day + timedelta(days=offset)
+            if not _trading_day(market, candidate_day, trading_calendars)[0]:
+                continue
+            clocks = [('09:30', True), (spec['close'], False)]
+            if spec['morning_end']:
+                clocks += [(spec['morning_end'], False), ('13:00', True)]
+            future_openings = []
+            for text, is_open in clocks:
+                candidate = datetime.combine(candidate_day, clock_time.fromisoformat(text), zone).astimezone(timezone.utc)
+                if candidate > at:
+                    transitions.append(candidate)
+                    if is_open:
+                        future_openings.append(candidate)
+            if future_openings:
+                openings.extend(future_openings)
+                break
+    return {'as_of': _iso(at), 'any_active': active,
+            'next_open_at': _iso(min(openings)) if openings else None,
+            'next_transition_at': _iso(min(transitions)) if transitions else None}
+
+
 def _rows(payload):
     if not isinstance(payload, dict) or payload.get("rc") not in (None, 0):
         raise ValueError("public quote response rejected")
@@ -382,6 +413,7 @@ def _snapshot(records, at, calendars=None):
         "refresh_error": "; ".join(errors) or None,
         "indices": indices, "indices_status": statuses, "industries": industries,
         "change_unit": "%", "cache_ttl_seconds": _TTL_SECONDS,
+        "live_session": stock_market_session(at, trading_calendars=calendars),
     }
 
 
