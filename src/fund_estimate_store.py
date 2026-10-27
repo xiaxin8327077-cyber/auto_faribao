@@ -126,6 +126,13 @@ CREATE TABLE IF NOT EXISTS verifications (
     recorded_at TEXT NOT NULL,
     UNIQUE (product_id, trade_date, snapshot_generated_at)
 );
+CREATE TABLE IF NOT EXISTS daily_verifications (
+    product_id TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (product_id, trade_date)
+);
 CREATE TABLE IF NOT EXISTS jobs (
     idempotency_key TEXT PRIMARY KEY,
     job_type TEXT NOT NULL,
@@ -365,7 +372,7 @@ class FundEstimateStore:
         cutoff = parse_time(cutoff_at)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM nav_observations WHERE code = ?",
+                "SELECT * FROM nav_observations WHERE code = ? ORDER BY id",
                 (code,),
             ).fetchall()
         visible = [row for row in rows if parse_time(row["available_at"]) <= cutoff]
@@ -563,6 +570,39 @@ class FundEstimateStore:
                 (product_id, trade_date),
             ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
+
+    def snapshot_trade_dates(self, product_id: str) -> list[str]:
+        """已保存预测的日期边界；不以当前快照代替历史快照。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT trade_date FROM estimate_snapshots WHERE product_id = ? ORDER BY trade_date",
+                (product_id,),
+            ).fetchall()
+        return [row["trade_date"] for row in rows]
+
+    def save_daily_verification(self, item: dict) -> bool:
+        """按产品及净值日更新；相同内容保留原更新时间，返回内容是否变化。"""
+        payload = dict(item)
+        stamp = payload.pop("updated_at", None) or iso_now(datetime.now(TZ_CN))
+        payload.pop("recorded_at", None)
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """INSERT INTO daily_verifications(product_id, trade_date, payload_json, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(product_id, trade_date) DO UPDATE SET
+                     payload_json = excluded.payload_json, updated_at = excluded.updated_at
+                   WHERE daily_verifications.payload_json != excluded.payload_json""",
+                (payload["product_id"], payload["trade_date"], encoded, stamp),
+            )
+            return cursor.rowcount > 0
+
+    def read_daily_verifications(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT payload_json, updated_at FROM daily_verifications ORDER BY trade_date, product_id"
+            ).fetchall()
+        return [{**json.loads(row["payload_json"]), "updated_at": row["updated_at"]} for row in rows]
 
     def pending_verification_dates(self, product_id: str) -> list[str]:
         """找出尚未配到正式收益的快照日期，供净值轮询幂等补跑。"""

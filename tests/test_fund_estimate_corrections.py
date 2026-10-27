@@ -24,6 +24,17 @@ def store_at(tmp_path):
     return store
 
 
+def _wait_for_analysis(service):
+    import time
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        report = service.verification_report()
+        if report['ai_status'] != 'generating':
+            return report
+        time.sleep(0.005)
+    pytest.fail('background analysis did not finish')
+
+
 def observation():
     return NavObservation('918273', '2026-10-22', '1.0000', None,
                           '2026-10-22T20:00:00+08:00', 'fixture', 'nav-1', 'unknown', 'missing')
@@ -244,7 +255,8 @@ def test_verification_report_pairs_predictions_with_realized_and_stats(tmp_path)
     assert float(stats['mae_pct']) == pytest.approx((0.10 + 0.30 + 0) / 3, abs=1e-3)
     assert float(stats['bias_pct']) == pytest.approx((-0.10 + 0.30 + 0) / 3, abs=1e-3)
     assert [item['trade_date'] for item in report['items']] == [r[0] for r in rows]
-    assert report['ai_analysis'] is None  # 未配置AI时降级为空，统计不受影响
+    assert report['ai_status'] == 'disabled'
+    assert len(report['ai_analysis'].splitlines()) == 4
 
 
 def test_verification_analysis_uses_ai_without_changing_numbers(tmp_path):
@@ -265,11 +277,16 @@ def test_verification_analysis_uses_ai_without_changing_numbers(tmp_path):
 
         def complete(self, messages):
             assert '0.10' in messages[-1]['content']  # 数据必须进提示词
-            return '预估整体略偏保守，建议关注偏差幅度。'
+            return ('方向判断与同期间简单方向基线持平，仅反映当日，尚不足以判断未来表现，需要新增记录继续比较。\n'
+                    '预估整体偏低，平均误差小于实际涨跌幅，应核对同类偏差是否在后续净值日重复出现。\n'
+                    '当前只有一只基金可比较，该净值日的偏差是主要观察对象，具体原因仍需资料核验。\n'
+                    '下一净值日继续检查低估是否重现，并重算同观察期方向基线，确认误差是否逐渐收敛。')
 
     service = FundEstimateService(None, store, EstimateSources(), ProfileService(store, MemoryDocuments()), ai=FakeAi())
     report = service.verification_report()
-    assert report['ai_analysis'] == '预估整体略偏保守，建议关注偏差幅度。'
+    report = _wait_for_analysis(service)
+    assert report['ai_status'] == 'ready'
+    assert len(report['ai_analysis'].splitlines()) == 4
     assert report['stats']['pairs'] == 1
     # AI 点评不改动任何统计数字。
     assert float(report['stats']['bias_pct']) == pytest.approx(-0.10, abs=1e-3)
@@ -303,6 +320,7 @@ def test_verification_report_counts_only_final_valid_prediction_per_fund_day(tmp
 
     report = service.verification_report()
 
+    _wait_for_analysis(service)
     assert report['stats']['pairs'] == 2
     assert report['stats']['predicted_count'] == 2
     assert report['stats']['missing_predictions'] == 0
@@ -341,6 +359,7 @@ def test_overall_analysis_covers_all_dates_beyond_latest_twenty_results(tmp_path
 
     report = service.verification_report()
 
+    _wait_for_analysis(service)
     overall = report['overall']
     assert overall['start_date'] == '2026-09-01'
     assert overall['end_date'] == '2026-09-25'
@@ -362,7 +381,7 @@ def test_overall_analysis_covers_all_dates_beyond_latest_twenty_results(tmp_path
     assert float(diagnostics['majority_direction_accuracy']) == pytest.approx(1)
     assert float(diagnostics['direction_accuracy_above_baseline']) == pytest.approx(-0.04)
     assert payload['diagnostics'] == diagnostics
-    assert '4个自然段' in prompts[0]
+    assert '120' in prompts[0] and '180' in prompts[0]
 
 
 def test_production_service_uses_trading_calendar(tmp_path):

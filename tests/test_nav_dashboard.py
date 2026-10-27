@@ -14,6 +14,22 @@ def _dt(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%d %H:%M")
 
 
+def test_dashboard_first_response_contains_saved_stock_market(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from src.nav_dashboard import get_dashboard_payload
+    from src.portfolio_db import PortfolioDatabase
+    from src.portfolio_repository import PortfolioRepository
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    monkeypatch.setattr('src.nav_dashboard._get_portfolio_runtime',
+                        lambda: SimpleNamespace(repository=repository, write_enabled=True))
+    expected = {'available': True, 'indices': [{'name': '上证指数', 'price': '3500'}]}
+    monkeypatch.setattr('src.stock_market.read_stock_market', lambda _conn: expected)
+    payload = get_dashboard_payload(_cfg(), state_path=tmp_path / 'state.json')
+    assert payload['stock_market'] == expected
+
+
 def _record(day: str, nav: str, code: str = "P1") -> NavRecord:
     return NavRecord(
         provider="citic_wealth",

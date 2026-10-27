@@ -12,6 +12,358 @@ def _read_page() -> str:
     return PAGE_PATH.read_text(encoding="utf-8")
 
 
+def _run_continuity_behavior(body: str, extra_source: str = ""):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for dashboard behavior checks")
+    html = _read_page()
+    source = html[html.index("function stockPercent("):html.index("function setModelSettingsStatus(")]
+    harness = r"""
+const assert = require('node:assert/strict');
+class Element {
+  constructor() { this.innerHTML = ''; this.textContent = ''; this.hidden = false; this.attrs = {}; this.controls = {}; }
+  setAttribute(name, value) { this.attrs[name] = value; }
+  querySelector(selector) {
+    if (!this.innerHTML.includes(selector.slice(1))) return null;
+    return this.controls[selector] ||= {addEventListener: (name, listener) => { this.controls[selector][name] = listener; }};
+  }
+  querySelectorAll() { return []; }
+}
+const elements = Object.fromEntries(['verificationContent', 'verificationMeta', 'verificationSection',
+  'verificationStatus', 'verificationSpinner', 'stockMarketContent', 'stockMarketMeta',
+  'stockMarketStatus', 'stockMarketSpinner'].map(id => [id, new Element()]));
+const $ = id => elements[id];
+const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
+const tone = value => Number(value) > 0 ? 'positive' : Number(value) < 0 ? 'negative' : 'neutral';
+const document = {hidden: false};
+const state = {activeTab: 'market', data: null};
+let marketLoading = false, marketEtag = '', marketPollTimer, lastMarketPayload = '';
+let nextTimer = 1;
+const timers = new Map();
+const setTimeout = (fn, delay) => { const id = nextTimer++; timers.set(id, {callback: fn,
+  fn: (...args) => { timers.delete(id); return fn(...args); }, delay}); return id; };
+const clearTimeout = id => timers.delete(id);
+const flush = async () => { for (let n = 0; n < 14; n++) await Promise.resolve(); };
+const response = data => ({ok: true, status: 200, headers: {get: () => ''}, json: async () => data});
+let calls = [], handler = async () => response({status: 'empty', items: []});
+const api = (path, options = {}) => { calls.push({path, options}); return handler(path, options); };
+const renderBarometer = () => {}, renderHeldFundEstimates = () => {}, setAccessState = () => {};
+const row = {product_id: 'p', code: '918273', name: '测试基金', trade_date: '2026-10-26',
+  predicted_pct: '0.08', realized_pct: '0.1', error_pct: '-0.02', direction_ok: true,
+  predicted_profit: '8', realized_profit: '10', profit_error: '-2'};
+const report = (items = [row], extra = {}) => ({items, status: 'ready', today_date: '2026-10-27',
+  latest_available_date: items.map(item => item.trade_date).sort().at(-1),
+  today_confirmed_count: items.filter(item => item.trade_date === '2026-10-27').length, ...extra});
+let behaviorFinished = false;
+process.on('beforeExit', () => assert.ok(behaviorFinished, 'asynchronous behavior did not finish'));
+SOURCE
+EXTRA_SOURCE
+(async () => { BODY })().then(() => { behaviorFinished = true; }).catch(error => { behaviorFinished = true; console.error(error); process.exitCode = 1; });
+"""
+    # Keep the substitutions independent: the page source itself can contain arbitrary words.
+    script = harness.replace("EXTRA_SOURCE", extra_source).replace("SOURCE", source).replace("BODY", body)
+    result = subprocess.run([node], input=script, capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_verification_initial_loading_has_animation_then_timeout_and_retry():
+    _run_continuity_behavior(r"""
+let resolveSlow;
+handler = () => new Promise(resolve => { resolveSlow = resolve; });
+const pending = loadVerification();
+assert.ok(elements.verificationContent.innerHTML.includes('loading-skeleton'));
+assert.equal(elements.verificationSection.attrs['aria-busy'], 'true');
+assert.ok(elements.verificationStatus.innerHTML.includes('正在加载验证分析'));
+const timeout = [...timers.values()].find(timer => timer.delay > 0 && timer.delay < 30000);
+assert.ok(timeout, 'the verification request must have a finite timeout');
+timeout.fn();
+await pending;
+assert.ok(elements.verificationStatus.innerHTML.includes('验证分析加载失败'));
+assert.ok(elements.verificationStatus.innerHTML.includes('重试'));
+assert.equal(elements.verificationSpinner.hidden, true);
+handler = async () => response(report());
+elements.verificationStatus.querySelector('.verification-retry').click();
+await flush();
+assert.ok(elements.verificationContent.innerHTML.includes('测试基金'));
+resolveSlow(response(report([{...row, name: '迟到响应'}])));
+await flush();
+assert.ok(!elements.verificationContent.innerHTML.includes('迟到响应'));
+""")
+
+
+def test_verification_refresh_failure_and_transient_empty_keep_last_success():
+    _run_continuity_behavior(r"""
+handler = async () => response(report());
+await loadVerification();
+const content = elements.verificationContent.innerHTML;
+let rejectSlow;
+handler = () => new Promise((resolve, reject) => { rejectSlow = reject; });
+const pending = loadVerification();
+assert.equal(elements.verificationContent.innerHTML, content);
+assert.equal(elements.verificationSpinner.hidden, false);
+rejectSlow(new Error('offline'));
+await pending;
+assert.equal(elements.verificationContent.innerHTML, content);
+assert.ok(elements.verificationStatus.innerHTML.includes('更新失败，已保留上次数据'));
+assert.ok(elements.verificationStatus.innerHTML.includes('重试'));
+handler = async () => response({items: []});
+await loadVerification();
+assert.equal(elements.verificationContent.innerHTML, content);
+handler = async () => response({items: [], status: 'empty'});
+await loadVerification();
+assert.ok(elements.verificationContent.innerHTML.includes('尚无历史验证记录'));
+""")
+
+
+def test_verification_follows_latest_unless_user_selects_history():
+    _run_continuity_behavior(r"""
+renderVerification(report());
+assert.ok(elements.verificationStatus.innerHTML.includes('今日净值尚未更新，显示 2026-10-26'));
+const today = {...row, trade_date: '2026-10-27', name: '今日基金'};
+const current = report([row, today]);
+renderVerification(current);
+assert.equal(renderVerification.selectedDate, '2026-10-27');
+assert.ok(elements.verificationStatus.innerHTML.includes('今日已确认 1 只'));
+elements.verificationContent.querySelector('.verification-date').change({target: {value: '2026-10-26'}});
+renderVerification(report([row, today, {...today, product_id: 'p2', name: '第二只'}]));
+assert.equal(renderVerification.selectedDate, '2026-10-26');
+assert.ok(elements.verificationContent.innerHTML.includes('查看最新'));
+elements.verificationContent.querySelector('.verification-latest').click();
+assert.equal(renderVerification.selectedDate, '2026-10-27');
+assert.ok(elements.verificationContent.innerHTML.includes('第二只'));
+""")
+
+
+def test_verification_shows_confirmed_nav_while_comparison_and_ai_are_pending():
+    _run_continuity_behavior(r"""
+renderVerification(report([{...row, trade_date: '2026-10-27', unit_nav: '1.2345',
+  nav_return_pct: '0', realized_pct: null, error_pct: null, direction_ok: null,
+  verification_status: 'pending_return'}], {ai_status: 'generating', ai_analysis: '不应显示旧版本点评'}));
+const html = elements.verificationContent.innerHTML;
+assert.ok(html.includes('1.2345'));
+assert.ok(html.includes('收益核验中'));
+assert.ok(html.includes('净值涨跌'));
+assert.ok(html.includes('0.000%'));
+assert.ok(html.includes('分析生成中'));
+assert.ok(!html.includes('不应显示旧版本点评'));
+assert.ok(!html.includes('当日无有效预估'));
+assert.ok(html.includes('累计分析'));
+""")
+
+
+def test_verification_requests_merge_and_visible_polling_is_independent_of_market_failure():
+    _run_continuity_behavior(r"""
+let resolveFirst;
+handler = path => path.includes('market-overview') ? Promise.reject(new Error('market offline'))
+  : new Promise(resolve => { resolveFirst = resolve; });
+const pending = loadVerification();
+loadVerification(); loadVerification({queue: true}); loadVerification({queue: true});
+await loadMarketOverview();
+assert.equal(calls.filter(call => call.path.includes('verifications')).length, 1);
+handler = async () => response(report([{...row, name: '最新结果'}]));
+resolveFirst(response(report()));
+await pending; await flush();
+assert.equal(calls.filter(call => call.path.includes('verifications')).length, 2);
+assert.ok(elements.verificationContent.innerHTML.includes('最新结果'));
+const before = calls.length;
+const poll = [...timers.values()].filter(timer => timer.delay === 30000).at(-1);
+assert.ok(poll, 'visible verification must poll without a successful market request');
+poll.fn(); await flush();
+assert.ok(calls.length > before);
+document.hidden = true;
+await loadVerification();
+assert.ok(![...timers.values()].some(timer => timer.callback === loadVerification));
+""")
+
+
+def test_stock_loading_times_out_with_retry_and_keeps_existing_market_on_failure():
+    _run_continuity_behavior(r"""
+handler = path => path.includes('verifications') ? Promise.resolve(response(report())) : new Promise(() => {});
+const pending = loadMarketOverview();
+assert.ok(elements.stockMarketContent.innerHTML.includes('loading-skeleton'));
+const timeout = [...timers.values()].filter(timer => timer.delay > 0 && timer.delay < 30000).sort((left, right) => left.delay - right.delay)[0];
+timeout.fn(); await pending;
+assert.ok(elements.stockMarketStatus.innerHTML.includes('股市行情加载失败'));
+assert.ok(elements.stockMarketStatus.innerHTML.includes('重试'));
+const stock = {available: true, indices: [{name: '上证指数', market: 'A股', price: '3300', change_pct: '0.1'}]};
+renderStockMarket(stock);
+const content = elements.stockMarketContent.innerHTML;
+renderStockMarket(undefined);
+assert.equal(elements.stockMarketContent.innerHTML, content);
+handler = async path => { if (path.includes('market-overview')) throw new Error('offline'); return response(report()); };
+await loadMarketOverview();
+assert.equal(elements.stockMarketContent.innerHTML, content);
+assert.ok(elements.stockMarketStatus.innerHTML.includes('已保留上次行情'));
+handler = async path => response(path.includes('market-overview') ? {stock_market: {available: false}} : report());
+await loadMarketOverview();
+assert.equal(elements.stockMarketContent.innerHTML, content);
+assert.ok(elements.stockMarketStatus.innerHTML.includes('已保留上次行情'));
+""")
+
+
+def test_dashboard_render_preserves_market_fields_and_renders_saved_stock_snapshot():
+    html = _read_page()
+    start = html.index("function render(data) {")
+    source = html[start:html.index("const cumulative =", start)] + "}"
+    _run_continuity_behavior(r"""
+const stock = {available: true, indices: [{name: '上证指数', market: 'A股', price: '3300'}]};
+state.data = {stock_market: stock, fund_estimates: {p: {return_pct: '1'}}, bond_barometer: {ready: true}};
+render({products: []});
+assert.equal(state.data.stock_market, stock);
+assert.ok(state.data.fund_estimates.p);
+assert.ok(elements.stockMarketContent.innerHTML.includes('上证指数'));
+""", source)
+
+
+def test_stock_digits_flip_only_when_the_real_displayed_value_changes():
+    _run_continuity_behavior(r"""
+const stock = price => ({available: true, indices: [{name: '上证指数', market: 'A股', price,
+  change_pct: '0.12'}]});
+renderStockMarket(stock('3300.01'));
+assert.ok(!elements.stockMarketContent.innerHTML.includes('stock-digit-flip'));
+renderStockMarket(stock('3300.02'));
+assert.ok(elements.stockMarketContent.innerHTML.includes('stock-digit-flip'));
+assert.ok(elements.stockMarketContent.innerHTML.includes('aria-label="3300.02"'));
+renderStockMarket(stock('3300.02'));
+assert.ok(!elements.stockMarketContent.innerHTML.includes('stock-digit-flip'));
+globalThis.matchMedia = () => ({matches: true});
+renderStockMarket(stock('3300.03'));
+assert.ok(!elements.stockMarketContent.innerHTML.includes('stock-digit-flip'));
+assert.ok(elements.stockMarketContent.innerHTML.includes('3300.03'));
+globalThis.matchMedia = () => ({matches: false});
+renderStockMarket(stock(null));
+assert.ok(!elements.stockMarketContent.innerHTML.includes('stock-digit-flip'));
+""")
+    html = _read_page()
+    assert "@keyframes stock-digit-roll" in html
+
+
+def test_stock_trend_heartbeat_uses_last_real_point_only_while_fresh_and_trading():
+    _run_continuity_behavior(r"""
+const now = Date.parse('2026-10-27T10:02:00+08:00');
+const item = {name: '上证指数', market_id: 'CN', quote_date: '2026-10-27', change_pct: '1',
+  trend: {quote_date: '2026-10-27', pre_close: '100', points: [
+    {time: '2026-10-27T10:00:00+08:00', price: '100'},
+    {time: '2026-10-27T10:01:00+08:00', price: '101'}]}};
+const live = stockSparkline(item, {collection_phase: 'morning'}, now);
+assert.ok(live.includes('class="stock-trend-pulse"'));
+assert.ok(live.includes('class="stock-trend-endpoint" cx="118.00" cy="2.00"'));
+for (const status of [{collection_phase: 'close'}, {collection_phase: 'lunch'},
+  {collection_phase: 'morning', stale: true}, {collection_phase: 'morning', refresh_error: 'offline'}]) {
+  assert.ok(!stockSparkline(item, status, now).includes('class="stock-trend-pulse"'));
+}
+assert.ok(!stockSparkline({...item, source_delayed: true}, {collection_phase: 'morning'}, now).includes('class="stock-trend-pulse"'));
+assert.ok(!stockSparkline(item, {collection_phase: 'morning'}, now + 6 * 60000).includes('class="stock-trend-pulse"'));
+assert.ok(!stockSparkline({...item, quote_date: '2026-10-26'}, {collection_phase: 'morning'}, now).includes('stock-trend-endpoint'));
+""")
+
+
+def test_verification_initial_unready_response_stops_loading_without_claiming_no_history():
+    _run_continuity_behavior(r"""
+handler = async () => response({items: []});
+await loadVerification();
+assert.ok(elements.verificationStatus.innerHTML.includes('验证分析加载失败'));
+assert.ok(!elements.verificationContent.innerHTML.includes('loading-spinner'));
+assert.ok(!elements.verificationContent.innerHTML.includes('尚无历史验证记录'));
+""")
+
+
+@pytest.mark.parametrize("failure", ["network", "timeout"])
+def test_verification_generation_without_items_stops_body_animation_on_failure(failure):
+    _run_continuity_behavior(r"""
+handler = async () => response({status: 'updating', items: [], today_confirmed_count: 1});
+await loadVerification();
+assert.ok(elements.verificationContent.innerHTML.includes('loading-skeleton'));
+handler = FAILURE === 'network' ? async () => { throw new Error('offline'); } : () => new Promise(() => {});
+const pending = loadVerification();
+if (FAILURE === 'timeout') [...timers.values()].find(timer => timer.delay === 15000).fn();
+await pending;
+assert.ok(elements.verificationStatus.innerHTML.includes('验证分析加载失败'));
+assert.ok(elements.verificationStatus.innerHTML.includes('重试'));
+assert.equal(elements.verificationSpinner.hidden, true);
+assert.ok(!elements.verificationContent.innerHTML.includes('loading-spinner'));
+assert.ok(!elements.verificationContent.innerHTML.includes('loading-skeleton'));
+assert.ok(!elements.verificationContent.innerHTML.includes('尚无历史验证记录'));
+""".replace("FAILURE", repr(failure)))
+
+
+def test_verification_pending_dividend_ledger_keeps_returns_and_explains_missing_money():
+    _run_continuity_behavior(r"""
+renderVerification(report([{...row, profit_status: 'pending_dividend_ledger',
+  verification_status: 'verified', predicted_pct: '0.08', realized_pct: '0.1',
+  predicted_profit: '8', realized_profit: null, profit_error: null}]));
+const html = elements.verificationContent.innerHTML;
+assert.ok(html.includes('收益金额核验中'));
+assert.ok(html.includes('+0.080%'));
+assert.ok(html.includes('+0.100%'));
+assert.ok(html.includes('+8.00元'));
+assert.ok(!html.includes('收益核验中'));
+""")
+
+
+def test_unchanged_market_response_rechecks_trend_freshness():
+    _run_continuity_behavior(r"""
+let now = Date.parse('2026-10-27T10:02:00+08:00');
+Date.now = () => now;
+renderStockMarket({available: true, indices_status: {CN: {collection_phase: 'morning'}}, indices: [
+  {name: '上证指数', market: 'A股', market_id: 'CN', quote_date: '2026-10-27', price: '101',
+   trend: {quote_date: '2026-10-27', points: [
+     {time: '2026-10-27T10:00:00+08:00', price: '100'},
+     {time: '2026-10-27T10:01:00+08:00', price: '101'}]}}]});
+assert.ok(elements.stockMarketContent.innerHTML.includes('stock-trend-pulse'));
+now += 6 * 60000;
+handler = async path => path.includes('market-overview') ? {status: 304, ok: false} : response(report());
+await loadMarketOverview();
+assert.ok(!elements.stockMarketContent.innerHTML.includes('stock-trend-pulse'));
+""")
+
+
+def test_fresh_market_heartbeat_is_not_blocked_by_another_markets_stale_cache():
+    _run_continuity_behavior(r"""
+Date.now = () => Date.parse('2026-10-27T10:02:00+08:00');
+renderStockMarket({available: true, stale: true, refresh_error: 'US: offline',
+  indices_status: {CN: {collection_phase: 'morning', stale: false}, US: {collection_phase: 'close', stale: true}},
+  indices: [{name: '上证指数', market: 'A股', market_id: 'CN', quote_date: '2026-10-27', price: '101',
+    stale: false, source_delayed: false, trend: {quote_date: '2026-10-27', points: [
+      {time: '2026-10-27T10:00:00+08:00', price: '100'},
+      {time: '2026-10-27T10:01:00+08:00', price: '101'}]}}]});
+assert.ok(elements.stockMarketContent.innerHTML.includes('stock-trend-pulse'));
+""")
+
+
+def test_stock_access_failure_stops_first_load_animation():
+    _run_continuity_behavior(r"""
+handler = async path => path.includes('market-overview') ? {ok: false, status: 403} : response(report());
+await loadMarketOverview();
+assert.ok(elements.stockMarketStatus.innerHTML.includes('股市行情加载失败'));
+assert.ok(!elements.stockMarketContent.innerHTML.includes('loading-spinner'));
+""")
+
+
+def test_dashboard_reload_requests_verification_and_retains_newer_market_snapshot():
+    html = _read_page()
+    start = html.index("function render(data) {")
+    render_source = html[start:html.index("const cumulative =", start)] + "}"
+    _run_continuity_behavior(r"""
+const newer = {available: true, fetched_at: '2026-10-27T10:03:00+08:00',
+  indices: [{name: '最新行情', market: 'A股', price: '3300'}]};
+state.data = {stock_market: newer};
+render({stock_market: {...newer, fetched_at: '2026-10-27T10:00:00+08:00',
+  indices: [{name: '旧行情', market: 'A股', price: '3290'}]}});
+assert.equal(state.data.stock_market, newer);
+assert.ok(elements.stockMarketContent.innerHTML.includes('最新行情'));
+""", render_source)
+    start = html.index("async function loadDashboard()")
+    load_source = html[start:html.index("async function refresh()", start)]
+    _run_continuity_behavior(r"""
+handler = async path => response(path === API_PATH ? {confirmed_nav_version: 'nav-v1'} : report());
+await loadDashboard(); await flush();
+assert.equal(calls.filter(call => call.path.includes('verifications')).length, 1);
+await loadDashboard(); await flush();
+assert.equal(calls.filter(call => call.path.includes('verifications')).length, 2);
+""", "const accessKey = 'test', API_PATH = '/dashboard'; const disableWrites = () => {}, render = () => {};\n" + load_source)
+
+
 def test_stock_market_and_estimates_use_red_up_green_down():
     html = _read_page()
     # tone() 输出的 positive/negative 需要有基础颜色规则，股市与预估卡片才是红涨绿跌。
@@ -110,6 +462,9 @@ let lastMarketPayload = JSON.stringify(payload), verificationCalls = 0;
 const api = async () => ({status: STATUS, ok: STATUS === 200,
   headers: {get: () => 'same'}, json: async () => payload});
 const loadVerification = () => { verificationCalls++; };
+const renderStockMarket = () => {};
+renderStockMarket.lastData = {available: true};
+const stockMarketStatus = () => {};
 const setTimeout = () => 1, clearTimeout = () => {};
 const $ = () => ({textContent: ''});
 SOURCE
@@ -1638,6 +1993,7 @@ const tone=v=>Number(v)>0?'positive':Number(v)<0?'negative':'neutral';
 const rowValue=(r,...ks)=>{for(const k of ks)if(r?.[k]!==undefined&&r[k]!==null)return r[k];return '';};
 const portfolioRows=()=>[];
 const isClearedAndSettled=()=>false;
+const marketLoading=false;
 const state={activeTab:'market',data:{fund_estimates:{a:{product_id:'a',code:'918273',name:'基金<名>',holding_status:'held',return_pct:'-0.024',estimated_profit:'-3.51',market_as_of:'2026-10-23T16:56:00+08:00',confidence_label:'试验，情景范围不是概率置信区间'},b:{product_id:'b',code:'564738',name:'待确认基金',holding_status:'pending_purchase',pending_purchase:true,return_pct:'0.01',estimated_profit:null,profit_reason:'awaiting_confirmed_shares',market_as_of:'2026-10-23T16:56:00+08:00',confidence_label:'试验，情景范围不是概率置信区间'}}}};
 ''' + logic + r'''
 renderHeldFundEstimates();
@@ -1667,7 +2023,7 @@ assert(elements.stockMarketMeta.textContent.includes('更新延迟'));
 assert(elements.stockMarketContent.innerHTML.includes('交易中'));
 assert(elements.stockMarketContent.innerHTML.includes('更新延迟'));
 '''
-    result = subprocess.run([node, '-e', script], capture_output=True, text=True, encoding='utf-8')
+    result = subprocess.run([node], input=script, capture_output=True, text=True, encoding='utf-8')
     assert result.returncode == 0, result.stderr
 
 

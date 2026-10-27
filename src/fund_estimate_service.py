@@ -42,6 +42,13 @@ logger = logging.getLogger(__name__)
 PURCHASE_TYPES = {TransactionType.MANUAL_PURCHASE, TransactionType.SIP_PURCHASE}
 PENDING_STATUSES = {TransactionStatus.PENDING_QUOTE, TransactionStatus.PENDING_CONFIRMATION}
 _DEFAULT_PATH = Path(__file__).resolve().parents[1] / "data" / "fund_estimation.db"
+_verification_service = None
+
+
+def notify_official_nav_update() -> None:
+    """正式净值提交后启动本地补齐；抓取与交易流程不等待验证。"""
+    if _verification_service is not None:
+        _verification_service.start_official_verification_sync(force=True)
 
 
 def discover_funds(repository, now: datetime | None = None) -> list[FundIdentity]:
@@ -53,8 +60,12 @@ def discover_funds(repository, now: datetime | None = None) -> list[FundIdentity
     for product in repository.list_products():
         if product.product_type is not ProductType.PUBLIC_FUND:
             continue
-        position = repository.get_position(product.id)
-        transactions = repository.list_transactions(product.id)
+        try:
+            position = repository.get_position(product.id)
+            transactions = repository.list_transactions(product.id)
+        except Exception:
+            logger.warning('基金发现失败，继续处理其他基金: %s', product.code, exc_info=True)
+            continue
         pending = any(
             item.transaction_type in PURCHASE_TYPES and item.status in PENDING_STATUSES
             for item in transactions
@@ -130,6 +141,64 @@ class FundEstimateService:
         self._resumed = False
         self._worker = None
         self._worker_guard = threading.Lock()
+        self._official_sync_lock = threading.Lock()
+        self._official_worker_guard = threading.Lock()
+        self._official_worker = None
+        self._official_dirty = False
+        self._official_last_started = 0.0
+        self._last_verification_report = None
+        from src.fund_estimate_analysis import VerificationAnalysis
+        self._analysis = VerificationAnalysis(store, self.ai)
+
+    def sync_official_verifications(self, now: datetime | None = None) -> dict:
+        from src.fund_estimate_verification import sync_confirmed_verifications
+        current = now or datetime.now(TZ_CN)
+        with self._official_sync_lock:
+            identities = discover_funds(self.repository, current)
+            active_ids = {item.product_id for item in identities}
+            historical_ids = {row['product_id'] for row in
+                              self.store.read_daily_verifications() + self.store.read_verifications()}
+            for product_id in sorted(historical_ids - active_ids):
+                product = self.repository.get_product(product_id) if self.repository is not None else None
+                if product is not None and product.product_type is ProductType.PUBLIC_FUND:
+                    identities.append(FundIdentity(product.id, product.code, product.provider,
+                        discover_share_class(product.name, _metadata(product.metadata_json)),
+                        None, product.name, product.currency or 'CNY'))
+            metadata = sync_confirmed_verifications(
+                self.repository, self.store, identities, current, active_product_ids=active_ids)
+            self.store.set_watermark('official-nav-verification-meta:v1',
+                                     json.dumps(metadata, ensure_ascii=False), iso_now(current))
+            return metadata
+
+    def start_official_verification_sync(self, now: datetime | None = None, *, force=False) -> None:
+        if self.repository is None or not hasattr(self.repository, 'list_quotes'):
+            return
+        with self._official_worker_guard:
+            if self._official_worker is not None and self._official_worker.is_alive():
+                self._official_dirty = True
+                return
+            clock = time_module.monotonic()
+            if not force and clock - self._official_last_started < 5:
+                return
+            self._official_last_started = clock
+
+            def work():
+                current = now
+                while True:
+                    try:
+                        self.sync_official_verifications(current)
+                    except Exception:
+                        logger.warning('正式净值验证补齐失败', exc_info=True)
+                    with self._official_worker_guard:
+                        if not self._official_dirty:
+                            self._official_worker = None
+                            return
+                        self._official_dirty = False
+                    current = None
+
+            self._official_worker = threading.Thread(target=work, daemon=True,
+                                                     name='official-nav-verification')
+            self._official_worker.start()
 
     def jobs_enabled(self) -> bool:
         if self.config.get("enabled"):
@@ -264,6 +333,37 @@ class FundEstimateService:
         return result
 
     def verification_report(self) -> dict:
+        """失败保留持久化的最后成功报告；明细不等待 AI。"""
+        self.start_official_verification_sync()
+        cache_key = 'verification-report:latest:v1'
+        try:
+            report = self._build_verification_report()
+            previous = self._last_verification_report
+            if previous is None:
+                cached = self.store.get_watermark(cache_key)
+                previous = json.loads(cached) if cached else None
+            if not report['items'] and previous and previous.get('items'):
+                self._last_verification_report = previous
+                return dict(previous, status='stale', message='正在恢复验证数据，保留上次内容')
+            serialized = json.dumps(report, ensure_ascii=False, sort_keys=True)
+            if self.store.get_watermark(cache_key) != serialized:
+                self.store.set_watermark(cache_key, serialized, report['generated_at'])
+            self._last_verification_report = report
+            return report
+        except Exception:
+            logger.warning('验证报告读取失败，尝试恢复最后成功内容', exc_info=True)
+            previous = self._last_verification_report
+            if previous is None:
+                try:
+                    cached = self.store.get_watermark(cache_key)
+                    previous = json.loads(cached) if cached else None
+                except Exception:
+                    previous = None
+            if previous and previous.get('items'):
+                return dict(previous, status='stale', message='更新失败，已保留上次数据')
+            raise
+
+    def _build_verification_report(self) -> dict:
         """预估与真实涨跌对比：确定性统计为准，AI只做点评且不改动任何数字。"""
         from src.fund_estimate_types import decimal_text
 
@@ -303,15 +403,51 @@ class FundEstimateService:
                             if current is not None else None)
             if current_rank is None or rank > current_rank:
                 daily[key] = entry
+        for entry in self.store.read_daily_verifications():
+            daily[(entry['product_id'], entry['trade_date'])] = entry
         items = sorted(daily.values(), key=lambda item: (item['trade_date'], item['code'], item['product_id']))
         stats = _verification_statistics(items)
         overall = _verification_overall(items, stats)
         # AI 仅接收涨跌幅和误差；持仓份额及收益金额不进入模型请求或缓存键。
-        analysis = self._verification_analysis(items, stats, overall)
-        items = self._verification_amounts(items, rows)
+        analysis = self._analysis.read(items, stats, overall)
+        try:
+            enriched = self._verification_amounts(items, items + rows)
+        except Exception:
+            enriched = []
+            for item in items:
+                try:
+                    enriched.extend(self._verification_amounts([item], items + rows))
+                except Exception:
+                    logger.warning('基金验证金额补充失败: %s', item.get('code'), exc_info=True)
+                    enriched.append(dict(item, predicted_profit=None, realized_profit=None, profit_error=None))
+        items = enriched
+        latest = max((item['trade_date'] for item in items), default=None)
+        today = datetime.now(TZ_CN).date().isoformat()
+        version = hashlib.sha256(json.dumps(items, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:20]
+        raw_meta = self.store.get_watermark('official-nav-verification-meta:v1')
+        metadata = json.loads(raw_meta) if raw_meta else {}
+        current_state = {}
+        if self.repository is not None and hasattr(self.repository, 'list_quotes') and hasattr(self.repository, 'list_products'):
+            from src.fund_estimate_verification import read_official_nav_state
+            current_state = read_official_nav_state(self.repository, discover_funds(self.repository), datetime.now(TZ_CN))
+        shown_today = sum(item['trade_date'] == today for item in items)
+        confirmed_today = max(shown_today, current_state.get('today_confirmed_count', 0))
+        errors = metadata.get('errors') or current_state.get('errors')
+        version_pending = bool(current_state.get('confirmed_nav_version') and
+            current_state['confirmed_nav_version'] != metadata.get('processed_active_nav_version'))
+        status = 'stale' if items and errors else 'updating' if errors or version_pending or confirmed_today > shown_today else 'ready' if items else 'empty'
+        if not items and self._official_worker is not None and self._official_worker.is_alive():
+            status = 'updating'
         return {'items': items, 'stats': stats, 'snapshot_items': snapshot_items,
                 'overall': overall,
-                'ai_analysis': analysis,
+                **analysis,
+                'status': status,
+                'message': '部分基金正在重新核验，已保留现有内容' if errors else '',
+                'data_version': version,
+                'confirmed_nav_version': current_state.get('confirmed_nav_version', metadata.get('confirmed_nav_version', version)),
+                'latest_available_date': latest, 'display_date': latest,
+                'today_date': today,
+                'today_confirmed_count': confirmed_today,
                 'generated_at': iso_now(datetime.now(TZ_CN))}
 
     def _verification_amounts(self, items, snapshots):
@@ -345,58 +481,22 @@ class FundEstimateService:
                 continue
             profit_date, realized = calculate_latest_profit(self.repository, product, day,
                 bundle_non_trading_days=False, transactions=transactions, quotes=quotes)
-            if profit_date == day and realized is not None:
+            dividend_ready = _dividend_ledger_matches(self.repository, item, transactions)
+            if not dividend_ready:
+                entry['profit_status'] = 'pending_dividend_ledger'
+            if profit_date == day and realized is not None and item['realized_pct'] is not None and dividend_ready:
                 entry['realized_profit'] = format(realized.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), 'f')
             snapshot = snapshot_by_key.get((product_id, item['snapshot_generated_at']), {})
-            if item['predicted_pct'] in (None, '') or snapshot.get('base_nav') in (None, ''):
+            prediction_base = snapshot.get('snapshot_base_nav', snapshot.get('base_nav'))
+            if item['predicted_pct'] in (None, '') or prediction_base in (None, ''):
                 continue
             shares = _nav_earning_shares(self.repository, product_id, previous.quote_date, day,
                 product=product, transactions=transactions, current_nav=current.unit_nav)
-            predicted = shares * Decimal(str(snapshot['base_nav'])) * Decimal(str(item['predicted_pct'])) / 100
+            predicted = shares * Decimal(str(prediction_base)) * Decimal(str(item['predicted_pct'])) / 100
             entry['predicted_profit'] = format(predicted.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), 'f')
             if entry['realized_profit'] is not None:
                 entry['profit_error'] = format(abs(Decimal(entry['predicted_profit']) - Decimal(entry['realized_profit'])), '.2f')
         return result
-
-    def _verification_analysis(self, items: list, stats: dict, overall: dict):
-        if not items:
-            return None
-        digest = hashlib.sha256(json.dumps(['overall-v3', items, stats], ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
-        cached = self.store.get_watermark(f'verification-analysis:{digest}')
-        if cached:
-            return cached
-        try:
-            if self.ai is None or not self.ai.is_enabled():
-                return None
-            payload = json.dumps({
-                'stats': stats,
-                'period': {key: overall[key] for key in ('start_date', 'end_date', 'day_count', 'fund_count')},
-                'by_day': overall['by_day'],
-                'by_fund': overall['by_fund'],
-                'diagnostics': overall['diagnostics'],
-                'items': items[-20:],
-            }, ensure_ascii=False)
-            text = self.ai.complete([
-                {'role': 'system', 'content': '你是基金预估的数据点评助手。只依据给定数据写简短中文分析，绝不改动或虚构任何数字，不做未来收益承诺。'},
-                {'role': 'user', 'content': (
-                    '请写有解释力的累计分析，约500-800个中文字，用4个自然段，不加标题、不用Markdown，不要只复述数字。'
-                    '第1段解释整体表现：把方向一致率与始终预测上涨/下跌的简单对照比较，说明是否表现出额外判断力；'
-                    '多数方向基线只是事后描述性对照，不是事前可交易策略。'
-                    '第2段解释误差：结合平均实际波动、误差与实际波动的倍数、误差同号情况，判断偏差更像集中高估/低估还是相互抵消；'
-                    '指出哪些基金和日期拖累结果，不能只罗列指标。'
-                    '第3段讨论原因：只把数据直接支持的现象作为结论；持仓差异、因子覆盖、久期或收益累积等未提供证据的原因只能提出少量明确标为假设的解释，并指出如何检验，不能凭空断言。'
-                    '第4段给出后续观察重点和验证标准，说明什么结果会支持或推翻前面的判断；不要承诺准确率、不要给买卖建议。'
-                    '数据仅含每天每只基金最终有效预估与正式涨跌幅对比，单位为%，1个百分点=100bp。'
-                    'stats、by_day、by_fund、diagnostics覆盖全部历史，items仅为最近明细。'
-                    'accuracy及above_baseline字段均为0到1的比例，引用准确率时须乘100并加%，差值须乘100并加“个百分点”，例如0.75必须写75.000%。'
-                    '所有_pct字段已经是百分数数值，引用时直接加%，不可再乘100，例如0.0205应写0.021%或2.050bp；每个误差或波动数值都必须带%或bp单位，不能只写裸数字。'
-                    '后续方向判断应与同一观察期重新计算的基线比较，不把当天的准确率或基线固定为未来验证门槛。'
-                    '所有百分数与bp数统一保留3位小数。只有一天数据时，重点分析当天共性与个体差异，不虚构跨日趋势，也不反复用样本不足填充篇幅。数据：' + payload)},
-            ])
-        except Exception:
-            return None
-        self.store.set_watermark(f'verification-analysis:{digest}', text, iso_now(datetime.now(TZ_CN)))
-        return text
 
     def save_model_settings(self, body: dict, now: datetime) -> dict:
         base_url = chat_completions_url(str(body.get("base_url") or "")) if str(body.get("base_url") or "").strip() else ""
@@ -602,6 +702,7 @@ class FundEstimateService:
 
 def create_fund_estimate_service(portfolio_runtime, config=None, *, path=None):
     """只构建对象和本地库，不访问网络。"""
+    global _verification_service
     try:
         store = FundEstimateStore(path or _DEFAULT_PATH)
         store.initialize()
@@ -624,7 +725,10 @@ def create_fund_estimate_service(portfolio_runtime, config=None, *, path=None):
     )
     from src.fund_estimate_documents import PublicFundDocuments
     profiles = ProfileService(store, PublicFundDocuments(store), ai=EstimateAi(store))
-    return FundEstimateService(repository, store, sources, profiles, settings, ai=EstimateAi(store))
+    service = FundEstimateService(repository, store, sources, profiles, settings, ai=EstimateAi(store))
+    _verification_service = service
+    service.start_official_verification_sync(force=True)
+    return service
 
 
 def read_published_estimates(repository, now: datetime | None = None) -> dict:
@@ -707,6 +811,25 @@ def _metadata(raw: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _dividend_ledger_matches(repository, item: dict, transactions) -> bool:
+    """有明确分红时，正式金额必须等同日分红流水确认后才能作比较。"""
+    declared = Decimal(str(item.get('cash_dividend_per_share') or '0'))
+    if declared <= 0:
+        return True
+    database = getattr(repository, 'database', None)
+    if database is None:
+        return False
+    with database.connection() as conn:
+        events = conn.execute(
+            'SELECT per_share, error, dividend_transaction_id FROM fund_dividend_events '
+            'WHERE product_id=? AND ex_dividend_date=?',
+            (item['product_id'], item['trade_date'])).fetchall()
+    confirmed = {tx.id for tx in transactions if tx.status is TransactionStatus.CONFIRMED
+                 and tx.transaction_type is TransactionType.CASH_DIVIDEND}
+    return any(not row['error'] and Decimal(row['per_share']) == declared
+               and row['dividend_transaction_id'] in confirmed for row in events)
+
+
 def _verification_statistics(items: list[dict]) -> dict:
     from src.fund_estimate_types import decimal_text
 
@@ -716,7 +839,8 @@ def _verification_statistics(items: list[dict]) -> dict:
     return {
         'pairs': len(items),
         'predicted_count': count,
-        'missing_predictions': len(items) - count,
+        'missing_predictions': sum(item.get('predicted_pct') in (None, '') for item in items),
+        'pending_returns': sum(item.get('realized_pct') in (None, '') for item in items),
         'direction_hits': hits,
         'direction_accuracy': decimal_text(Decimal(hits) / Decimal(count)) if count else None,
         'mae_pct': decimal_text(sum((abs(error) for error in errors), Decimal(0)) / Decimal(count)) if count else None,

@@ -2256,11 +2256,13 @@ def create_portfolio_blueprint(runtime, provider_factory, estimate_service=None)
         if guard:
             return guard
         if estimate_service is None:
-            return jsonify({"items": [], "stats": {}, "ai_analysis": None})
+            return jsonify({"status": "error", "message": "验证分析暂时不可用，请重试"}), 503
         try:
-            return jsonify(estimate_service.verification_report())
+            response = jsonify(estimate_service.verification_report())
+            response.headers['Cache-Control'] = 'private, no-store'
+            return response
         except Exception:
-            return jsonify({"items": [], "stats": {}, "ai_analysis": None})
+            return jsonify({"status": "error", "message": "验证分析读取失败，请重试"}), 503
 
     @blueprint.get("/api/portfolio/fund-estimate-model-settings")
     def fund_estimate_model_settings():

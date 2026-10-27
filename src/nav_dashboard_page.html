@@ -413,7 +413,17 @@
     .stock-index-name { min-width: 0; font-size: 11px; font-weight: 750; }
     .stock-index-value { text-align: center; font-size: 13px; font-weight: 850; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .stock-index-change { text-align: center; font-size: 12px; font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .stock-number { display: inline-flex; justify-content: center; font-variant-numeric: tabular-nums; }
+    .stock-digit { display: inline-block; position: relative; height: 1.25em; min-width: .62em; line-height: 1.25; overflow: hidden; vertical-align: bottom; }
+    .stock-digit-punctuation { min-width: .35em; }
+    .stock-digit-track { display: flex; flex-direction: column; }
+    .stock-digit-flip .stock-digit-track { animation: stock-digit-roll .48s cubic-bezier(.2,.7,.25,1) forwards; }
+    .stock-digit-track > span { height: 1.25em; }
+    @keyframes stock-digit-roll { from { transform: translateY(0); } to { transform: translateY(-50%); } }
     .stock-sparkline { display: block; width: 100%; height: 30px; overflow: visible; }
+    .stock-trend-endpoint { fill: currentColor; }
+    .stock-trend-pulse { fill: currentColor; filter: drop-shadow(0 0 2px currentColor); transform-box: fill-box; transform-origin: center; animation: stock-trend-heartbeat 1.5s ease-out infinite; }
+    @keyframes stock-trend-heartbeat { 0% { transform: scale(.8); opacity: .6; } 75%, 100% { transform: scale(2.3); opacity: 0; } }
     .stock-sparkline-placeholder { display: flex; align-items: center; justify-content: center; height: 30px; color: var(--soft); font-size: 9px; }
     .stock-index-time { margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.5; }
     .stock-group-title { margin: 14px 0 8px; font-size: 12px; font-weight: 750; }
@@ -452,6 +462,23 @@
     .verification-analysis { margin-top: 12px; padding: 12px; border-radius: 8px; background: var(--bg); font-size: 12px; line-height: 1.75; color: var(--muted); white-space: pre-line; }
     .verification-analysis strong { display: block; margin-bottom: 4px; color: var(--text); font-size: 11px; }
     .verification-note { margin: 12px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+    .loading-spinner { display: inline-block; flex: 0 0 auto; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--blue); border-radius: 50%; animation: panel-spin .85s linear infinite; vertical-align: middle; }
+    .loading-spinner[hidden] { display: none; }
+    .section-head h2 .loading-spinner { margin-left: 6px; }
+    .panel-loading { position: relative; padding: 10px 0; }
+    .panel-loading-message { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 12px 0; color: var(--muted); font-size: 12px; }
+    .loading-skeleton { height: 58px; margin: 10px 0; border-radius: 8px; background: linear-gradient(100deg, var(--bg) 20%, var(--line-soft) 45%, var(--bg) 70%); background-size: 220% 100%; animation: panel-shimmer 1.7s ease-in-out infinite; }
+    .panel-load-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+    .panel-load-status:empty { display: none; }
+    .panel-retry, .verification-latest { min-height: 32px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--blue); font: inherit; cursor: pointer; }
+    .verification-date-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    @keyframes panel-spin { to { transform: rotate(360deg); } }
+    @keyframes panel-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+    @media (prefers-reduced-motion: reduce) {
+      .loading-spinner, .loading-skeleton, .stock-digit-flip .stock-digit-track, .stock-trend-pulse { animation: none; }
+      .stock-trend-pulse { opacity: .2; }
+      .stock-digit-flip .stock-digit-track { transform: translateY(-50%); }
+    }
     #marketPanel > .card.section ~ .card.section { margin-top: 14px; }
     .panel-heading h2 { font-size: 16px; font-weight: 700; }
     .metric-sub { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 14px; }
@@ -817,8 +844,9 @@
 
       <section id="marketPanel" class="management-panel" role="tabpanel" aria-labelledby="marketTab" hidden>
         <section class="card section" aria-label="股市行情">
-          <div class="section-head"><h2>股市行情</h2><span class="section-meta" id="stockMarketMeta">最近行情</span></div>
-          <div id="stockMarketContent"><div class="empty">正在读取股市行情...</div></div>
+          <div class="section-head"><h2>股市行情<span class="loading-spinner" id="stockMarketSpinner" aria-hidden="true" hidden></span></h2><span class="section-meta" id="stockMarketMeta">最近行情</span></div>
+          <div id="stockMarketStatus" class="panel-load-status" role="status" aria-live="polite"></div>
+          <div id="stockMarketContent" aria-busy="true"><div class="panel-loading"><p class="panel-loading-message"><span class="loading-spinner" aria-hidden="true"></span>正在读取股市行情…</p><div class="loading-skeleton" aria-hidden="true"></div><div class="loading-skeleton" aria-hidden="true"></div></div></div>
         </section>
         <div class="write-notice" id="marketWriteNotice" hidden></div>
         <section class="card section" aria-label="债市晴雨表">
@@ -829,9 +857,10 @@
           <div class="section-head"><h2>持仓涨跌幅预估</h2><span class="section-meta" id="estimateMeta">预估涨跌幅</span></div>
           <div id="estimateWatchList"><div class="empty">正在读取持仓基金...</div></div>
         </section>
-        <section class="card section" id="verificationSection" aria-label="预估验证分析">
-          <div class="section-head"><h2>预估验证分析</h2><span class="section-meta" id="verificationMeta">--</span></div>
-          <div id="verificationContent"><div class="empty">暂无验证样本，净值确认后自动累积</div></div>
+        <section class="card section" id="verificationSection" aria-label="预估验证分析" aria-busy="true">
+          <div class="section-head"><h2>预估验证分析<span class="loading-spinner" id="verificationSpinner" aria-hidden="true" hidden></span></h2><span class="section-meta" id="verificationMeta">--</span></div>
+          <div id="verificationStatus" class="panel-load-status" role="status" aria-live="polite">正在加载验证分析…</div>
+          <div id="verificationContent"><div class="panel-loading"><p class="panel-loading-message"><span class="loading-spinner" aria-hidden="true"></span>正在加载验证分析…</p><div class="loading-skeleton" aria-hidden="true"></div><div class="loading-skeleton" aria-hidden="true"></div></div></div>
         </section>
       </section>
 
@@ -1261,7 +1290,9 @@
         }
       });
       clearTimeout(marketPollTimer);
+      clearTimeout(verificationState().pollTimer);
       if (tab === 'market') loadMarketOverview();
+      if (tab === 'market') loadVerification();
       if (tab === 'settings') loadModelSettings();
       clearInterval(estimateStatusTimer);
       estimateStatusTimer = tab === 'settings' ? setInterval(refreshEstimateJobStatus, 5000) : null;
@@ -1348,11 +1379,11 @@
       if (value == null || value === '' || !Number.isFinite(Number(value))) return '--';
       const n = Number(value); return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
     }
-    function stockSparkline(item) {
+    function stockSparkline(item, marketStatus = {}, now = Date.now()) {
       const trend = item.trend;
       const points = trend && trend.quote_date === item.quote_date ? (trend.points || []).filter(point =>
-        String(point.time || '').slice(0, 10) === item.quote_date && Number.isFinite(Number(point.price)) && Number(point.price) > 0
-      ) : [];
+        String(point.time || '').slice(0, 10) === item.quote_date && Number.isFinite(Date.parse(point.time)) && Number.isFinite(Number(point.price)) && Number(point.price) > 0
+      ).sort((left, right) => Date.parse(left.time) - Date.parse(right.time)) : [];
       if (points.length < 2) return `<div class="stock-sparkline-placeholder">${points.length ? '走势积累中' : '走势暂缺'}</div>`;
       const prices = points.map(point => Number(point.price));
       const base = Number(trend.pre_close);
@@ -1378,12 +1409,67 @@
       const baseline = hasBase ? y(base).toFixed(2) : '34';
       const area = `${path} L${coords[coords.length - 1][0].toFixed(2)},${baseline} L${coords[0][0].toFixed(2)},${baseline} Z`;
       const label = esc(`${item.name || ''} ${item.quote_date} 当日走势`);
-      return `<svg class="stock-sparkline ${tone(item.change_pct)}" viewBox="0 0 120 36" role="img" aria-label="${label}" preserveAspectRatio="none"><title>${label}</title><path d="${area}" fill="currentColor" opacity="0.10"/>${hasBase ? `<line x1="2" x2="118" y1="${baseline}" y2="${baseline}" stroke="var(--line)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ''}<path d="${path}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>`;
+      const endpoint = coords[coords.length - 1];
+      const lastAge = now - Date.parse(points[points.length - 1].time);
+      const trading = ['morning', 'afternoon'].includes(marketStatus.collection_phase);
+      // 心跳只代表5分钟内真实走势，延迟/失败/休市行情始终静止。
+      const live = trading && !marketStatus.stale && !marketStatus.refresh_error && !item.stale && !item.source_delayed && !item.refresh_error && lastAge >= -60000 && lastAge <= 5 * 60000;
+      const dot = `<circle class="stock-trend-endpoint" cx="${endpoint[0].toFixed(2)}" cy="${endpoint[1].toFixed(2)}" r="1.8"/>`;
+      const pulse = live ? `<circle class="stock-trend-pulse" cx="${endpoint[0].toFixed(2)}" cy="${endpoint[1].toFixed(2)}" r="3"/>` : '';
+      return `<svg class="stock-sparkline ${tone(item.change_pct)}" viewBox="0 0 120 36" role="img" aria-label="${label}" preserveAspectRatio="none"><title>${label}</title><path d="${area}" fill="currentColor" opacity="0.10"/>${hasBase ? `<line x1="2" x2="118" y1="${baseline}" y2="${baseline}" stroke="var(--line)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ''}<path d="${path}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>${pulse}${dot}</svg>`;
+    }
+    function panelLoadingMarkup(message) {
+      return `<div class="panel-loading"><p class="panel-loading-message"><span class="loading-spinner" aria-hidden="true"></span>${esc(message)}</p><div class="loading-skeleton" aria-hidden="true"></div><div class="loading-skeleton" aria-hidden="true"></div></div>`;
+    }
+    function preserveMarketSnapshot(incoming, previous = {}) {
+      for (const key of ['stock_market', 'bond_barometer', 'fund_estimates']) {
+        const previousTime = Date.parse(previous[key]?.fetched_at || '');
+        const incomingTime = Date.parse(incoming[key]?.fetched_at || '');
+        if (previous[key] != null && (incoming[key] == null || previousTime > incomingTime)) incoming[key] = previous[key];
+      }
+      return incoming;
+    }
+    function stockMarketStatus(message = '', busy = false, retry = false) {
+      const status = $('stockMarketStatus');
+      const spinner = $('stockMarketSpinner');
+      if (spinner) spinner.hidden = !busy;
+      $('stockMarketContent')?.setAttribute?.('aria-busy', String(busy));
+      if (retry) $('stockMarketContent')?.querySelectorAll?.('.stock-trend-pulse').forEach(dot => dot.remove());
+      if (!status) return;
+      status.innerHTML = `${esc(message)}${retry ? '<button type="button" class="panel-retry stock-market-retry">重试</button>' : ''}`;
+      status.querySelector?.('.stock-market-retry')?.addEventListener('click', () => loadMarketOverview(true));
+    }
+    function stockFlipNumber(previous, value) {
+      const current = String(value);
+      const numeric = /^[+\-]?\d+\.\d+%?$/;
+      if (previous == null || previous === current || !numeric.test(current) || !numeric.test(previous) || typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) return esc(current);
+      // 按小数点对齐，只展示上次与本次真实报价，不插入中间行情。
+      const [oldWhole, oldFraction = ''] = String(previous).split('.');
+      const [newWhole, newFraction = ''] = current.split('.');
+      const wholeWidth = Math.max(oldWhole.length, newWhole.length);
+      const oldText = oldWhole.padStart(wholeWidth, ' ') + (newFraction ? '.' + oldFraction.padEnd(newFraction.length, ' ') : '');
+      const newText = newWhole.padStart(wholeWidth, ' ') + (newFraction ? '.' + newFraction : '');
+      const digits = [...newText].map((digit, index) => {
+        const previousDigit = oldText[index] || ' ';
+        const punctuation = /[.%]/.test(digit) ? ' stock-digit-punctuation' : '';
+        if (digit === previousDigit) return `<span class="stock-digit${punctuation}">${esc(digit)}</span>`;
+        return `<span class="stock-digit stock-digit-flip${punctuation}"><span class="stock-digit-track"><span>${esc(previousDigit)}</span><span>${esc(digit)}</span></span></span>`;
+      }).join('');
+      return `<span class="stock-number" role="text" aria-label="${esc(current)}"><span aria-hidden="true">${digits}</span></span>`;
     }
     function renderStockMarket(data) {
       const box = $('stockMarketContent');
       if (!box) return;
-      if (!data || !data.available) { box.innerHTML = '<div class="empty">股市行情暂未取得，稍后自动更新</div>'; return; }
+      if (!data || !data.available) {
+        if (renderStockMarket.lastData) { stockMarketStatus('行情暂不可用，已保留上次行情', false, true); return; }
+        box.innerHTML = '<div class="empty">股市行情暂未取得，稍后自动更新</div>';
+        stockMarketStatus('股市行情暂未取得', false, true);
+        return;
+      }
+      const previousValues = renderStockMarket.values || {};
+      const nextValues = {};
+      renderStockMarket.lastData = data;
+      stockMarketStatus('', marketLoading);
       const updated = data.fetched_at ? new Date(data.fetched_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' }) : '';
       const statuses = data.indices_status || {};
       const active = Object.values(statuses).some(s => s && (s.collection_phase === 'morning' || s.collection_phase === 'afternoon'));
@@ -1396,7 +1482,12 @@
         const members = indices.filter(item => item.market === market);
         const cards = members.map(item => {
           const price = item.price == null || !Number.isFinite(Number(item.price)) ? '--' : Number(item.price).toFixed(2);
-          return `<div class="stock-index"><div class="stock-index-name">${esc(item.name)}</div><div class="stock-index-value ${tone(item.change_pct)}">${esc(price)}</div><div class="stock-index-change ${tone(item.change_pct)}">${esc(stockPercent(item.change_pct))}</div>${stockSparkline(item)}</div>`;
+          const key = `${market}:${item.code || item.name}`;
+          const change = stockPercent(item.change_pct);
+          nextValues[key] = {price, change};
+          // 根级 stale/error 汇总其他市场，活跃判断只使用该指数及其所属市场。
+          const trendStatus = statuses[marketKeys[market]] || {};
+          return `<div class="stock-index"><div class="stock-index-name">${esc(item.name)}</div><div class="stock-index-value ${tone(item.change_pct)}">${stockFlipNumber(previousValues[key]?.price, price)}</div><div class="stock-index-change ${tone(item.change_pct)}">${stockFlipNumber(previousValues[key]?.change, change)}</div>${stockSparkline(item, trendStatus)}</div>`;
         }).join('');
         const status = (data.indices_status || {})[marketKeys[market]] || {};
         const dates = members.map(i => i.quote_date).filter(Boolean).sort();
@@ -1410,6 +1501,11 @@
       const cnActive = cnPhase === 'morning' || cnPhase === 'afternoon';
       const sectorDelayed = Boolean(sectors.refresh_error) || (sectors.items || []).some(i => i && i.source_delayed);
       box.innerHTML = `${groups}<section class="stock-market-group"><div class="stock-group-heading"><h3 class="stock-market-title">A股一级行业</h3><div class="stock-group-meta">${esc(sectors.quote_date || '')}${cnActive && sectorDelayed ? ' · 更新延迟' : ''}</div></div><div class="stock-sector-grid">${sectorColumn('领涨', sectors.leaders)}${sectorColumn('领跌', sectors.laggards)}</div></section><p class="barometer-note">${esc(data.source || '公开行情')} · 按各市场交易时段采集，午间及收盘后保留最近快照。${data.refresh_error ? '来源暂不可用，显示上次成功行情。' : ''}</p>`;
+      renderStockMarket.values = nextValues;
+      box.querySelectorAll?.('.stock-digit-flip').forEach(digit => digit.addEventListener('animationend', () => {
+        digit.textContent = digit.lastElementChild?.lastElementChild?.textContent || '';
+        digit.classList.remove('stock-digit-flip');
+      }, {once: true}));
     }
     function verificationPercent(value, signed = false) {
       if (value == null || value === '' || !Number.isFinite(Number(value))) return '—';
@@ -1425,24 +1521,94 @@
       if (Number(fixed) === 0) return '0.00元';
       return `${signed && amount > 0 ? '+' : ''}${fixed}元`;
     }
+    function verificationState() {
+      return renderVerification.viewState ||= {loading: false, inFlight: null, requestId: 0,
+        refreshQueued: false, lastData: null, lastSuccessAt: '', error: '', pollTimer: null,
+        selectedDate: '', manualDate: '', dashboardVersion: ''};
+    }
+    function verificationToday(data) {
+      if (data?.today_date) return String(data.today_date).slice(0, 10);
+      const parts = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'}).formatToParts(new Date());
+      const part = name => parts.find(item => item.type === name)?.value;
+      return `${part('year')}-${part('month')}-${part('day')}`;
+    }
+    function updateVerificationStatus() {
+      const view = verificationState();
+      const data = view.lastData;
+      const status = $('verificationStatus');
+      const updating = data?.status === 'updating';
+      const busy = !view.error && (view.loading || updating);
+      const spinner = $('verificationSpinner');
+      if (spinner) spinner.hidden = !busy;
+      $('verificationSection')?.setAttribute?.('aria-busy', String(busy));
+      if (!status) return;
+      let message = '';
+      if (view.error) message = data?.items?.length ? '更新失败，已保留上次数据' : '验证分析加载失败';
+      else if (view.loading) message = data?.items?.length ? '正在更新…' : '正在加载验证分析…';
+      else if (updating) message = Number(data.today_confirmed_count) > 0 ? '当日净值已更新，正在生成验证…' : '正在更新验证…';
+      else if (data?.items?.length) {
+        const today = verificationToday(data);
+        const confirmed = data.today_confirmed_count ?? data.items.filter(item => item.trade_date === today).length;
+        message = confirmed > 0 ? `今日已确认 ${confirmed} 只` : `今日净值尚未更新，显示 ${view.selectedDate}`;
+      }
+      const updated = view.error && view.lastSuccessAt ? ` · 上次成功 ${view.lastSuccessAt}` : '';
+      status.innerHTML = `${esc(message + updated)}${view.error ? '<button type="button" class="panel-retry verification-retry">重试</button>' : ''}`;
+      status.querySelector?.('.verification-retry')?.addEventListener('click', () => loadVerification());
+    }
+    function scheduleVerificationPoll() {
+      const view = verificationState();
+      clearTimeout(view.pollTimer);
+      view.pollTimer = null;
+      if (!document.hidden && state.activeTab === 'market') view.pollTimer = setTimeout(loadVerification, 30000);
+    }
+    function refreshVerificationFromDashboard(data) {
+      const view = verificationState();
+      const version = data?.confirmed_nav_version || data?.portfolio?.confirmed_nav_version || '';
+      const changed = Boolean(version && version !== view.dashboardVersion);
+      view.dashboardVersion = version || view.dashboardVersion;
+      loadVerification({queue: changed});
+    }
     function renderVerification(data) {
       const box = $('verificationContent');
       if (!box) return;
-      const items = (data && data.items) || [];
+      const view = verificationState();
+      const items = Array.isArray(data?.items) ? data.items : [];
       if (!items.length) {
+        if (data?.status !== 'empty') {
+          if (data?.status === 'updating') {
+            view.lastData = {...(view.lastData || {}), ...data, items: view.lastData?.items || []};
+            if (!view.lastData.items.length) box.innerHTML = panelLoadingMarkup('正在生成验证分析…');
+          } else {
+            view.error = '验证结果未就绪';
+            if (!view.lastData?.items?.length) box.innerHTML = '';
+          }
+          updateVerificationStatus();
+          return;
+        }
+        view.lastData = data;
+        view.error = '';
         $('verificationMeta').textContent = '--';
-        box.innerHTML = '<div class="empty">正式净值公布后，自动对比当日最终预估</div>';
+        box.innerHTML = '<div class="empty">尚无历史验证记录，正式净值更新后自动生成</div>';
         renderVerification.signature = null;
+        updateVerificationStatus();
         return;
       }
+      view.lastData = data;
+      view.error = data.status === 'stale' ? '服务暂不可用' : '';
       const dates = [...new Set(items.map(item => item.trade_date))].sort().reverse();
-      const day = dates.includes(renderVerification.selectedDate) ? renderVerification.selectedDate : dates[0];
+      // 与当前内部日期不同的显式选择视为手动历史选择；默认模式始终跟随最新日。
+      if (renderVerification.selectedDate && renderVerification.selectedDate !== view.selectedDate) view.manualDate = renderVerification.selectedDate;
+      const latest = dates.includes(data.latest_available_date) ? data.latest_available_date : dates[0];
+      const day = dates.includes(view.manualDate) ? view.manualDate : latest;
+      if (!dates.includes(view.manualDate)) view.manualDate = '';
+      view.selectedDate = day;
       renderVerification.selectedDate = day;
-      const signature = JSON.stringify([day, items, data.stats, data.overall, data.ai_analysis]);
+      updateVerificationStatus();
+      const signature = JSON.stringify([day, view.manualDate, items, data.stats, data.overall, data.ai_analysis, data.ai_status, data.data_version]);
       if (signature === renderVerification.signature) return;
       renderVerification.signature = signature;
       const daily = items.filter(item => item.trade_date === day);
-      const valid = items.filter(item => item.error_pct != null && Number.isFinite(Number(item.error_pct)));
+      const valid = items.filter(item => (!item.verification_status || item.verification_status === 'verified') && item.error_pct != null && Number.isFinite(Number(item.error_pct)));
       const stats = data.stats || {};
       const overall = data.overall || {};
       const hits = stats.direction_hits ?? valid.filter(item => item.direction_ok === true).length;
@@ -1455,55 +1621,129 @@
       const rows = daily.map(item => {
         const smallError = item.error_pct != null && Number.isFinite(Number(item.error_pct)) && Math.abs(Number(item.error_pct)) <= 0.010;
         const directionLabel = item.direction_ok ? (smallError ? '方向一致，绝对误差≤1bp' : '方向一致，绝对误差>1bp') : '方向不一致';
-        const direction = item.direction_ok == null
+        const pendingReturn = item.verification_status === 'pending_return';
+        const direction = pendingReturn
+          ? '<span class="verification-direction unavailable">收益核验中</span>'
+          : item.verification_status === 'missing_estimate' || item.direction_ok == null
           ? '<span class="verification-direction unavailable">当日无有效预估</span>'
           : `<span class="verification-direction" role="img" aria-label="${directionLabel}" title="${directionLabel}">${item.direction_ok ? (smallError ? '🙂' : '😐') : '🙁'}</span>`;
-        const absoluteError = item.error_pct == null || item.error_pct === '' ? null : Math.abs(Number(item.error_pct));
-        return `<article class="verification-fund"><div class="verification-fund-head"><div class="verification-name">${esc(item.name || item.code)}<div class="verification-code">${esc(item.code)}</div></div>${direction}</div><div class="verification-values"><div class="verification-value"><span>最终预估</span><strong class="${tone(item.predicted_pct)}">${verificationPercent(item.predicted_pct, true)}</strong><small class="verification-money ${tone(item.predicted_profit)}">${verificationMoney(item.predicted_profit)}</small></div><div class="verification-value"><span>实际涨跌</span><strong class="${tone(item.realized_pct)}">${verificationPercent(item.realized_pct, true)}</strong><small class="verification-money ${tone(item.realized_profit)}">${verificationMoney(item.realized_profit)}</small></div><div class="verification-value"><span>偏差</span><strong>${verificationPercent(absoluteError)}</strong><small class="verification-money">${verificationMoney(item.profit_error, false)}</small></div></div></article>`;
+        const absoluteError = pendingReturn || item.error_pct == null || item.error_pct === '' ? null : Math.abs(Number(item.error_pct));
+        const showNavReturn = item.verification_status && item.verification_status !== 'verified' && item.nav_return_pct != null;
+        const actual = showNavReturn ? item.nav_return_pct : item.realized_pct;
+        const nav = item.unit_nav != null && Number.isFinite(Number(item.unit_nav)) ? `<div class="verification-code">正式净值 ${esc(Number(item.unit_nav).toFixed(4))}</div>` : '';
+        const profitNote = item.profit_status === 'pending_dividend_ledger' ? '<div class="verification-code">收益金额核验中</div>' : '';
+        return `<article class="verification-fund"><div class="verification-fund-head"><div class="verification-name">${esc(item.name || item.code)}<div class="verification-code">${esc(item.code)}</div>${nav}${profitNote}</div>${direction}</div><div class="verification-values"><div class="verification-value"><span>最终预估</span><strong class="${tone(item.predicted_pct)}">${verificationPercent(item.predicted_pct, true)}</strong><small class="verification-money ${tone(item.predicted_profit)}">${verificationMoney(item.predicted_profit)}</small></div><div class="verification-value"><span>${showNavReturn ? '净值涨跌' : '实际涨跌'}</span><strong class="${tone(actual)}">${verificationPercent(actual, true)}</strong><small class="verification-money ${tone(item.realized_profit)}">${verificationMoney(pendingReturn ? null : item.realized_profit)}</small></div><div class="verification-value"><span>偏差</span><strong>${verificationPercent(absoluteError)}</strong><small class="verification-money">${verificationMoney(pendingReturn ? null : item.profit_error, false)}</small></div></div></article>`;
       }).join('');
       const analysis = data.ai_analysis || overall.summary;
-      const analysisHtml = analysis ? `<div class="verification-analysis">${esc(analysis)}</div>` : '';
+      const analysisHtml = data.ai_status === 'generating'
+        ? '<div class="verification-analysis" role="status" aria-live="polite" aria-busy="true"><span class="loading-spinner" aria-hidden="true"></span> 分析生成中…</div>'
+        : analysis ? `<div class="verification-analysis">${esc(analysis)}</div>` : '';
       const start = overall.start_date || dates[dates.length - 1];
       const end = overall.end_date || dates[0];
       const options = dates.map(date => `<option value="${esc(date)}"${date === day ? ' selected' : ''}>${esc(date)}</option>`).join('');
-      box.innerHTML = `<div class="verification-overall"><h3 class="verification-overall-title">累计分析</h3><p class="verification-period">${esc(start)} 至 ${esc(end)} · ${count}条最终预估</p><div class="verification-stats"><div class="verification-stat"><span>方向一致率</span><strong>${verificationPercent(accuracy)}</strong></div><div class="verification-stat"><span>平均误差</span><strong>${verificationPercent(mae)}</strong></div></div>${analysisHtml}</div><div class="verification-toolbar"><strong>每日明细</strong><select class="verification-date" aria-label="验证日期">${options}</select></div><div>${rows}</div><p class="verification-note">偏差取预估与实际之差的绝对值。</p>`;
+      box.innerHTML = `<div class="verification-overall"><h3 class="verification-overall-title">累计分析</h3><p class="verification-period">${esc(start)} 至 ${esc(end)} · ${count}条最终预估</p><div class="verification-stats"><div class="verification-stat"><span>方向一致率</span><strong>${verificationPercent(accuracy)}</strong></div><div class="verification-stat"><span>平均误差</span><strong>${verificationPercent(mae)}</strong></div></div>${analysisHtml}</div><div class="verification-toolbar"><strong>每日明细</strong><div class="verification-date-actions"><select class="verification-date" aria-label="验证日期">${options}</select>${view.manualDate ? '<button type="button" class="verification-latest">查看最新</button>' : ''}</div></div><div>${rows}</div><p class="verification-note">偏差取预估与实际之差的绝对值。</p>`;
       const dateSelect = box.querySelector('.verification-date');
       if (dateSelect) dateSelect.addEventListener('change', event => {
+        view.manualDate = event.target.value;
         renderVerification.selectedDate = event.target.value;
-        renderVerification(data);
+        renderVerification(view.lastData);
+      });
+      box.querySelector('.verification-latest')?.addEventListener('click', () => {
+        view.manualDate = '';
+        renderVerification.selectedDate = view.selectedDate;
+        renderVerification(view.lastData);
       });
     }
-    async function loadVerification() {
-      try {
-        const response = await api('/api/portfolio/fund-estimate-verifications');
-        if (!response.ok) return;
-        renderVerification(await response.json());
-      } catch (_error) { /* 网络抖动时保留上次内容 */ }
+    async function loadVerification(options = {}) {
+      const view = verificationState();
+      if (view.inFlight) {
+        if (options.queue) view.refreshQueued = true;
+        return view.inFlight;
+      }
+      const requestId = ++view.requestId;
+      const controller = new AbortController();
+      let timeout;
+      view.loading = true;
+      view.error = '';
+      if (!view.lastData) $('verificationContent').innerHTML = panelLoadingMarkup('正在加载验证分析…');
+      updateVerificationStatus();
+      view.inFlight = (async () => {
+        try {
+          const data = await Promise.race([
+            (async () => {
+              const response = await api('/api/portfolio/fund-estimate-verifications', {signal: controller.signal});
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              return response.json();
+            })(),
+            new Promise((resolve, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error('请求超时')); }, 15000); })
+          ]);
+          if (requestId !== view.requestId) return;
+          renderVerification(data);
+          if (!view.error && data?.status !== 'stale') view.lastSuccessAt = new Date().toLocaleTimeString('zh-CN', {hour12: false, timeZone: 'Asia/Shanghai'});
+        } catch (error) {
+          if (requestId !== view.requestId) return;
+          view.error = error.message || '读取失败';
+          if (!view.lastData?.items?.length) $('verificationContent').innerHTML = '';
+        } finally {
+          clearTimeout(timeout);
+          if (requestId === view.requestId) {
+            view.loading = false;
+            view.inFlight = null;
+            updateVerificationStatus();
+            scheduleVerificationPoll();
+            if (view.refreshQueued) { view.refreshQueued = false; loadVerification(); }
+          }
+        }
+      })();
+      return view.inFlight;
     }
     async function loadMarketOverview(force = false) {
       if (marketLoading || document.hidden || state.activeTab !== 'market') return;
       marketLoading = true;
+      // 验证独立读取，即使行情失败或缓存命中也能恢复并逐只更新。
+      loadVerification();
+      const controller = new AbortController();
+      let timeout;
+      let loadError = '';
+      if (!renderStockMarket.lastData) $('stockMarketContent').innerHTML = panelLoadingMarkup('正在读取股市行情…');
+      stockMarketStatus(renderStockMarket.lastData ? '正在更新行情…' : '正在读取股市行情…', true);
       try {
         const headers = marketEtag && !force ? {'If-None-Match': marketEtag} : {};
-        const response = await api('/api/portfolio/market-overview', {headers});
-        // 正式净值和验证记录独立更新，行情缓存命中时也需要刷新验证区。
-        if (response.ok || response.status === 304) loadVerification();
-        if (response.status === 304) return;
-        if (response.status === 403) { setAccessState(false); return; }
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = await response.json();
+        const result = await Promise.race([
+          (async () => {
+            const response = await api('/api/portfolio/market-overview', {headers, signal: controller.signal});
+            if (response.status === 304 || response.status === 403) return {response};
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return {response, payload: await response.json()};
+          })(),
+          new Promise((resolve, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error('请求超时')); }, 12000); })
+        ]);
+        const {response, payload} = result;
+        if (response.status === 304) {
+          if (!renderStockMarket.lastData) throw new Error('行情快照尚未取得');
+          renderStockMarket(renderStockMarket.lastData);
+          return;
+        }
+        if (response.status === 403) { setAccessState(false); throw new Error('HTTP 403'); }
         marketEtag = response.headers.get('ETag') || '';
+        if (payload.stock_market && !payload.stock_market.available) loadError = renderStockMarket.lastData ? '行情暂不可用，已保留上次行情' : '股市行情暂未取得';
         const serialized = JSON.stringify(payload);
-        if (serialized === lastMarketPayload) return;
+        if (serialized === lastMarketPayload && renderStockMarket.lastData) { renderStockMarket(renderStockMarket.lastData); return; }
         lastMarketPayload = serialized;
-        state.data = {...(state.data || {}), ...payload};
-        renderStockMarket(payload.stock_market);
+        const availableFields = Object.fromEntries(Object.entries(payload).filter(([, value]) => value != null));
+        state.data = preserveMarketSnapshot({...state.data, ...availableFields}, state.data || {});
+        renderStockMarket(state.data.stock_market);
         if (payload.bond_barometer) renderBarometer(payload.bond_barometer);
         renderHeldFundEstimates();
-      } catch (_error) {
+        if (!renderStockMarket.lastData) loadError = '股市行情暂未取得';
+      } catch (error) {
+        loadError = renderStockMarket.lastData ? '更新失败，已保留上次行情' : '股市行情加载失败';
+        if (!renderStockMarket.lastData) $('stockMarketContent').innerHTML = '';
         $('stockMarketMeta').textContent = '连接延迟，保留上次行情';
       } finally {
+        clearTimeout(timeout);
         marketLoading = false;
+        stockMarketStatus(loadError, false, Boolean(loadError));
         clearTimeout(marketPollTimer);
         if (!document.hidden && state.activeTab === 'market') marketPollTimer = setTimeout(loadMarketOverview, 30000);
       }
@@ -2557,8 +2797,12 @@
     function render(data) {
       // 必须先于任何 portfolioRows 读取：否则刷新后的首次渲染拿不到
       // positions/transactions，0 份额的在途申购产品会被过滤掉。
+      const previousMarket = state.data || {};
       state.data = data || {};
+      preserveMarketSnapshot(state.data, previousMarket);
+      data = state.data;
       if (data.bond_barometer) renderBarometer(data.bond_barometer);
+      if (data.stock_market) renderStockMarket(data.stock_market);
       const cumulative = number(data.cumulative_profit);
       const latestProfit = number(data.latest_profit);
       const currentMonthProfit = number(data.current_month_profit);
@@ -2686,7 +2930,9 @@
         }
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         setAccessState(true);
-        render(await response.json());
+        const data = await response.json();
+        render(data);
+        refreshVerificationFromDashboard(data);
       } catch (error) {
         disableWrites('组合数据读取失败，写操作已关闭。');
         setAccessState(true);
@@ -3783,11 +4029,14 @@
     setActiveTab(state.activeTab);
     updateWriteControls();
     loadDashboard();
+    loadVerification();
     setInterval(updateRefreshControls, 1000);
     setInterval(() => { if (!document.hidden && state.activeTab !== 'market') loadDashboard(); }, 60000);
     document.addEventListener('visibilitychange', () => {
       clearTimeout(marketPollTimer);
+      clearTimeout(verificationState().pollTimer);
       if (document.hidden) return;
+      loadVerification();
       if (state.activeTab === 'market') loadMarketOverview(true);
       else loadDashboard();
     });

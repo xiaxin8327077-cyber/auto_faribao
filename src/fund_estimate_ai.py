@@ -67,13 +67,13 @@ class EstimateAi:
         settings = self.store.secret_ai_settings()
         return bool(settings.get("enabled") and settings.get("api_key") and settings.get("base_url") and settings.get("model"))
 
-    def complete(self, messages: list[dict]) -> str:
+    def complete(self, messages: list[dict], max_tokens: int = 4096) -> str:
         settings = self.store.secret_ai_settings()
         if not settings.get("enabled") or not settings.get("api_key") or not settings.get("base_url"):
             raise AiUnavailable("报告提取模型未启用")
         if not settings.get("model"):
             raise AiUnavailable("请先填写模型名称")
-        status, text = self._post(settings, messages)
+        status, text = self._post(settings, messages, max_tokens)
         if status != 200:
             raise AiUnavailable(self._failure_message(status, text, settings["api_key"]))
         try:
@@ -108,9 +108,9 @@ class EstimateAi:
             return {"ok": True, "message": "连接成功"}
         return {"ok": False, "message": self._failure_message(status, text, key)}
 
-    def _post(self, settings, messages):
+    def _post(self, settings, messages, max_tokens=4096):
         try:
-            return self.poster(settings, messages, 4096)
+            return self.poster(settings, messages, max_tokens)
         except Exception as exc:
             raise AiUnavailable("无法连接该地址：" + scrub_secret(str(exc), settings.get("api_key", ""))) from exc
 

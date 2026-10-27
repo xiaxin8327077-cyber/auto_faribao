@@ -62,4 +62,12 @@ class QuoteSyncService:
         fetched_at = beijing_now().isoformat(timespec="seconds")
         for quote in quotes:
             self.repository.upsert_quote(persisted_product.id, quote, fetched_at)
+        if quotes and product.product_type is ProductType.PUBLIC_FUND:
+            # 写入已提交；验证异步读取正式库，不延迟行情和交易确认。
+            try:
+                from src.fund_estimate_service import notify_official_nav_update
+                notify_official_nav_update()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning('净值验证更新通知失败', exc_info=True)
         return sorted(quotes, key=lambda item: item.quote_date, reverse=True)

@@ -138,3 +138,130 @@ def test_verification_endpoint_requires_key_and_returns_report(tmp_path, monkeyp
     assert response.status_code == 200
     assert payload["items"] == []
     assert payload["stats"]["pairs"] == 0
+
+
+def test_verification_failure_is_not_disguised_as_empty_success(tmp_path, monkeypatch):
+    class BrokenService:
+        def verification_report(self):
+            raise RuntimeError("database temporarily unavailable")
+
+    client, _repo, _db = client_for(tmp_path, monkeypatch, BrokenService())
+    response = client.get("/api/portfolio/fund-estimate-verifications",
+                          headers={"X-Nav-Dashboard-Key": "secret"})
+    assert response.status_code == 503
+    assert response.get_json()["status"] == "error"
+
+
+def test_verification_service_unavailable_is_explicit(tmp_path, monkeypatch):
+    client, _repo, _db = client_for(tmp_path, monkeypatch, None)
+    response = client.get("/api/portfolio/fund-estimate-verifications",
+                          headers={"X-Nav-Dashboard-Key": "secret"})
+    assert response.status_code == 503
+    assert response.get_json()["status"] == "error"
+
+
+def test_verification_recovers_last_successful_report_after_read_failure(tmp_path, monkeypatch):
+    store = FundEstimateStore(tmp_path / "fund_estimation.db")
+    store.initialize()
+    saved = snapshot()
+    store.save_snapshot(saved, slot="final", source_version="v1")
+    store.save_verification(product_id=saved.product_id, code=saved.code,
+                            trade_date=saved.trade_date,
+                            snapshot_generated_at=saved.generated_at,
+                            realized_return_pct="0.04", recorded_at=saved.generated_at)
+    service = FundEstimateService(None, store, EstimateSources(), None)
+    first = service.verification_report()
+    assert len(first["items"]) == 1
+    # A fresh service must recover from durable storage, not browser/process memory.
+    restarted = FundEstimateService(None, store, EstimateSources(), None)
+    monkeypatch.setattr(store, "read_verifications", lambda: (_ for _ in ()).throw(RuntimeError("busy")))
+    recovered = restarted.verification_report()
+    assert recovered["status"] == "stale"
+    assert recovered["items"] == first["items"]
+
+
+def test_restart_empty_read_does_not_overwrite_persistent_success(tmp_path, monkeypatch):
+    store = FundEstimateStore(tmp_path / "fund_estimation.db")
+    store.initialize()
+    saved = snapshot()
+    store.save_snapshot(saved, slot="final", source_version="v1")
+    store.save_verification(product_id=saved.product_id, code=saved.code,
+                            trade_date=saved.trade_date, snapshot_generated_at=saved.generated_at,
+                            realized_return_pct="0.04", recorded_at=saved.generated_at)
+    first = FundEstimateService(None, store, EstimateSources(), None).verification_report()
+    restarted = FundEstimateService(None, store, EstimateSources(), None)
+    monkeypatch.setattr(store, 'read_verifications', lambda: [])
+    recovered = restarted.verification_report()
+    assert recovered['status'] == 'stale'
+    assert recovered['items'] == first['items']
+
+
+def test_official_notification_while_worker_busy_runs_another_pass(tmp_path):
+    from threading import Event
+    from types import SimpleNamespace
+    store = FundEstimateStore(tmp_path / 'fund_estimation.db')
+    store.initialize()
+    entered, release, second = Event(), Event(), Event()
+    service = FundEstimateService(SimpleNamespace(list_quotes=lambda: []), store, EstimateSources(), None)
+    calls = []
+
+    def sync(_now=None):
+        calls.append(1)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(3)
+        else:
+            second.set()
+
+    service.sync_official_verifications = sync
+    service.start_official_verification_sync(force=True)
+    assert entered.wait(3)
+    service.start_official_verification_sync(force=True)
+    release.set()
+    assert second.wait(3)
+    assert len(calls) >= 2
+
+
+def test_declared_dividend_does_not_compare_against_unconfirmed_ledger_money(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from decimal import Decimal
+    store = FundEstimateStore(tmp_path / 'fund_estimation.db')
+    store.initialize()
+    day = date(2026, 10, 27)
+    previous = SimpleNamespace(quote_date=date(2026, 10, 26), unit_nav=Decimal('1'))
+    current = SimpleNamespace(quote_date=day, unit_nav=Decimal('.99'))
+    repo = SimpleNamespace(get_product=lambda _: SimpleNamespace(currency='CNY'),
+        list_transactions=lambda **_: [], list_quotes=lambda _: [previous, current])
+    monkeypatch.setattr('src.portfolio_profit.calculate_latest_profit', lambda *a, **k: (day, Decimal('-10')))
+    monkeypatch.setattr('src.portfolio_profit._nav_earning_shares', lambda *a, **k: Decimal('1000'))
+    item = {'product_id': 'p', 'trade_date': day.isoformat(), 'snapshot_generated_at': 'final',
+            'predicted_pct': '1', 'realized_pct': '1', 'cash_dividend_per_share': '.02',
+            'snapshot_base_nav': '1'}
+    result = FundEstimateService(repo, store, EstimateSources(), None)._verification_amounts([item], [item])[0]
+    assert result['predicted_profit'] == '10.00'
+    assert result['realized_profit'] is None
+    assert result['profit_error'] is None
+    assert result['profit_status'] == 'pending_dividend_ledger'
+
+
+def test_revised_official_version_is_updating_even_when_today_count_unchanged(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    store = FundEstimateStore(tmp_path / 'fund_estimation.db')
+    store.initialize()
+    store.save_daily_verification({'product_id':'p', 'code':'1', 'name':'fund',
+        'trade_date':'2026-10-26', 'snapshot_generated_at':None, 'predicted_pct':None,
+        'realized_pct':None, 'error_pct':None, 'direction_ok':None})
+    store.set_watermark('official-nav-verification-meta:v1',
+        json.dumps({'processed_active_nav_version':'old', 'errors':[]}), '2026-10-27')
+    repo = SimpleNamespace(list_quotes=lambda:[], list_products=lambda:[])
+    service = FundEstimateService(repo, store, EstimateSources(), None)
+    monkeypatch.setattr(service, 'start_official_verification_sync', lambda:None)
+    monkeypatch.setattr('src.fund_estimate_verification.read_official_nav_state',
+        lambda *a: {'confirmed_nav_version':'new', 'today_confirmed_count':0, 'errors':[]})
+    report = service.verification_report()
+    assert report['status'] == 'updating'
+    assert report['today_confirmed_count'] == 0
+    assert len(report['items']) == 1
+    store.set_watermark('official-nav-verification-meta:v1',
+        json.dumps({'processed_active_nav_version':'new', 'errors':[]}), '2026-10-27')
+    assert service.verification_report()['status'] == 'ready'

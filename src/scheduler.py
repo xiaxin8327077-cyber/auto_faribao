@@ -191,6 +191,12 @@ def _estimate_due(last_slot, now):
 
 
 def _tick_fund_estimate(service, now):
+    # 已保存的正式净值每分钟独立补齐，不受盘中模型任务开关影响。
+    if hasattr(service, 'start_official_verification_sync'):
+        try:
+            service.start_official_verification_sync(now, force=True)
+        except Exception:
+            logger.warning('Official NAV verification tick failed', exc_info=True)
     try:
         service.tick(now)
         service.ensure_worker()

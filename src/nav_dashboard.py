@@ -750,6 +750,13 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
         from src.bond_barometer import read_snapshot
 
         barometer_snapshot = read_snapshot(conn)
+        # 首屏直接使用服务器持久缓存，行情页进入时即可显示最近指数。
+        try:
+            from src.stock_market import read_stock_market
+            payload['stock_market'] = read_stock_market(conn)
+        except Exception:
+            logger.warning('读取首屏股市缓存失败', exc_info=True)
+            payload['stock_market'] = None
     payload["bond_barometer"] = (
         barometer_snapshot["payload"] if barometer_snapshot else None
     )
@@ -759,6 +766,14 @@ def get_dashboard_payload(cfg=None, state_path=DEFAULT_STATE_PATH) -> dict:
         payload["fund_estimates"] = read_published_estimates(repository)
     except Exception:
         payload["fund_estimates"] = {}
+    try:
+        from src.fund_estimate_service import discover_funds
+        from src.fund_estimate_verification import read_official_nav_state
+        nav_state = read_official_nav_state(repository, discover_funds(repository), beijing_now())
+        payload['confirmed_nav_version'] = nav_state['confirmed_nav_version']
+        payload['today_confirmed_count'] = nav_state['today_confirmed_count']
+    except Exception:
+        logger.warning('读取正式净值确认版本失败', exc_info=True)
     portfolio["write_enabled"] = write_enabled
     if not write_enabled:
         portfolio["write_disabled_reason"] = "portfolio_migration_failed"
