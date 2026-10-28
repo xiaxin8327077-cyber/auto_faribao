@@ -2,6 +2,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 
+import pytest
 from flask import Flask
 
 from src.beijing_time import TZ_CN
@@ -16,6 +17,132 @@ from src.portfolio_db import SCHEMA_VERSION, PortfolioDatabase
 from src.portfolio_models import Product, ProductType, Transaction, TransactionStatus, TransactionType
 from src.portfolio_repository import PortfolioRepository
 from datetime import date
+
+
+def _timeout_verification_scenario(tmp_path, monkeypatch, *, profit_status='ready'):
+    """Exercise the actual report and analysis caches with a timed-out model."""
+    from types import SimpleNamespace
+    import src.fund_estimate_analysis as analysis_module
+    import src.fund_estimate_service as service_module
+    import src.fund_estimate_verification as verification_module
+
+    now = datetime(2026, 10, 28, 20, 0, tzinfo=TZ_CN)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+    class TimeoutAi:
+        def __init__(self):
+            self.calls = 0
+
+        def is_enabled(self):
+            return True
+
+        def complete(self, _messages, max_tokens=4096):
+            self.calls += 1
+            raise TimeoutError('model response timed out')
+
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(service_module, 'datetime', FixedDatetime)
+    monkeypatch.setattr(analysis_module, 'time', lambda: clock[0])
+    monkeypatch.setattr(service_module, 'discover_funds', lambda *_args, **_kwargs: [SimpleNamespace(product_id='p1')])
+    monkeypatch.setattr(verification_module, 'read_official_nav_state', lambda *_args: {
+        'latest_confirmed_by_product': {'p1': '2026-10-28'},
+        'confirmed_nav_version': 'v1', 'today_confirmed_count': 1, 'errors': [],
+    })
+    store = FundEstimateStore(tmp_path / 'verification-retry.db')
+    store.initialize()
+    item = {'product_id': 'p1', 'code': '000001', 'name': '测试基金', 'trade_date': '2026-10-28',
+            'predicted_pct': '0.10', 'realized_pct': '0.08', 'error_pct': '0.02',
+            'direction_ok': True, 'verification_status': 'verified', 'profit_status': profit_status}
+    store.save_daily_verification(item)
+    store.set_watermark('official-nav-verification-meta:v1',
+                        json.dumps({'processed_active_nav_version': 'v1', 'errors': []}), now.isoformat())
+    store.set_watermark('official-nav-verification-generation:v1', 'ready:1', now.isoformat())
+    repo = SimpleNamespace(list_quotes=lambda: [], list_products=lambda: [])
+    ai = TimeoutAi()
+    service = FundEstimateService(repo, store, None, None, ai=ai, bond_trading_day=lambda _day: True)
+    service._verification_amounts = lambda items, _snapshots: items
+    service.start_official_verification_sync = lambda *_args, **_kwargs: None
+    return store, service, ai, clock, item
+
+
+def _finish_analysis_worker(service):
+    worker = service._analysis._worker
+    if worker is not None:
+        worker.join(timeout=3)
+        assert not worker.is_alive()
+
+
+@pytest.mark.parametrize('restart', [False, True])
+def test_completed_verification_keeps_timeout_summary_after_retry_deadline(tmp_path, monkeypatch, restart):
+    store, service, ai, clock, _item = _timeout_verification_scenario(tmp_path, monkeypatch)
+    first = service.verification_report()
+    assert first['ai_status'] == 'generating'
+    _finish_analysis_worker(service)
+    assert ai.calls == 1
+
+    # User returns after the retry deadline without having polled after the timeout.
+    clock[0] += 120
+    if restart:
+        service = FundEstimateService(service.repository, FundEstimateStore(store.path), None, None,
+                                      ai=ai, bond_trading_day=lambda _day: True)
+        service._verification_amounts = lambda items, _snapshots: items
+        service.start_official_verification_sync = lambda *_args, **_kwargs: None
+    completed = service.verification_report()
+    _finish_analysis_worker(service)
+    assert completed['ai_status'] == 'failed'
+    assert completed['ai_analysis'] == first['ai_analysis']
+    assert completed['refresh_complete'] is True
+    assert completed['next_refresh_at'] == '2026-10-29T15:00:00+08:00'
+    assert ai.calls == 1
+
+
+def test_completed_summary_is_not_restarted_during_official_sync(tmp_path, monkeypatch):
+    store, service, ai, clock, _item = _timeout_verification_scenario(tmp_path, monkeypatch)
+    service.verification_report()
+    _finish_analysis_worker(service)
+    completed = service.verification_report()
+    assert completed['refresh_complete'] is True
+    clock[0] += 120
+    store.set_watermark('official-nav-verification-generation:v1', 'running:2', '2026-10-28')
+
+    first_update = service.verification_report()
+    second_update = service.verification_report()
+    _finish_analysis_worker(service)
+    assert first_update['status'] == second_update['status'] == 'updating'
+    assert first_update['ai_status'] == second_update['ai_status'] == 'failed'
+    assert first_update['ai_analysis'] == second_update['ai_analysis'] == completed['ai_analysis']
+    assert ai.calls == 1
+
+
+def test_unfinished_verification_may_retry_failed_ai_after_deadline(tmp_path, monkeypatch):
+    _store, service, ai, clock, _item = _timeout_verification_scenario(
+        tmp_path, monkeypatch, profit_status='pending_dividend_ledger')
+    service.verification_report()
+    _finish_analysis_worker(service)
+    clock[0] += 120
+    retry = service.verification_report()
+    _finish_analysis_worker(service)
+    assert retry['ai_status'] == 'generating'
+    assert retry['refresh_complete'] is False
+    assert ai.calls == 2
+
+
+def test_changed_verification_data_gets_new_analysis_after_completion(tmp_path, monkeypatch):
+    store, service, ai, _clock, item = _timeout_verification_scenario(tmp_path, monkeypatch)
+    service.verification_report()
+    _finish_analysis_worker(service)
+    assert service.verification_report()['refresh_complete'] is True
+
+    store.save_daily_verification({**item, 'predicted_pct': '0.30', 'error_pct': '0.22'})
+    changed = service.verification_report()
+    _finish_analysis_worker(service)
+    assert changed['ai_status'] == 'generating'
+    assert changed['refresh_complete'] is False
+    assert ai.calls == 2
 
 
 def client_for(tmp_path, monkeypatch, service):

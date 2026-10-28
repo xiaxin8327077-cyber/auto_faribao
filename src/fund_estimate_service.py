@@ -428,7 +428,7 @@ class FundEstimateService:
             frozen_analysis = previous.get('refresh_complete') is True and now < freeze_until
         except (ValueError, TypeError, AttributeError):
             frozen_analysis = False
-        analysis = self._analysis.read(items, stats, overall, retry_failed=not frozen_analysis)
+        analysis_items = items
         try:
             enriched = self._verification_amounts(items, items + rows)
         except Exception:
@@ -470,6 +470,17 @@ class FundEstimateService:
         if not items and self._official_worker is not None and self._official_worker.is_alive():
             status = 'updating'
         from src.fund_estimate_verification import verification_refresh_state
+        # A failed model call already has a current-data summary. If all fund
+        # verifications are complete, settle that summary even when nobody read
+        # the report between the timeout and the retry deadline. While official
+        # data is being synchronized, keep the summary instead of restarting AI.
+        settled_without_ai = verification_refresh_state(
+            active_identities, current_state, items, now,
+            is_trading_day=self.bond_trading_day, analysis_status='failed',
+            status=status, version_pending=version_pending)
+        retry_failed = (status == 'ready' and not frozen_analysis
+                        and not settled_without_ai['refresh_complete'])
+        analysis = self._analysis.read(analysis_items, stats, overall, retry_failed=retry_failed)
         refresh_state = verification_refresh_state(
             active_identities, current_state, items, now,
             is_trading_day=self.bond_trading_day, analysis_status=analysis.get('ai_status'),
