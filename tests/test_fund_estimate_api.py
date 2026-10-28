@@ -118,17 +118,54 @@ def test_completed_summary_is_not_restarted_during_official_sync(tmp_path, monke
     assert ai.calls == 1
 
 
-def test_unfinished_verification_may_retry_failed_ai_after_deadline(tmp_path, monkeypatch):
+@pytest.mark.parametrize('restart', [False, True])
+def test_completed_summary_remains_cached_after_next_market_close(tmp_path, monkeypatch, restart):
+    import src.fund_estimate_service as service_module
+    import src.fund_estimate_verification as verification_module
+
+    store, service, ai, clock, _item = _timeout_verification_scenario(tmp_path, monkeypatch)
+    first = service.verification_report()
+    _finish_analysis_worker(service)
+    assert service.verification_report()['refresh_complete'] is True
+    clock[0] += 24 * 60 * 60
+    later = datetime(2026, 10, 29, 15, 1, tzinfo=TZ_CN)
+
+    class NextDayDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return later.astimezone(tz) if tz else later.replace(tzinfo=None)
+
+    monkeypatch.setattr(service_module, 'datetime', NextDayDatetime)
+    monkeypatch.setattr(verification_module, 'read_official_nav_state', lambda *_args: {
+        'latest_confirmed_by_product': {'p1': '2026-10-28'},
+        'confirmed_nav_version': 'v1', 'today_confirmed_count': 0, 'errors': [],
+    })
+    if restart:
+        service = FundEstimateService(service.repository, FundEstimateStore(store.path), None, None,
+                                      ai=ai, bond_trading_day=lambda _day: True)
+        service._verification_amounts = lambda items, _snapshots: items
+        service.start_official_verification_sync = lambda *_args, **_kwargs: None
+    later_report = service.verification_report()
+    _finish_analysis_worker(service)
+    assert later_report['status'] == 'ready'
+    assert later_report['refresh_complete'] is False  # Polling resumes; the summary remains reusable.
+    assert later_report['ai_status'] == 'failed'
+    assert later_report['ai_analysis'] == first['ai_analysis']
+    assert ai.calls == 1
+
+
+def test_unfinished_verification_reuses_existing_summary_after_deadline(tmp_path, monkeypatch):
     _store, service, ai, clock, _item = _timeout_verification_scenario(
         tmp_path, monkeypatch, profit_status='pending_dividend_ledger')
-    service.verification_report()
+    first = service.verification_report()
     _finish_analysis_worker(service)
     clock[0] += 120
-    retry = service.verification_report()
+    reread = service.verification_report()
     _finish_analysis_worker(service)
-    assert retry['ai_status'] == 'generating'
-    assert retry['refresh_complete'] is False
-    assert ai.calls == 2
+    assert reread['ai_status'] == 'failed'
+    assert reread['ai_analysis'] == first['ai_analysis']
+    assert reread['refresh_complete'] is False
+    assert ai.calls == 1
 
 
 def test_changed_verification_data_gets_new_analysis_after_completion(tmp_path, monkeypatch):

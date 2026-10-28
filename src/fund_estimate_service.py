@@ -422,12 +422,6 @@ class FundEstimateService:
         overall = _verification_overall(items, stats)
         # AI 仅接收涨跌幅和误差；持仓份额及收益金额不进入模型请求或缓存键。
         now = datetime.now(TZ_CN)
-        previous = self._last_verification_report or {}
-        try:
-            freeze_until = parse_time(previous.get('next_refresh_at'))
-            frozen_analysis = previous.get('refresh_complete') is True and now < freeze_until
-        except (ValueError, TypeError, AttributeError):
-            frozen_analysis = False
         analysis_items = items
         try:
             enriched = self._verification_amounts(items, items + rows)
@@ -470,17 +464,10 @@ class FundEstimateService:
         if not items and self._official_worker is not None and self._official_worker.is_alive():
             status = 'updating'
         from src.fund_estimate_verification import verification_refresh_state
-        # A failed model call already has a current-data summary. If all fund
-        # verifications are complete, settle that summary even when nobody read
-        # the report between the timeout and the retry deadline. While official
-        # data is being synchronized, keep the summary instead of restarting AI.
-        settled_without_ai = verification_refresh_state(
-            active_identities, current_state, items, now,
-            is_trading_day=self.bond_trading_day, analysis_status='failed',
-            status=status, version_pending=version_pending)
-        retry_failed = (status == 'ready' and not frozen_analysis
-                        and not settled_without_ai['refresh_complete'])
-        analysis = self._analysis.read(analysis_items, stats, overall, retry_failed=retry_failed)
+        # Each data version already has a deterministic summary even if the
+        # model failed. Reuse it until the input data changes; resuming NAV
+        # polling must not restart analysis of the same version.
+        analysis = self._analysis.read(analysis_items, stats, overall, retry_failed=False)
         refresh_state = verification_refresh_state(
             active_identities, current_state, items, now,
             is_trading_day=self.bond_trading_day, analysis_status=analysis.get('ai_status'),
