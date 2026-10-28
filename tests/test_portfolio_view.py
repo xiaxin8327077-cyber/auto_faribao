@@ -1349,6 +1349,114 @@ def test_sip_view_exposes_fee_rate_in_percent_units(tmp_path):
     assert plan["purchase_fee_rate_percent"] == "0.006"
 
 
+def test_product_row_exposes_last_purchase_fee_rate(tmp_path):
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    for product_id, code, name in (
+        ("fund", "015736", "基金D"),
+        ("never-purchased", "015737", "基金E"),
+    ):
+        repository.add_product(
+            Product(
+                product_id,
+                "changsheng_fund",
+                code,
+                name,
+                ProductType.PUBLIC_FUND,
+            )
+        )
+    # 手动申购在前，定投申购在后：默认应取最近一次申购的费率。
+    repository.create_transaction(
+        Transaction(
+            id="manual-purchase",
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 1),
+            idempotency_key="manual-purchase",
+            amount=Decimal("1000"),
+            fee_rate=Decimal("0.00012"),
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="sip-purchase",
+            product_id="fund",
+            transaction_type=TransactionType.SIP_PURCHASE,
+            status=TransactionStatus.PENDING_CONFIRMATION,
+            trade_date=date(2026, 7, 20),
+            idempotency_key="sip-purchase",
+            amount=Decimal("1000"),
+            fee_rate=Decimal("0.00006"),
+        )
+    )
+
+    rows = {
+        row["id"]: row
+        for row in build_portfolio_payload(
+            repository,
+            as_of=date(2026, 7, 30),
+        )["products"]
+    }
+
+    assert rows["fund"]["last_purchase_fee_rate"] == "0.00006"
+    assert rows["fund"]["last_purchase_fee_rate_percent"] == "0.006"
+    assert rows["never-purchased"]["last_purchase_fee_rate"] is None
+    assert rows["never-purchased"]["last_purchase_fee_rate_percent"] is None
+
+
+def test_product_row_ignores_cancelled_purchase_fee_rate(tmp_path):
+    database = PortfolioDatabase(tmp_path / "portfolio.db")
+    database.initialize()
+    repository = PortfolioRepository(database)
+    repository.add_product(
+        Product(
+            "fund",
+            "changsheng_fund",
+            "015736",
+            "基金D",
+            ProductType.PUBLIC_FUND,
+        )
+    )
+    repository.create_transaction(
+        Transaction(
+            id="confirmed-purchase",
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.CONFIRMED,
+            trade_date=date(2026, 7, 1),
+            idempotency_key="confirmed-purchase",
+            amount=Decimal("1000"),
+            fee_rate=Decimal("0.00012"),
+        )
+    )
+    # 更晚的一笔已取消，不应覆盖之前真实申购的费率。
+    repository.create_transaction(
+        Transaction(
+            id="cancelled-purchase",
+            product_id="fund",
+            transaction_type=TransactionType.MANUAL_PURCHASE,
+            status=TransactionStatus.CANCELLED,
+            trade_date=date(2026, 7, 20),
+            idempotency_key="cancelled-purchase",
+            amount=Decimal("1000"),
+            fee_rate=Decimal("0.0009"),
+        )
+    )
+
+    rows = {
+        row["id"]: row
+        for row in build_portfolio_payload(
+            repository,
+            as_of=date(2026, 7, 30),
+        )["products"]
+    }
+
+    assert rows["fund"]["last_purchase_fee_rate"] == "0.00012"
+    assert rows["fund"]["last_purchase_fee_rate_percent"] == "0.012"
+
+
 def test_sip_view_exposes_normalized_schedule_fields(tmp_path):
     database = PortfolioDatabase(tmp_path / "portfolio.db")
     database.initialize()

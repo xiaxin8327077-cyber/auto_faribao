@@ -289,6 +289,38 @@ def _pending_purchase_amount(product, transactions):
     )
 
 
+# 已取消/冲正/失败的申购不构成"买过"，不能作为默认费率的来源。
+_PURCHASE_FEE_EXCLUDED_STATUSES = {
+    TransactionStatus.CANCELLED,
+    TransactionStatus.REVERSED,
+    TransactionStatus.FAILED,
+}
+
+
+def _last_purchase_fee_rate(transactions):
+    """最近一次申购使用的费率（小数）；无有效申购记录时返回 None。
+
+    手动新建交易用它预填费率，省去对同一产品重复录入。
+    """
+    purchases = [
+        transaction
+        for transaction in transactions
+        if transaction.transaction_type in _PURCHASE_TYPES
+        and transaction.status not in _PURCHASE_FEE_EXCLUDED_STATUSES
+        and transaction.fee_rate is not None
+    ]
+    if not purchases:
+        return None
+    purchases.sort(
+        key=lambda transaction: (
+            transaction.trade_date,
+            transaction.created_at or "",
+            transaction.id,
+        )
+    )
+    return purchases[-1].fee_rate
+
+
 def _product_row(
     repository,
     product,
@@ -382,6 +414,7 @@ def _product_row(
         ),
         _ZERO,
     )
+    last_purchase_fee_rate = _last_purchase_fee_rate(product_transactions)
     row = {
         "id": product.id,
         "product_id": product.id,
@@ -398,6 +431,12 @@ def _product_row(
         "available_shares": decimal_text(position.available_shares),
         "locked_shares": decimal_text(position.locked_shares),
         "in_transit_amount": decimal_text(in_transit_amount),
+        "last_purchase_fee_rate": _optional_decimal_text(last_purchase_fee_rate),
+        "last_purchase_fee_rate_percent": (
+            decimal_text(last_purchase_fee_rate * Decimal("100"))
+            if last_purchase_fee_rate is not None
+            else None
+        ),
         "cost_basis": decimal_text(position.cost_basis),
         "market_value": _optional_decimal_text(market_value),
         "latest_profit": _optional_decimal_text(latest_profit),

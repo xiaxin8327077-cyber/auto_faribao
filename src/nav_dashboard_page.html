@@ -2114,6 +2114,26 @@
       status.textContent = message;
       status.className = `product-search-status${tone ? ` ${tone}` : ''}`;
     }
+    function tradeFeeRateDefaultPercent(row) {
+      if (!row) return '';
+      const percent = row.last_purchase_fee_rate_percent;
+      if (percent !== undefined && percent !== null && percent !== '') return String(percent);
+      const fraction = row.last_purchase_fee_rate;
+      if (fraction === undefined || fraction === null || fraction === '') return '';
+      const parsed = Number(fraction);
+      return Number.isFinite(parsed) ? String(parsed * 100) : '';
+    }
+    function applyTradeFeeRateDefault(product) {
+      if (!product) return;
+      const form = $('tradeForm');
+      const input = $('tradeFeeRateInput');
+      const productId = String(product.id || product.product_id || '');
+      // 同一产品被重复解析（如输入框失焦触发 change）时，保留用户手工填写的费率。
+      if (form.dataset.feeRateProductId === productId && input.dataset.feeRateManual === 'true') return;
+      form.dataset.feeRateProductId = productId;
+      input.dataset.feeRateManual = 'false';
+      input.value = tradeFeeRateDefaultPercent(product);
+    }
     function syncProductSearch(scope, productType, complete = false) {
       const controls = PRODUCT_SEARCH_CONTROLS[scope];
       const input = $(controls.query);
@@ -2212,6 +2232,8 @@
       } else if (productType !== 'public_fund' && complete) {
         setProductSearchStatus(scope, '请选择候选列表中的已有产品。', 'error');
       }
+      // 新建交易选中已申购过的产品时，申购费率默认填上次费率，可手动修改。
+      if (scope === 'trade') applyTradeFeeRateDefault(product);
       return product;
     }
     async function searchProductCandidates(scope) {
@@ -3302,6 +3324,9 @@
       if (!state.writeEnabled) return;
       const form = $('tradeForm');
       form.reset();
+      // 重新打开弹窗时清除上一次会话的费率预填状态，避免沿用旧的"已手改"标记。
+      form.dataset.feeRateProductId = '';
+      $('tradeFeeRateInput').dataset.feeRateManual = 'false';
       form.dataset.prefillProductId = String(productId || '');
       const selectedProduct = portfolioRows('products', []).find(row => (
         String(rowValue(row, 'id', 'product_id', 'code')) === String(productId)
@@ -3866,6 +3891,9 @@
     }
     $('refreshButton').addEventListener('click', refresh);
     $('tradeKind').addEventListener('change', updateTradeValueField);
+    $('tradeFeeRateInput').addEventListener('input', () => {
+      $('tradeFeeRateInput').dataset.feeRateManual = 'true';
+    });
     $('tradeHoldingProduct').addEventListener('change', updateTradeRedemptionContext);
     $('tradeTimeInput').addEventListener('change', updateTradeRedemptionContext);
     $('tradeProductType').addEventListener('change', () => {

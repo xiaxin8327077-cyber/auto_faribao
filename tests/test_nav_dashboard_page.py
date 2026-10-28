@@ -1417,6 +1417,65 @@ def test_trade_form_filters_products_and_shows_type_specific_fields():
     assert "pending[1] === 'external_cash' ? '钱包'" in page
 
 
+def test_trade_fee_rate_defaults_to_last_purchase_and_keeps_manual_edit():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js is required for dashboard behavior checks')
+    html = _read_page()
+    assert 'function tradeFeeRateDefaultPercent(' in html
+    assert 'function applyTradeFeeRateDefault(' in html
+    # 接线：解析出交易产品时套用它；手改标记与重新打开弹窗时的清零都要存在。
+    assert "if (scope === 'trade') applyTradeFeeRateDefault(product);" in html
+    assert "$('tradeFeeRateInput').addEventListener('input'" in html
+    assert "form.dataset.feeRateProductId = '';" in html
+    assert "$('tradeFeeRateInput').dataset.feeRateManual = 'false';" in html
+    source = html[html.index('function tradeFeeRateDefaultPercent('):html.index('function syncProductSearch(')]
+    script = r"""
+const assert = require('node:assert/strict');
+const elements = {};
+const $ = id => elements[id] || (elements[id] = {dataset: {}, value: ''});
+SOURCE
+const form = $('tradeForm');
+const input = $('tradeFeeRateInput');
+const withHistory = {id: 'fund-1', last_purchase_fee_rate: '0.00006', last_purchase_fee_rate_percent: '0.006'};
+const withoutHistory = {id: 'fund-2', last_purchase_fee_rate: null, last_purchase_fee_rate_percent: null};
+
+// 已申购过的产品：默认填入最近一次申购费率（百分数）。
+applyTradeFeeRateDefault(withHistory);
+assert.equal(input.value, '0.006');
+assert.equal(input.dataset.feeRateManual, 'false');
+assert.equal(form.dataset.feeRateProductId, 'fund-1');
+
+// 手工改费率后，同一产品被重复解析（输入框失焦触发 change）不得覆盖。
+input.value = '0.01';
+input.dataset.feeRateManual = 'true';
+applyTradeFeeRateDefault(withHistory);
+assert.equal(input.value, '0.01');
+
+// 切换到从未申购过的产品：清空默认值，要求用户填写。
+applyTradeFeeRateDefault(withoutHistory);
+assert.equal(input.value, '');
+assert.equal(form.dataset.feeRateProductId, 'fund-2');
+
+// 切回有历史的产品：重新套用默认值。
+input.dataset.feeRateManual = 'true';
+applyTradeFeeRateDefault(withHistory);
+assert.equal(input.value, '0.006');
+assert.equal(input.dataset.feeRateManual, 'false');
+
+// 未匹配到产品（搜索中途）时保持现状，不清空已填费率。
+applyTradeFeeRateDefault(null);
+assert.equal(input.value, '0.006');
+
+// 兼容只提供小数费率的行，以及完全缺失字段的行。
+assert.equal(tradeFeeRateDefaultPercent({last_purchase_fee_rate: '0.00012'}), '0.012');
+assert.equal(tradeFeeRateDefaultPercent({}), '');
+assert.equal(tradeFeeRateDefaultPercent(null), '');
+""".replace('SOURCE', source)
+    result = subprocess.run([node, '-e', script], capture_output=True, text=True, encoding='utf-8')
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_redemption_preselects_holding_product_opened_from_positions():
     page = _read_page()
     assert "form.dataset.prefillProductId = String(productId || '');" in page
