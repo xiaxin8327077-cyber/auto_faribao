@@ -58,11 +58,13 @@ class VerificationAnalysis:
             enabled = self.ai is not None and self.ai.is_enabled()
         except Exception:
             logger.warning("读取验证点评模型配置失败", exc_info=True)
-            return {"ai_analysis": summary, "ai_status": "failed"}
+            return {"ai_analysis": summary, "ai_status": "failed", "ai_model": ""}
         if not enabled:
-            return {"ai_analysis": summary, "ai_status": "disabled"}
+            return {"ai_analysis": summary, "ai_status": "disabled", "ai_model": ""}
 
-        digest = hashlib.sha256(_json([CACHE_VERSION, payload]).encode()).hexdigest()[:24]
+        # 模型名参与缓存键：切换模型后重新生成，标注才不会指向旧模型。
+        model = self._model_name()
+        digest = hashlib.sha256(_json([CACHE_VERSION, payload, model]).encode()).hexdigest()[:24]
         key = f"verification-analysis:{CACHE_VERSION}:{digest}"
         with self._lock:
             cached = self._cache.get(key)
@@ -71,16 +73,24 @@ class VerificationAnalysis:
                 if cached is not None:
                     self._cache[key] = cached
             if cached is not None and cached["status"] == "ready":
-                return {"ai_analysis": cached["analysis"], "ai_status": "ready"}
+                return {"ai_analysis": cached["analysis"], "ai_status": "ready",
+                        "ai_model": cached.get("model") or model}
             if cached is not None and (not retry_failed or cached.get("retry_at", 0) > time()):
-                return {"ai_analysis": summary, "ai_status": "failed"}
+                return {"ai_analysis": summary, "ai_status": "failed", "ai_model": cached.get("model") or ""}
             if key != self._active and key not in self._pending:
                 attempts = int((cached or {}).get("attempts", 0)) + 1
-                self._pending[key] = (payload, summary, attempts)
+                self._pending[key] = (payload, summary, attempts, model)
             if self._worker is None:
                 self._worker = threading.Thread(target=self._work, name="fund-verification-analysis", daemon=True)
                 self._worker.start()
-        return {"ai_analysis": summary, "ai_status": "generating"}
+        return {"ai_analysis": summary, "ai_status": "generating", "ai_model": model}
+
+    def _model_name(self) -> str:
+        try:
+            getter = getattr(self.ai, "model_name", None)
+            return str(getter() or "") if callable(getter) else ""
+        except Exception:
+            return ""
 
     def _restore(self, key, payload):
         try:
@@ -107,16 +117,16 @@ class VerificationAnalysis:
                     self._worker = None
                     return
                 key = next(iter(self._pending))
-                payload, summary, attempts = self._pending.pop(key)
+                payload, summary, attempts, model = self._pending.pop(key)
                 self._active = key
             try:
                 text = self._generate(payload)
-                record = {"version": CACHE_VERSION, "status": "ready", "analysis": text}
+                record = {"version": CACHE_VERSION, "status": "ready", "analysis": text, "model": model}
             except Exception:
                 logger.warning("验证短评生成失败，保留确定性摘要并延后重试", exc_info=True)
                 delay = min(MAX_RETRY_SECONDS, RETRY_SECONDS * 2 ** min(attempts - 1, 4))
                 record = {"version": CACHE_VERSION, "status": "failed", "analysis": summary,
-                          "attempts": attempts, "retry_at": time() + delay}
+                          "attempts": attempts, "retry_at": time() + delay, "model": model}
             try:
                 self.store.set_watermark(key, _json(record), datetime.now(timezone.utc).isoformat(timespec="seconds"))
             except Exception:
@@ -313,6 +323,9 @@ def _supported_numbers(text, payload):
 
     collect(payload)
     remaining = text.replace("−", "-")
+    # 日期里的月、日不是统计数值；先移除，避免"10月29日"被当成不支持的整数。
+    remaining = re.sub(r"\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?", " ", remaining)
+    remaining = re.sub(r"(?<!\d)\d{1,2}月\d{1,2}日", " ", remaining)
     for identifier in sorted(identifiers, key=len, reverse=True):
         remaining = re.sub(r"(?<!\d)" + re.escape(identifier) + r"(?!\d)", "", remaining)
     pattern = r"(?<![\d.])([+-]?\d+(?:\.\d+)?)(?:\s*)(个百分点|[bB][pP]|[%％]|倍|个|只|条|天|日)?"

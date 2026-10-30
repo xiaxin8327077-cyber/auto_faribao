@@ -534,29 +534,77 @@ class FundEstimateService:
         return result
 
     def save_model_settings(self, body: dict, now: datetime) -> dict:
-        base_url = chat_completions_url(str(body.get("base_url") or "")) if str(body.get("base_url") or "").strip() else ""
-        if base_url:
-            base_url = str(body.get("base_url") or "").strip()
-            chat_completions_url(base_url)
-        api_key = body.get("api_key")
-        if api_key is not None:
-            api_key = str(api_key)
+        stamp = iso_now(now)
+        explicit_profile = isinstance(body.get("profile"), dict)
+        profile = body.get("profile") if explicit_profile else None
+        if profile is None and any(
+            key in body for key in ("base_url", "model", "api_key", "clear_api_key", "profile_id")
+        ):
+            # 旧页面把单个配置平铺在请求体里，继续按同一套校验处理。
+            profile = {
+                "id": body.get("profile_id"),
+                "label": body.get("label") or "",
+                "base_url": body.get("base_url") or "",
+                "model": body.get("model") or "",
+                "api_key": body.get("api_key"),
+                "clear_api_key": bool(body.get("clear_api_key")),
+            }
+        active_profile_id = body.get("active_profile_id")
+        if active_profile_id is not None:
+            active_profile_id = int(active_profile_id)
         return self.store.save_ai_settings(
             enabled=bool(body.get("enabled")),
             jobs_enabled=bool(body.get("jobs_enabled")),
-            base_url=str(body.get("base_url") or "").strip(),
-            model=str(body.get("model") or "").strip(),
-            api_key=api_key,
-            clear_api_key=bool(body.get("clear_api_key")),
-            updated_at=iso_now(now),
+            updated_at=stamp,
+            active_profile_id=active_profile_id,
+            create_profile=explicit_profile and (profile or {}).get("id") is None,
+            **_profile_payload(profile),
         )
 
+    def delete_model_profile(self, profile_id: int, now: datetime) -> dict:
+        return self.store.delete_ai_profile(int(profile_id), iso_now(now))
+
+    def profile_api_key(self, profile_id: int) -> dict:
+        """仅在用户点「复制」时读取原始密钥，常规列表接口不返回。"""
+        profile = self.store.ai_profile_secret(int(profile_id))
+        if profile is None:
+            raise AiSettingsError("模型配置不存在")
+        return {"profile_id": profile["id"], "api_key": profile["api_key"]}
+
+    def list_model_options(self, body: dict) -> dict:
+        profile = self._profile_for_request(body)
+        base_url = str(body.get("base_url") or (profile or {}).get("base_url") or "").strip()
+        api_key = str(body.get("api_key") or "").strip()
+        if not api_key:
+            if profile is not None:
+                api_key = profile.get("api_key") or ""
+            else:
+                stored = self.store.secret_ai_settings()
+                # 只在同一接口地址复用已保存密钥，避免把密钥发往任意地址。
+                if base_url and stored.get("base_url"):
+                    if chat_completions_url(stored["base_url"]) == chat_completions_url(base_url):
+                        api_key = stored.get("api_key") or ""
+        return self.ai.list_models(base_url, api_key)
+
     def test_model_connection(self, body: dict) -> dict:
+        profile = self._profile_for_request(body)
         stored = self.store.secret_ai_settings()
-        base_url = str(body.get("base_url") or stored.get("base_url") or "")
-        model = str(body.get("model") or stored.get("model") or "")
-        api_key = str(body.get("api_key") or "") or stored.get("api_key") or ""
+        base_url = str(body.get("base_url") or (profile or {}).get("base_url") or stored.get("base_url") or "")
+        model = str(body.get("model") or (profile or {}).get("model") or stored.get("model") or "")
+        api_key = str(body.get("api_key") or "") or (profile or {}).get("api_key") or stored.get("api_key") or ""
         return self.ai.test_connection(base_url, api_key, model)
+
+    def _profile_for_request(self, body: dict) -> dict | None:
+        """请求可指定已保存配置或复制来源，用于读取其密钥做测试/拉列表。"""
+        for key in ("profile_id", "copy_from_profile_id"):
+            value = body.get(key)
+            if value is None:
+                continue
+            profile = self.store.ai_profile_secret(int(value))
+            if profile is None:
+                raise AiSettingsError("模型配置不存在")
+            return profile
+        return None
 
     def status(self) -> dict:
         jobs = self.store.list_jobs()
@@ -824,6 +872,28 @@ def _barometer_payload(repository):
 
 def _identity_payload(identity: FundIdentity) -> dict:
     return identity.to_dict()
+
+
+def _profile_payload(profile: dict | None) -> dict:
+    """把页面提交的模型配置转成存储层参数，并复用同一套地址校验。"""
+    if profile is None:
+        return {}
+    base_url = str(profile.get("base_url") or "").strip()
+    if base_url:
+        chat_completions_url(base_url)
+    profile_id = profile.get("id")
+    api_key = profile.get("api_key")
+    copy_from = profile.get("copy_from_profile_id")
+    return {
+        "label": str(profile.get("label") or "").strip(),
+        "base_url": base_url,
+        "model": str(profile.get("model") or "").strip(),
+        "api_key": None if api_key is None else str(api_key),
+        "clear_api_key": bool(profile.get("clear_api_key")),
+        "profile_id": None if profile_id is None else int(profile_id),
+        "activate": bool(profile.get("activate", True)),
+        "copy_from_profile_id": None if copy_from is None else int(copy_from),
+    }
 
 
 def _identity_from_payload(payload: dict) -> FundIdentity:

@@ -278,6 +278,164 @@ def test_model_settings_round_trip_hides_key_and_tests_connection(tmp_path, monk
     assert "QWEN_API_KEY" not in source
 
 
+def test_model_profiles_support_switch_copy_discovery_and_key_read(tmp_path, monkeypatch):
+    store = FundEstimateStore(tmp_path / "fund_estimation.db")
+    store.initialize()
+    seen = {}
+
+    def lister(settings):
+        seen["url"] = settings["base_url"]
+        seen["key"] = settings["api_key"]
+        return 200, json.dumps({"data": [{"id": "reader-b"}, {"id": "reader-a"}]})
+
+    from src.fund_estimate_ai import EstimateAi
+
+    service = FundEstimateService(
+        None, store, EstimateSources(), ProfileService(store, MemoryDocuments()),
+        ai=EstimateAi(store, model_lister=lister),
+    )
+    client, repository, _db = client_for(tmp_path, monkeypatch, service)
+    service.repository = repository
+    headers = {"X-Nav-Dashboard-Key": "secret", "Content-Type": "application/json"}
+
+    first = client.put(
+        "/api/portfolio/fund-estimate-model-settings", headers=headers,
+        data=json.dumps({
+            "enabled": True, "jobs_enabled": False,
+            "profile": {
+                "label": "LongCat", "base_url": "https://api.longcat.chat/openai",
+                "model": "LongCat-2.5-Preview", "api_key": "sk-first-secret",
+            },
+        }),
+    )
+    assert first.status_code == 200
+    view = first.get_json()
+    assert len(view["profiles"]) == 1
+    first_id = view["profiles"][0]["id"]
+    assert view["active_profile_id"] == first_id
+    # 列表只给脱敏值，完整密钥不出现在常规响应里。
+    assert "sk-first-secret" not in json.dumps(view)
+    assert view["profiles"][0]["api_key_hint"] == "····cret"
+
+    second = client.put(
+        "/api/portfolio/fund-estimate-model-settings", headers=headers,
+        data=json.dumps({
+            "enabled": True, "jobs_enabled": False,
+            "profile": {
+                "label": "百炼", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": "qwen3.7-plus", "api_key": "sk-second-secret",
+            },
+        }),
+    )
+    view = second.get_json()
+    assert [item["label"] for item in view["profiles"]] == ["LongCat", "百炼"]
+    second_id = view["profiles"][1]["id"]
+    assert view["active_profile_id"] == second_id
+
+    switched = client.put(
+        "/api/portfolio/fund-estimate-model-settings", headers=headers,
+        data=json.dumps({"enabled": True, "jobs_enabled": False, "active_profile_id": first_id}),
+    )
+    assert switched.get_json()["active_profile_id"] == first_id
+    assert store.secret_ai_settings()["api_key"] == "sk-first-secret"
+
+    # 手动复制：单独接口按需返回原始密钥，且禁止缓存。
+    key_response = client.get(
+        f"/api/portfolio/fund-estimate-model-settings/profiles/{second_id}/key", headers=headers,
+    )
+    assert key_response.status_code == 200
+    assert key_response.get_json()["api_key"] == "sk-second-secret"
+    assert key_response.headers["Cache-Control"] == "private, no-store"
+    assert client.get(
+        f"/api/portfolio/fund-estimate-model-settings/profiles/{second_id}/key",
+    ).status_code == 403
+
+    options = client.post(
+        "/api/portfolio/fund-estimate-model-settings/models", headers=headers,
+        data=json.dumps({"base_url": "https://api.longcat.chat/openai"}),
+    )
+    assert options.status_code == 200
+    assert options.get_json()["ok"] is True
+    assert options.get_json()["models"] == ["reader-a", "reader-b"]
+    assert seen == {"url": "https://api.longcat.chat/openai/v1/models", "key": "sk-first-secret"}
+
+    # 换地址且未提供密钥时不能把已保存密钥发出去。
+    seen.clear()
+    blocked = client.post(
+        "/api/portfolio/fund-estimate-model-settings/models", headers=headers,
+        data=json.dumps({"base_url": "https://other.example.test/v1"}),
+    )
+    assert blocked.get_json()["ok"] is False
+    assert "API Key" in blocked.get_json()["message"]
+    assert seen == {}
+
+    # 新配置可以从已有配置复制，密钥由服务端复制，不经过页面。
+    copied = client.put(
+        "/api/portfolio/fund-estimate-model-settings", headers=headers,
+        data=json.dumps({
+            "enabled": True, "jobs_enabled": False,
+            "profile": {
+                "label": "副本", "base_url": "https://api.longcat.chat/openai",
+                "model": "LongCat-2.5-Preview", "copy_from_profile_id": first_id,
+            },
+        }),
+    )
+    assert copied.status_code == 200
+    copied_view = copied.get_json()
+    assert len(copied_view["profiles"]) == 3
+    copied_id = copied_view["active_profile_id"]
+    assert store.ai_profile_secret(copied_id)["api_key"] == "sk-first-secret"
+    assert "sk-first-secret" not in json.dumps(copied_view)
+
+    deleted = client.delete(
+        f"/api/portfolio/fund-estimate-model-settings/profiles/{first_id}", headers=headers,
+    )
+    assert deleted.status_code == 200
+    assert first_id not in [item["id"] for item in deleted.get_json()["profiles"]]
+
+
+def test_connection_uses_selected_profile_key(tmp_path, monkeypatch):
+    store = FundEstimateStore(tmp_path / "fund_estimation.db")
+    store.initialize()
+    seen = {}
+
+    def poster(settings, messages, max_tokens):
+        seen["key"] = settings["api_key"]
+        seen["url"] = settings["base_url"]
+        return 200, json.dumps({"choices": [{"message": {"content": "pong"}}]})
+
+    from src.fund_estimate_ai import EstimateAi
+
+    service = FundEstimateService(
+        None, store, EstimateSources(), ProfileService(store, MemoryDocuments()),
+        ai=EstimateAi(store, poster=poster),
+    )
+    client, repository, _db = client_for(tmp_path, monkeypatch, service)
+    service.repository = repository
+    headers = {"X-Nav-Dashboard-Key": "secret", "Content-Type": "application/json"}
+    first = client.put(
+        "/api/portfolio/fund-estimate-model-settings", headers=headers,
+        data=json.dumps({"profile": {"label": "A", "base_url": "https://a.example.test/v1", "model": "m-a", "api_key": "key-a"}}),
+    ).get_json()
+    first_id = first["profiles"][0]["id"]
+    second = client.put(
+        "/api/portfolio/fund-estimate-model-settings", headers=headers,
+        data=json.dumps({"profile": {"label": "B", "base_url": "https://b.example.test/v1", "model": "m-b", "api_key": "key-b"}}),
+    ).get_json()
+    second_id = second["profiles"][1]["id"]
+    client.put(
+        "/api/portfolio/fund-estimate-model-settings", headers=headers,
+        data=json.dumps({"active_profile_id": first_id}),
+    )
+    tested = client.post(
+        "/api/portfolio/fund-estimate-model-settings/test", headers=headers,
+        data=json.dumps({"base_url": "https://b.example.test/v1", "model": "m-b", "profile_id": second_id}),
+    )
+    assert tested.get_json()["ok"] is True
+    # 编辑非激活配置时，测试连接必须用该配置自己的密钥。
+    assert seen == {"key": "key-b", "url": "https://b.example.test/v1/chat/completions"}
+
+
 def test_estimate_fields_do_not_change_confirmed_profit(tmp_path, monkeypatch):
     assert SCHEMA_VERSION == 7
     store = FundEstimateStore(tmp_path / "fund_estimation.db")

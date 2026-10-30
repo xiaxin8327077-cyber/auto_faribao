@@ -168,6 +168,15 @@ CREATE TABLE IF NOT EXISTS ai_model_settings (
     api_key TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_model_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    api_key TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS curve_level_versions (
     source_family TEXT NOT NULL,
     as_of TEXT NOT NULL,
@@ -204,6 +213,9 @@ class FundEstimateStore:
             columns = {row[1] for row in conn.execute('PRAGMA table_info(factor_observations)')}
             if 'mapping_evidence_json' not in columns:
                 conn.execute("ALTER TABLE factor_observations ADD COLUMN mapping_evidence_json TEXT NOT NULL DEFAULT 'null'")
+            settings_columns = {row[1] for row in conn.execute('PRAGMA table_info(ai_model_settings)')}
+            if 'active_profile_id' not in settings_columns:
+                conn.execute("ALTER TABLE ai_model_settings ADD COLUMN active_profile_id INTEGER")
             row = conn.execute(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version'"
             ).fetchone()
@@ -223,6 +235,73 @@ class FundEstimateStore:
                    ON CONFLICT(id) DO NOTHING""",
                 (iso_now(datetime.now(TZ_CN)),),
             )
+            self._migrate_legacy_ai_settings(conn)
+
+    @staticmethod
+    def _migrate_legacy_ai_settings(conn) -> None:
+        """把旧的单行配置转成一条可激活的模型配置；重复执行不产生重复行。"""
+        settings = conn.execute(
+            """SELECT enabled, jobs_enabled, base_url, model, api_key, active_profile_id
+               FROM ai_model_settings WHERE id = 1"""
+        ).fetchone()
+        if settings is None:
+            return
+        stamp = iso_now(datetime.now(TZ_CN))
+        count = conn.execute("SELECT COUNT(*) FROM ai_model_profiles").fetchone()[0]
+        if count:
+            if settings["active_profile_id"] is not None:
+                exists = conn.execute(
+                    "SELECT 1 FROM ai_model_profiles WHERE id = ?",
+                    (settings["active_profile_id"],),
+                ).fetchone()
+                if exists is None:
+                    conn.execute("UPDATE ai_model_settings SET active_profile_id = NULL WHERE id = 1")
+                    settings = conn.execute(
+                        "SELECT active_profile_id FROM ai_model_settings WHERE id = 1"
+                    ).fetchone()
+            if settings["active_profile_id"] is None:
+                latest = conn.execute(
+                    "SELECT id FROM ai_model_profiles ORDER BY updated_at DESC, id DESC LIMIT 1"
+                ).fetchone()
+                conn.execute(
+                    "UPDATE ai_model_settings SET active_profile_id = ? WHERE id = 1",
+                    (latest["id"],),
+                )
+                FundEstimateStore._sync_legacy_fields(conn, latest["id"])
+            return
+        if not (settings["base_url"] or settings["model"] or settings["api_key"]):
+            return
+        cursor = conn.execute(
+            """INSERT INTO ai_model_profiles (label, base_url, model, api_key, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("默认配置", settings["base_url"], settings["model"], settings["api_key"], stamp, stamp),
+        )
+        conn.execute(
+            "UPDATE ai_model_settings SET active_profile_id = ? WHERE id = 1",
+            (cursor.lastrowid,),
+        )
+
+    @staticmethod
+    def _sync_legacy_fields(conn, profile_id) -> None:
+        """镜像激活配置到旧字段，让回退读取和旧调用方看到同一份数据。"""
+        if profile_id is None:
+            conn.execute(
+                "UPDATE ai_model_settings SET base_url = '', model = '', api_key = '' WHERE id = 1"
+            )
+            return
+        profile = conn.execute(
+            "SELECT base_url, model, api_key FROM ai_model_profiles WHERE id = ?",
+            (profile_id,),
+        ).fetchone()
+        if profile is None:
+            conn.execute(
+                "UPDATE ai_model_settings SET active_profile_id = NULL, base_url = '', model = '', api_key = '' WHERE id = 1"
+            )
+            return
+        conn.execute(
+            "UPDATE ai_model_settings SET base_url = ?, model = ?, api_key = ? WHERE id = 1",
+            (profile["base_url"], profile["model"], profile["api_key"]),
+        )
 
     def backup(self, dest) -> None:
         dest = Path(dest)
@@ -851,73 +930,270 @@ class FundEstimateStore:
     def public_ai_settings(self) -> dict:
         with self._connect() as conn:
             row = conn.execute(
-                """SELECT enabled, jobs_enabled, base_url, model,
-                          CASE WHEN api_key = '' THEN 0 ELSE 1 END AS configured,
-                          api_key
-                   FROM ai_model_settings WHERE id = 1"""
+                "SELECT enabled, jobs_enabled, base_url, model, api_key, active_profile_id "
+                "FROM ai_model_settings WHERE id = 1"
             ).fetchone()
+            profiles = conn.execute(
+                "SELECT id, label, base_url, model, api_key FROM ai_model_profiles ORDER BY id"
+            ).fetchall()
         if row is None:
             return _empty_settings()
-        hint = _key_hint(row["api_key"])
+        active_id = row["active_profile_id"]
+        views = [
+            {
+                "id": item["id"],
+                "label": item["label"],
+                "base_url": item["base_url"],
+                "model": item["model"],
+                # 页面只显示脱敏值；原始密钥通过单独接口按需读取，用于手动复制。
+                "api_key_configured": bool(item["api_key"]),
+                "api_key_hint": _key_hint(item["api_key"]),
+                "active": item["id"] == active_id,
+            }
+            for item in profiles
+        ]
+        active = next((item for item in views if item["active"]), None)
         return {
             "available": True,
             "enabled": bool(row["enabled"]),
             "jobs_enabled": bool(row["jobs_enabled"]),
-            "base_url": row["base_url"],
-            "model": row["model"],
-            "api_key_configured": bool(row["configured"]),
-            "api_key_hint": hint,
+            "active_profile_id": active_id,
+            "profiles": views,
+            # 顶层字段是激活配置的镜像，保留给只认识单配置的旧页面。
+            "base_url": active["base_url"] if active else row["base_url"],
+            "model": active["model"] if active else row["model"],
+            "api_key_configured": active["api_key_configured"] if active else bool(row["api_key"]),
+            "api_key_hint": active["api_key_hint"] if active else _key_hint(row["api_key"]),
         }
 
     def secret_ai_settings(self) -> dict:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT enabled, jobs_enabled, base_url, model, api_key FROM ai_model_settings WHERE id = 1"
+                "SELECT enabled, jobs_enabled, base_url, model, api_key, active_profile_id "
+                "FROM ai_model_settings WHERE id = 1"
             ).fetchone()
+            active = None
+            if row is not None and row["active_profile_id"] is not None:
+                active = conn.execute(
+                    "SELECT id, base_url, model, api_key FROM ai_model_profiles WHERE id = ?",
+                    (row["active_profile_id"],),
+                ).fetchone()
         if row is None:
-            return {**_empty_settings(), "api_key": ""}
+            return {**_empty_settings(), "api_key": "", "profile_id": None}
         return {
             "enabled": bool(row["enabled"]),
             "jobs_enabled": bool(row["jobs_enabled"]),
-            "base_url": row["base_url"],
-            "model": row["model"],
-            "api_key": row["api_key"],
+            "base_url": active["base_url"] if active else row["base_url"],
+            "model": active["model"] if active else row["model"],
+            "api_key": active["api_key"] if active else row["api_key"],
+            "profile_id": None if active is None else active["id"],
         }
+
+    def ai_profile_secret(self, profile_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, label, base_url, model, api_key FROM ai_model_profiles WHERE id = ?",
+                (profile_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
 
     def save_ai_settings(
         self,
         *,
         enabled: bool,
         jobs_enabled: bool,
+        base_url: str = "",
+        model: str = "",
+        api_key: str | None = None,
+        clear_api_key: bool = False,
+        updated_at: str,
+        label: str = "",
+        profile_id: int | None = None,
+        active_profile_id: int | None = None,
+        activate: bool = True,
+        create_profile: bool = False,
+        copy_from_profile_id: int | None = None,
+    ) -> dict:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE ai_model_settings SET enabled = ?, jobs_enabled = ?, updated_at = ? WHERE id = 1",
+                (int(enabled), int(jobs_enabled), updated_at),
+            )
+            if active_profile_id is not None:
+                self._activate_profile(conn, active_profile_id, updated_at)
+            has_profile_payload = bool(
+                profile_id is not None
+                or str(base_url or "").strip()
+                or str(model or "").strip()
+                or api_key
+                or clear_api_key
+                or copy_from_profile_id is not None
+            )
+            if has_profile_payload:
+                self._upsert_profile(
+                    conn,
+                    profile_id=profile_id,
+                    label=label,
+                    base_url=base_url,
+                    model=model,
+                    api_key=api_key,
+                    clear_api_key=clear_api_key,
+                    updated_at=updated_at,
+                    activate=activate,
+                    update_active=not create_profile,
+                    copy_from_profile_id=copy_from_profile_id,
+                )
+        return self.public_ai_settings()
+
+    def save_ai_profile(
+        self,
+        *,
+        label: str,
         base_url: str,
         model: str,
         api_key: str | None,
         clear_api_key: bool,
         updated_at: str,
+        profile_id: int | None = None,
+        activate: bool = True,
     ) -> dict:
         with self._lock, self._connect() as conn:
-            current = conn.execute(
-                "SELECT api_key FROM ai_model_settings WHERE id = 1"
+            saved_id = self._upsert_profile(
+                conn,
+                profile_id=profile_id,
+                label=label,
+                base_url=base_url,
+                model=model,
+                api_key=api_key,
+                clear_api_key=clear_api_key,
+                updated_at=updated_at,
+                activate=activate,
+                update_active=False,
+            )
+            row = conn.execute(
+                "SELECT id, label, base_url, model, api_key FROM ai_model_profiles WHERE id = ?",
+                (saved_id,),
             ).fetchone()
-            stored = "" if current is None else current["api_key"]
+            active_id = conn.execute(
+                "SELECT active_profile_id FROM ai_model_settings WHERE id = 1"
+            ).fetchone()["active_profile_id"]
+        return {
+            "id": row["id"],
+            "label": row["label"],
+            "base_url": row["base_url"],
+            "model": row["model"],
+            "api_key_configured": bool(row["api_key"]),
+            "api_key_hint": _key_hint(row["api_key"]),
+            "active": row["id"] == active_id,
+        }
+
+    def activate_ai_profile(self, profile_id: int, updated_at: str) -> dict:
+        with self._lock, self._connect() as conn:
+            self._activate_profile(conn, profile_id, updated_at)
+        return self.public_ai_settings()
+
+    def delete_ai_profile(self, profile_id: int, updated_at: str) -> dict:
+        with self._lock, self._connect() as conn:
+            current = conn.execute(
+                "SELECT active_profile_id FROM ai_model_settings WHERE id = 1"
+            ).fetchone()
+            conn.execute("DELETE FROM ai_model_profiles WHERE id = ?", (profile_id,))
+            if current is not None and current["active_profile_id"] == profile_id:
+                replacement = conn.execute(
+                    "SELECT id FROM ai_model_profiles ORDER BY updated_at DESC, id DESC LIMIT 1"
+                ).fetchone()
+                new_active = None if replacement is None else replacement["id"]
+                conn.execute(
+                    "UPDATE ai_model_settings SET active_profile_id = ?, updated_at = ? WHERE id = 1",
+                    (new_active, updated_at),
+                )
+                self._sync_legacy_fields(conn, new_active)
+        return self.public_ai_settings()
+
+    def _upsert_profile(
+        self,
+        conn,
+        *,
+        profile_id: int | None,
+        label: str,
+        base_url: str,
+        model: str,
+        api_key: str | None,
+        clear_api_key: bool,
+        updated_at: str,
+        activate: bool,
+        update_active: bool,
+        copy_from_profile_id: int | None = None,
+    ) -> int:
+        current = None
+        if profile_id is not None:
+            current = conn.execute(
+                "SELECT id, api_key FROM ai_model_profiles WHERE id = ?", (profile_id,)
+            ).fetchone()
+            if current is None:
+                raise ValueError("模型配置不存在")
+        elif update_active:
+            active_id = conn.execute(
+                "SELECT active_profile_id FROM ai_model_settings WHERE id = 1"
+            ).fetchone()["active_profile_id"]
+            if active_id is not None:
+                current = conn.execute(
+                    "SELECT id, api_key FROM ai_model_profiles WHERE id = ?", (active_id,)
+                ).fetchone()
+        if current is None:
+            stored = ""
+            if not clear_api_key:
+                if api_key:
+                    stored = str(api_key)
+                elif copy_from_profile_id is not None:
+                    # 从已有配置新建时由服务端复制密钥，明文不经过页面。
+                    source = conn.execute(
+                        "SELECT api_key FROM ai_model_profiles WHERE id = ?",
+                        (copy_from_profile_id,),
+                    ).fetchone()
+                    stored = "" if source is None else source["api_key"]
+            cursor = conn.execute(
+                """INSERT INTO ai_model_profiles (label, base_url, model, api_key, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (label, base_url, model, stored, updated_at, updated_at),
+            )
+            saved_id = cursor.lastrowid
+        else:
+            stored = current["api_key"]
             if clear_api_key:
                 stored = ""
             elif api_key:
                 stored = api_key
             conn.execute(
-                """INSERT INTO ai_model_settings
-                   (id, enabled, jobs_enabled, base_url, model, api_key, updated_at)
-                   VALUES (1, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       enabled = excluded.enabled,
-                       jobs_enabled = excluded.jobs_enabled,
-                       base_url = excluded.base_url,
-                       model = excluded.model,
-                       api_key = excluded.api_key,
-                       updated_at = excluded.updated_at""",
-                (int(enabled), int(jobs_enabled), base_url, model, stored, updated_at),
+                """UPDATE ai_model_profiles
+                   SET label = ?, base_url = ?, model = ?, api_key = ?, updated_at = ?
+                   WHERE id = ?""",
+                (label, base_url, model, stored, updated_at, current["id"]),
             )
-        return self.public_ai_settings()
+            saved_id = current["id"]
+        active_id = conn.execute(
+            "SELECT active_profile_id FROM ai_model_settings WHERE id = 1"
+        ).fetchone()["active_profile_id"]
+        # 第一套配置默认生效；显式 activate 时切换到刚保存的配置。
+        if activate or active_id is None:
+            conn.execute(
+                "UPDATE ai_model_settings SET active_profile_id = ?, updated_at = ? WHERE id = 1",
+                (saved_id, updated_at),
+            )
+            self._sync_legacy_fields(conn, saved_id)
+        return saved_id
+
+    def _activate_profile(self, conn, profile_id: int, updated_at: str) -> None:
+        exists = conn.execute(
+            "SELECT 1 FROM ai_model_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+        if exists is None:
+            raise ValueError("模型配置不存在")
+        conn.execute(
+            "UPDATE ai_model_settings SET active_profile_id = ?, updated_at = ? WHERE id = 1",
+            (profile_id, updated_at),
+        )
+        self._sync_legacy_fields(conn, profile_id)
 
     def count_rows(self, table: str) -> int:
         if not table.isidentifier():
@@ -931,6 +1207,8 @@ def _empty_settings() -> dict:
         "available": True,
         "enabled": False,
         "jobs_enabled": False,
+        "active_profile_id": None,
+        "profiles": [],
         "base_url": "",
         "model": "",
         "api_key_configured": False,

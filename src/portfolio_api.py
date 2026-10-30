@@ -2306,6 +2306,48 @@ def create_portfolio_blueprint(runtime, provider_factory, estimate_service=None)
         except Exception as exc:
             return jsonify({"ok": False, "message": _safe_settings_error(exc, body)})
 
+    @blueprint.post("/api/portfolio/fund-estimate-model-settings/models")
+    def fund_estimate_model_options():
+        guard = read_guard()
+        if guard:
+            return guard
+        if estimate_service is None:
+            return _error("estimate_unavailable", "估值模块未初始化", 503)
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(estimate_service.list_model_options(body))
+        except Exception as exc:
+            return jsonify({"ok": False, "models": [], "message": _safe_settings_error(exc, body)})
+
+    @blueprint.delete("/api/portfolio/fund-estimate-model-settings/profiles/<int:profile_id>")
+    def delete_fund_estimate_model_profile(profile_id):
+        guard = read_guard()
+        if guard:
+            return guard
+        if estimate_service is None:
+            return _error("estimate_unavailable", "估值模块未初始化", 503)
+        try:
+            saved = estimate_service.delete_model_profile(profile_id, beijing_now())
+        except Exception as exc:
+            return _error("estimate_settings_invalid", _safe_settings_error(exc, {}), 400)
+        saved["status"] = estimate_service.status()
+        return jsonify(saved)
+
+    @blueprint.get("/api/portfolio/fund-estimate-model-settings/profiles/<int:profile_id>/key")
+    def fund_estimate_model_profile_key(profile_id):
+        guard = read_guard()
+        if guard:
+            return guard
+        if estimate_service is None:
+            return _error("estimate_unavailable", "估值模块未初始化", 503)
+        try:
+            payload = estimate_service.profile_api_key(profile_id)
+        except Exception as exc:
+            return _error("estimate_settings_invalid", _safe_settings_error(exc, {}), 404)
+        response = jsonify(payload)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     return blueprint
 
 
@@ -2314,6 +2356,8 @@ def _empty_model_settings() -> dict:
         "available": False,
         "enabled": False,
         "jobs_enabled": False,
+        "active_profile_id": None,
+        "profiles": [],
         "base_url": "",
         "model": "",
         "api_key_configured": False,

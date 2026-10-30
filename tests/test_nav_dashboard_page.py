@@ -2159,8 +2159,40 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert 'id="aiBaseUrl"' in html
     assert 'id="aiApiKey"' in html
     assert 'id="aiTestButton"' in html
+    assert 'id="modelProfileList"' in html
+    assert 'id="aiNewProfileButton"' in html
+    assert 'id="aiFetchModelsButton"' in html
+    assert 'id="aiCopyKeyButton"' in html
+    assert 'class="field-with-action"' in html
+    assert 'id="aiCopyFromProfile"' in html
+    assert 'id="aiModelOptions"' in html
+    assert 'id="aiModelChoices"' in html
+    assert 'id="aiDeleteButton"' in html
+    assert 'class="settings-check-row"' in html
+    assert '<label class="settings-check"><input id="estimateJobsEnabled" type="checkbox">启用盘中预估后台任务</label>' in html
+    assert '<label class="settings-check"><input id="aiEnabled" type="checkbox">启用报告提取</label>' in html
+    assert "/api/portfolio/fund-estimate-model-settings/models" in html
+    assert "/profiles/${id}/key" in html
+    assert "function copyProfileKey" in html
+    assert "function renderModelProfiles" in html
+    assert "function renderModelChoices" in html
+    assert "function closeProfileForm" in html
+    assert 'id="modelDialog"' in html
+    assert 'id="modelDialogTitle"' in html
+    assert 'id="aiDialogStatus"' in html
+    assert 'data-delete-profile=' in html
+    assert 'id="aiTestButton" type="button">测试</button>' in html
+    assert "notifyModelSettings('密钥已复制', false)" in html
+    # 配置卡片只显示配置名和模型名，不再显示地址与密钥脱敏值。
+    card_render = html[html.index("function renderModelProfiles"):html.index("function renderCopyFromOptions")]
+    assert "api_key_hint" not in card_render
+    assert "base_url" not in card_render
+    # 页面数据轮询重绘时不能重置正在编辑的模型表单。
+    assert "if (tab === 'settings' && !modelSettingsLoaded) loadModelSettings();" in html
     assert "status.textContent = message || '';" in html
     assert "function estimateNotePieces" in html
+    assert "verification-analysis-model" in html
+    assert "分析模型：" in html
     market = html[html.index('id="marketPanel"'): html.index('id="positionsPanel"')]
     assert "持仓涨跌幅预估" in market
     assert "预估涨跌幅" in market

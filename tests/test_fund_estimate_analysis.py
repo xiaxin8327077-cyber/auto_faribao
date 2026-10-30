@@ -48,12 +48,16 @@ class RecordingAi:
         self.replies = list(replies or [SHORT_REVIEW])
         self.release = release
         self.enabled = enabled
+        self.model = "test-model"
         self.calls = []
         self.started = threading.Event()
         self.lock = threading.Lock()
 
     def is_enabled(self):
         return self.enabled
+
+    def model_name(self):
+        return self.model
 
     def complete(self, messages, max_tokens=4096):
         with self.lock:
@@ -89,6 +93,42 @@ def assert_compact(text):
     assert all(line.endswith("。") for line in lines)
 
 
+def test_month_day_dates_are_not_treated_as_unsupported_numbers():
+    from src.fund_estimate_analysis import _supported_numbers
+
+    payload = {"stats": {"direction_accuracy": 0.65, "mae_pct": 0.01877}}
+    text = "10月29日方向准确率为65.000%，平均绝对误差1.877bp。"
+    assert _supported_numbers(text, payload) is True
+
+
+def test_completed_analysis_reports_generating_model(store):
+    ai = RecordingAi()
+    ai.model = "gpt-6.1-terra"
+    analysis = analysis_for(store, ai)
+    data = sample_data()
+    first = analysis.read(*data)
+    assert first["ai_model"] == "gpt-6.1-terra"
+    done = completed(analysis, data)
+    assert done["ai_analysis"] == SHORT_REVIEW
+    assert done["ai_model"] == "gpt-6.1-terra"
+
+
+def test_switching_model_regenerates_analysis_for_correct_attribution(store):
+    ai = RecordingAi(replies=[SHORT_REVIEW, SHORT_REVIEW])
+    ai.model = "model-one"
+    analysis = analysis_for(store, ai)
+    data = sample_data()
+    assert completed(analysis, data)["ai_model"] == "model-one"
+    assert len(ai.calls) == 1
+
+    ai.model = "model-two"
+    reread = analysis.read(*data)
+    assert reread["ai_status"] in {"generating", "ready"}
+    done = completed(analysis, data)
+    assert done["ai_model"] == "model-two"
+    assert len(ai.calls) == 2
+
+
 def test_slow_ai_does_not_block_read_and_repeated_calls_share_generation(store):
     release = threading.Event()
     ai = RecordingAi(release=release)
@@ -116,7 +156,7 @@ def test_persistent_cache_restores_current_version_without_ai_request(store):
     completed(analysis_for(store, first_ai), data)
     restored_store = FundEstimateStore(store.path)
     restored = analysis_for(restored_store, RecordingAi([RuntimeError("must not call")]))
-    assert restored.read(*data) == {"ai_analysis": SHORT_REVIEW, "ai_status": "ready"}
+    assert restored.read(*data) == {"ai_analysis": SHORT_REVIEW, "ai_status": "ready", "ai_model": "test-model"}
     assert not restored.ai.calls
 
 
@@ -358,7 +398,7 @@ def test_reasoning_budget_upgrade_ignores_old_failure_cooldown_and_persists_new_
     payload = _analysis_payload(*data)
 
     def key_for(version):
-        digest = hashlib.sha256(json.dumps([version, payload], ensure_ascii=False,
+        digest = hashlib.sha256(json.dumps([version, payload, "test-model"], ensure_ascii=False,
                                           sort_keys=True, default=str).encode()).hexdigest()[:24]
         return f"verification-analysis:{version}:{digest}"
 
