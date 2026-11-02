@@ -54,6 +54,11 @@ def parse_curve(payload: dict, day: date, quote_time: str) -> dict[float, Decima
 
 
 class CfetsCurveSource:
+    cache_family = CFETS_REALTIME
+    factor_set_id = FACTOR_SET_ID
+    factor_names = FACTOR_NAMES
+    required_terms = {'gov': (3., 5., 10.), 'cdb': (5.,), 'aaa': (3.,)}
+
     def __init__(self, store, *, fetcher=None, clock=None, calendar=None, intraday_stale_minutes=15):
         self.store = store
         self.clock = clock or (lambda: datetime.now(TZ_CN))
@@ -83,7 +88,7 @@ class CfetsCurveSource:
 
     def _levels(self, day, quote_time):
         stamp = iso_now(self.clock())
-        cached = self.store.read_curve_levels(CFETS_REALTIME, day.isoformat(), quote_time, stamp)
+        cached = self.store.read_curve_levels(self.cache_family, day.isoformat(), quote_time, stamp)
         if cached:
             return cached['levels']
         cache_key = (day, quote_time)
@@ -95,7 +100,7 @@ class CfetsCurveSource:
         try:
             for kind in CURVE_TYPES:
                 points = parse_curve(self.fetcher(kind, day, quote_time), day, quote_time)
-                required = (3., 5., 10.) if kind == 'gov' else (5.,) if kind == 'cdb' else (3.,)
+                required = self.required_terms[kind]
                 if any(tenor not in points for tenor in required):
                     raise CurveUnavailable('曲线缺少必要标准期限')
                 levels[kind] = {str(tenor): decimal_text(points[tenor]) for tenor in required}
@@ -108,7 +113,7 @@ class CfetsCurveSource:
         except (ValueError, KeyError, TypeError) as exc:
             self._failed[cache_key] = (self.clock(), True)
             raise CurveUnavailable('未取得完整同口径曲线', transient=True) from exc
-        self.store.save_curve_levels(CFETS_REALTIME, day.isoformat(), quote_time, levels, iso_now(self.clock()))
+        self.store.save_curve_levels(self.cache_family, day.isoformat(), quote_time, levels, iso_now(self.clock()))
         return levels
 
     def fetch_daily_factors(self, start, end, source_family):
@@ -171,9 +176,9 @@ class CfetsCurveSource:
                 # 17:00 最终曲线未发布时保留最后可用时点，并标注为收盘参考而非收盘值。
                 observation = replace(observation, basis_status='close_reference')
         except (CurveUnavailable, requests.RequestException, ValueError, TypeError):
-            observation = FactorObservation(FACTOR_SET_ID, CFETS_REALTIME, day.isoformat(), None,
-                iso_now(self.clock()), None, {name: None for name in FACTOR_NAMES}, None, 'missing',
-                list(FACTOR_NAMES), None, 'missing')
+            observation = FactorObservation(self.factor_set_id, CFETS_REALTIME, day.isoformat(), None,
+                iso_now(self.clock()), None, {name: None for name in self.factor_names}, None, 'missing',
+                list(self.factor_names), None, 'missing')
         self._live_cache = (slot, observation)
         return observation
 

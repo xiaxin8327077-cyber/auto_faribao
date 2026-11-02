@@ -13,6 +13,7 @@ from src.fund_estimate_store import iso_now, parse_time
 from src.fund_estimate_types import (
     CONFIDENCE_LABELS,
     FACTOR_NAMES,
+    FACTOR_SET_ID,
     FACTOR_UNITS,
     TARGET,
     EstimateInputError,
@@ -36,11 +37,13 @@ def duration_price_return_pct(duration_nav, delta_y_bp) -> str:
     return pct_text(-duration * change / Decimal(100))
 
 
-def build_training_set(identity: FundIdentity, cutoff_at: str, store, source_family: str = "daily_close") -> TrainingSet:
+def build_training_set(identity: FundIdentity, cutoff_at: str, store, source_family: str = "daily_close", *, feature_names=FACTOR_NAMES, factor_set_id=FACTOR_SET_ID) -> TrainingSet:
     navs = store.nav_as_of(identity.code, cutoff_at)
+    observations = (store.factors_as_of(cutoff_at, source_family=source_family, factor_set_id=factor_set_id)
+                    if factor_set_id else store.factors_as_of(cutoff_at, source_family=source_family))
     factors = {
         item.as_of: item
-        for item in store.factors_as_of(cutoff_at, source_family=source_family)
+        for item in observations
         if parse_time(_market_available_at(item)) <= parse_time(cutoff_at)
     }
     profile = _visible_profile(store.profile_as_of(identity.code, identity.share_class, cutoff_at), cutoff_at)
@@ -61,7 +64,8 @@ def build_training_set(identity: FundIdentity, cutoff_at: str, store, source_fam
         if factor.basis_status == "unverified" or factor.basis_date != previous.nav_date:
             gaps.append({"nav_date": current.nav_date, "reason": "basis_unverified"})
             continue
-        if any(factor.values_bp.get(name) is None for name in FACTOR_NAMES[:4]):
+        market_features = [name for name in feature_names if name != "calendar_days"]
+        if any(factor.values_bp.get(name) in (None, "") for name in market_features):
             gaps.append({"nav_date": current.nav_date, "reason": "factor_missing"})
             continue
         try:
@@ -70,7 +74,7 @@ def build_training_set(identity: FundIdentity, cutoff_at: str, store, source_fam
             gaps.append({"nav_date": current.nav_date, "reason": "dividend_missing"})
             continue
         calendar_days = str((date.fromisoformat(current.nav_date) - date.fromisoformat(previous.nav_date)).days)
-        features = {name: factor.values_bp.get(name) for name in FACTOR_NAMES[:4]}
+        features = {name: factor.values_bp.get(name) for name in market_features}
         features["calendar_days"] = calendar_days
         market_available_at = _market_available_at(factor)
         nav_available_at = max((previous.available_at, current.available_at), key=parse_time)
@@ -101,7 +105,7 @@ def build_training_set(identity: FundIdentity, cutoff_at: str, store, source_fam
         identity=identity,
         cutoff_at=cutoff_at,
         rows=rows,
-        feature_names=FACTOR_NAMES,
+        feature_names=tuple(feature_names),
         source_versions=sorted({row["source_version"] for row in rows}),
         profile_version=None if profile is None else profile.profile_version,
         gaps=gaps,
@@ -137,11 +141,13 @@ def fit_ridge(training: TrainingSet, config: dict | None = None) -> ModelVersion
     config = config or {}
     alpha = float(config.get("ridge_alpha", 1.0))
     half_life = float(config.get("half_life_days", 30))
-    names = list(FACTOR_NAMES)
+    names = list(training.feature_names)
     rows = training.rows
     if len(rows) < 2:
         raise EstimateInputError("Ridge 样本不足")
-    means, scales, beta = _weighted_ridge(rows, names, alpha, half_life)
+    stress_weight = max(1.0, float(config.get("stress_weight", 1.0)))
+    stress_threshold = max(0.01, float(config.get("stress_threshold_bp", 2.0)))
+    means, scales, beta = _weighted_ridge(rows, names, alpha, half_life, stress_weight, stress_threshold)
     coefficients = {"intercept": _float_text(beta[0])}
     for index, name in enumerate(names):
         coefficients[name] = _float_text(beta[index + 1])
@@ -152,6 +158,8 @@ def fit_ridge(training: TrainingSet, config: dict | None = None) -> ModelVersion
         "half_life_days": _float_text(half_life),
         "standardize": True,
     }
+    if stress_weight != 1:
+        preprocessing.update(stress_weight=stress_weight, stress_threshold_bp=stress_threshold)
     return _model(training, "weighted_ridge_net", tuple(names), coefficients, preprocessing, {"sample_count": len(rows)}, None)
 
 
@@ -606,12 +614,14 @@ def _fit_carry(rows: list[dict], duration: Decimal) -> Decimal:
     return numerator / denominator
 
 
-def _weighted_ridge(rows, names, alpha, half_life):
+def _weighted_ridge(rows, names, alpha, half_life, stress_weight=1.0, stress_threshold_bp=2.0):
     weights = []
     count = len(rows)
     for index in range(count):
         age = count - 1 - index
-        weights.append(0.5 ** (age / half_life if half_life else 0))
+        stress = any(abs(float(rows[index]["features"][name])) >= stress_threshold_bp
+                     for name in names if name.endswith("_bp"))
+        weights.append(0.5 ** (age / half_life if half_life else 0) * (stress_weight if stress else 1.0))
     means = {}
     scales = {}
     weight_sum = sum(weights) or 1.0
@@ -838,7 +848,7 @@ def _model(training, kind, names, coefficients, preprocessing, validation, profi
         trained_through=through,
         available_at=training.cutoff_at,
         feature_names=tuple(names),
-        feature_units={name: FACTOR_UNITS[name] for name in names},
+        feature_units={name: FACTOR_UNITS.get(name, "bp") for name in names},
         coefficients=coefficients,
         preprocessing=preprocessing,
         source_versions=list(training.source_versions),

@@ -136,6 +136,19 @@ CREATE TABLE IF NOT EXISTS daily_verifications (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (product_id, trade_date)
 );
+CREATE TABLE IF NOT EXISTS research_reports (
+    product_id TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS research_predictions (
+    product_id TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    slot TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (product_id, trade_date, slot, strategy)
+);
 CREATE TABLE IF NOT EXISTS jobs (
     idempotency_key TEXT PRIMARY KEY,
     job_type TEXT NOT NULL,
@@ -505,7 +518,7 @@ class FundEstimateStore:
             )
             return cursor.rowcount > 0
 
-    def factors_as_of(self, cutoff_at: str, source_family: str | None = None) -> list[FactorObservation]:
+    def factors_as_of(self, cutoff_at: str, source_family: str | None = None, factor_set_id: str | None = None) -> list[FactorObservation]:
         cutoff = parse_time(cutoff_at)
         with self._connect() as conn:
             if source_family:
@@ -517,6 +530,8 @@ class FundEstimateStore:
                 rows = conn.execute("SELECT * FROM factor_observations").fetchall()
         visible = []
         for row in rows:
+            if factor_set_id and row["factor_set_id"] != factor_set_id:
+                continue
             published = row["published_at"] or row["fetched_at"]
             if parse_time(published) <= cutoff:
                 visible.append(row)
@@ -527,6 +542,36 @@ class FundEstimateStore:
             if current is None or parse_time(row["fetched_at"]) >= parse_time(current["fetched_at"]):
                 latest[key] = row
         return [_factor_from_row(latest[key]) for key in sorted(latest)]
+
+    def save_research_report(self, product_id: str, payload: dict, updated_at: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute("""INSERT INTO research_reports VALUES (?,?,?)
+                ON CONFLICT(product_id) DO UPDATE SET payload_json=excluded.payload_json,
+                updated_at=excluded.updated_at""",
+                (product_id, json.dumps(payload, ensure_ascii=False, sort_keys=True), updated_at))
+
+    def read_research_reports(self) -> list[dict]:
+        with self._connect() as conn:
+            return [json.loads(row[0]) for row in conn.execute(
+                "SELECT payload_json FROM research_reports ORDER BY product_id")]
+
+    def save_research_prediction(self, payload: dict) -> bool:
+        # 每基金/日期/时点/策略只留首次真实预测；事后重训不能改写验证样本。
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute("INSERT OR IGNORE INTO research_predictions VALUES (?,?,?,?,?)",
+                (payload['product_id'], payload['trade_date'], payload['slot'], payload['strategy'],
+                 json.dumps(payload, ensure_ascii=False, sort_keys=True)))
+            return cursor.rowcount > 0
+
+    def read_research_predictions(self, product_id: str | None = None) -> list[dict]:
+        with self._connect() as conn:
+            query = "SELECT payload_json FROM research_predictions"
+            args = ()
+            if product_id is not None:
+                query += " WHERE product_id=?"
+                args = (product_id,)
+            query += " ORDER BY trade_date,slot,strategy"
+            return [json.loads(row[0]) for row in conn.execute(query, args)]
 
     def save_model(self, model: ModelVersion, *, active: bool = False) -> None:
         identity = model.identity

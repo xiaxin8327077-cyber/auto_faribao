@@ -63,6 +63,10 @@ DEFAULT_CONFIG = {
     "min_interval_coverage": None,
     "min_intraday_samples": 20,
     "shadow_times": ("09:45", "11:30", "14:30", "16:30"),
+    "research_enabled": True,
+    "research_history_days": 400,
+    "research_windows": (20, 60, 120),
+    "research_min_holdout": 20,
     "retention_years": 3,
 }
 

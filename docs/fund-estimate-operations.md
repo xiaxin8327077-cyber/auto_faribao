@@ -1,5 +1,23 @@
 # 债基盘中预估：运行、备份与回滚
 
+## 2026-11-02：扩展因子与并行研究
+
+后台研究在独立线程运行，不激活候选模型，不改写正式账本和当前预估。`research_enabled` 默认开启，仍受现有后台任务总开关控制；`research_history_days` 默认400天。
+
+- CFETS 实时研究增加国债1/2/5年、国开1/3/10年和AAA中票1/5/10年利差。因子版本为 `bond_factor_v2`，原模型只读取 `bond_factor_v1`，缓存也分开。本次实际查询较早日期时返回空报价，有效数据约三个月；返回指定日期和HTTP 200不代表有有效报价。
+- 中债日终研究另取AAA、AA+、AA不同期限，因子版本为 `bond_factor_credit_eod_v2`。它可以用于更长历史的独立研究，不能直接冒充CFETS盘中输入。未接入二永债、城投专属盘中曲线。
+- 对比久期基线、原五因素Ridge算法、扩展因素短/中/长窗口、波动日加权、短长组合、公开敏感度约束候选。默认窗口20/60/120日；实时历史不足时明确标注10/20/40日短历史研究，不能宣称完成120日模型验证。
+- 选型与最终评估按日期分开，保存平均误差、大波动日误差和最大误差。回补版本标为回顾探索，真实盘中记录按09:45、11:30、14:30、16:30分时累计，同一日期/时点/策略只保存首次预测。
+- 鉴权只读接口 `GET /api/portfolio/fund-estimate-research` 提供比较结果和研究错误；GET不抓取、不训练。研究报告和盘中记录保存在估值库的新表 `research_reports`、`research_predictions`。
+
+独立研究命令（只导入公开净值、分红覆盖、公开画像及基金身份，不需要组合金额或AI密钥）：
+
+```powershell
+python scripts/fund_estimate_research.py --db data/research/fund_estimation_research.db --import-json data/research/public_nav_export.json --refresh --source both --output data/research/report.json
+```
+
+不加 `--refresh` 时只使用已缓存数据。输出同名JSON与Markdown，基线与候选只在同一来源、同一评估日期比较；它们不等于线上旧模型的真实盘中成绩。补齐2025年日历依据[国务院通知](https://www.gov.cn/zhengce/zhengceku/202411/content_6986383.htm)及[上交所休市安排](https://www.sse.com.cn/disclosure/announcement/general/c/c_20241223_10767108.shtml)，调休周末不当成交易日。
+
 估值写在独立库 `data/fund_estimation.db`，schema 版本 1。正式组合库仍是 `SCHEMA_VERSION = 7`。预测不写入 `quotes.unit_nav`，也不改市值、收益、分红或结算。
 
 ## 配置

@@ -2252,6 +2252,17 @@ def create_portfolio_blueprint(runtime, provider_factory, estimate_service=None)
             items = []
         return jsonify({"generated_at": generated_at, "items": items})
 
+    @blueprint.get("/api/portfolio/fund-estimate-research")
+    def fund_estimate_research():
+        guard = read_guard()
+        if guard:
+            return guard
+        if estimate_service is None:
+            return _error('estimate_unavailable', '估值模块未初始化', 503)
+        response = jsonify(estimate_service.research_report(beijing_now()))
+        response.headers['Cache-Control'] = 'private, no-store'
+        return response
+
     @blueprint.get("/api/portfolio/fund-estimate-verifications")
     def fund_estimate_verifications():
         guard = read_guard()

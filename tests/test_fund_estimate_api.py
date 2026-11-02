@@ -219,6 +219,22 @@ def test_estimate_api_requires_dashboard_key(tmp_path, monkeypatch):
     assert client.get("/api/portfolio/fund-estimate-model-settings").status_code == 403
 
 
+def test_research_api_is_authenticated_read_only_and_hides_model_artifacts(tmp_path, monkeypatch):
+    from src.fund_estimate_research import FundEstimateResearch
+    store = FundEstimateStore(tmp_path/'e.db'); store.initialize()
+    store.save_research_report('p918273', {'product_id': 'p918273', 'code': '918273',
+        'history_count': 250, 'promotion_allowed': False, 'models': {'private_artifact': {}}}, '2026-11-02T18:00:00+08:00')
+    research = FundEstimateResearch(store, None)
+    service = FundEstimateService(None, store, EstimateSources(), ProfileService(store, MemoryDocuments()),
+                                   research=research)
+    client, _repo, _db = client_for(tmp_path, monkeypatch, service)
+    assert client.get('/api/portfolio/fund-estimate-research').status_code == 403
+    response = client.get('/api/portfolio/fund-estimate-research', headers={'X-Nav-Dashboard-Key': 'secret'})
+    assert response.status_code == 200
+    assert response.get_json()['items'][0]['history_count'] == 250
+    assert 'models' not in response.get_json()['items'][0]
+
+
 def test_get_only_reads_cached_estimates(tmp_path, monkeypatch):
     store = FundEstimateStore(tmp_path / "fund_estimation.db")
     store.initialize()

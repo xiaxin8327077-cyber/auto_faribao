@@ -1,6 +1,8 @@
 """持仓发现、只读快照和后台队列。tick 只入队，不在请求线程里训练。"""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
@@ -130,11 +132,15 @@ def weekday_bond_day(day: date) -> bool:
 
 
 class FundEstimateService:
-    def __init__(self, repository, store, sources, profiles, config=None, bond_trading_day=None, ai=None):
+    def __init__(self, repository, store, sources, profiles, config=None, bond_trading_day=None, ai=None, research=None):
         self.repository = repository
         self.store = store
         self.sources = sources
         self.profiles = profiles
+        self.research = research
+        self._research_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='fund-research')
+        self._research_guard = threading.Lock()
+        self._research_pending = set()
         self.config = dict(DEFAULT_CONFIG)
         if config:
             self.config.update(config)
@@ -639,6 +645,9 @@ class FundEstimateService:
                 )
         elif job["job_type"] == "train":
             train_models(identity, self.store, now, self.config, source_family=self.config.get('source_family', CFETS_REALTIME))
+            if self.research is not None:
+                self._research_action('train', now,
+                    lambda: self.research.train(identity, self._research_now(now)), identity.product_id)
         elif job["job_type"] == "intraday_snapshot":
             self._snapshot(identity, now)
         else:
@@ -655,6 +664,8 @@ class FundEstimateService:
             factor_changes = self._sync_daily_factors(today, iso_now(now))
         except Exception as exc:
             self.store.set_watermark(f"factors:{identity.code}", str(exc)[:200], iso_now(now))
+        if self.research is not None:
+            self._research_action('history', now, lambda: self._research_refresh(identity, now), identity.product_id)
         changed = [item for item in navs if previous.get(item.nav_date) != _nav_economic_content(item)]
         if enqueue_train and (changed or factor_changes):
             newest = max((item.nav_date for item in navs), default=today.isoformat())
@@ -778,6 +789,45 @@ class FundEstimateService:
         snapshot = project_snapshot(identity, self.store, factors, base, now, self.config, reference)
         slot = ensure_aware(now, TZ_CN).strftime("%Y-%m-%dT%H:%M")
         self.store.save_snapshot(snapshot, slot=slot, source_version=factors.source_version or slot)
+        if self.research is not None:
+            self._research_action('snapshot', now,
+                lambda: self.research.snapshot(identity, self._research_now(now), base), identity.product_id)
+
+    def _research_now(self, requested):
+        source = getattr(self.research, 'source', None)
+        clock = getattr(source, 'clock', None)
+        current = clock() if clock is not None else datetime.now(TZ_CN)
+        return max(ensure_aware(requested, TZ_CN), ensure_aware(current, TZ_CN))
+
+    def _research_refresh(self, identity, now):
+        for study in [self.research, *getattr(self.research, 'comparisons', [])]:
+            study.sync_history(self._research_now(now))
+            study.train(identity, self._research_now(now))
+
+    def _research_action(self, name, now, action, product_id=''):
+        # 单独的串行队列：研究网络回补和回测不能占用正式净值/预估工作线程。
+        key = (name, product_id)
+        with self._research_guard:
+            if key in self._research_pending:
+                return
+            self._research_pending.add(key)
+        def run():
+            try:
+                action()
+                self.store.set_watermark('research:error:'+name, '', iso_now(self._research_now(now)))
+            except Exception as exc:
+                self.store.set_watermark('research:error:'+name, type(exc).__name__+': '+str(exc)[:200], iso_now(now))
+                logger.warning('基金并行研究任务失败：%s', name, exc_info=True)
+            finally:
+                with self._research_guard:
+                    self._research_pending.discard(key)
+        self._research_executor.submit(run)
+
+    def research_report(self, now=None):
+        return {'status': 'shadow' if self.research else 'disabled',
+                'items': self.research.reports(now) if self.research else [],
+                'errors': {name: self.store.get_watermark('research:error:'+name) or ''
+                           for name in ('history', 'train', 'snapshot')}}
 
     def _profile_due(self, identity: FundIdentity, now: datetime) -> bool:
         raw = self.store.get_watermark(f"profile-checked:{identity.code}:{identity.share_class}")
@@ -811,6 +861,14 @@ def create_fund_estimate_service(portfolio_runtime, config=None, *, path=None):
     from src.fund_estimate_documents import PublicFundDocuments
     profiles = ProfileService(store, PublicFundDocuments(store), ai=EstimateAi(store))
     service = FundEstimateService(repository, store, sources, profiles, settings, ai=EstimateAi(store))
+    if settings.get('research_enabled', True):
+        from src.fund_estimate_cfets_extended import ExtendedCfetsCurveSource
+        from src.fund_estimate_research import FundEstimateResearch
+        extended_source = ExtendedCfetsCurveSource(store,
+            intraday_stale_minutes=settings.get('intraday_stale_minutes', 15))
+        service.research = FundEstimateResearch(store, extended_source, settings)
+        from src.fund_estimate_credit_eod import ChinaBondCreditSource
+        service.research.comparisons = [FundEstimateResearch(store, ChinaBondCreditSource(store), settings)]
     _verification_service = service
     service.start_official_verification_sync(force=True)
     return service
