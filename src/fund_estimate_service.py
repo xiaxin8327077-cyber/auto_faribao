@@ -11,7 +11,7 @@ import threading
 import time as time_module
 
 from src.beijing_time import TZ_CN
-from src.fund_estimate_ai import AiSettingsError, EstimateAi, chat_completions_url, scrub_secret
+from src.fund_estimate_ai import AiSettingsError, EstimateAi, chat_completions_url, reusable_api_key, scrub_secret
 from src.fund_estimate_models import present_snapshot, project_snapshot, train_models
 from src.fund_estimate_profiles import ProfileService, discover_share_class, support_reason
 from src.fund_estimate_sources import (
@@ -339,7 +339,7 @@ class FundEstimateService:
             result[identity.product_id] = payload
         return result
 
-    def verification_report(self) -> dict:
+    def verification_report(self, *, regenerate_analysis=False) -> dict:
         """失败保留持久化的最后成功报告；明细不等待 AI。"""
         cache_key = 'verification-report:latest:v1'
         try:
@@ -348,7 +348,8 @@ class FundEstimateService:
                 cached = self.store.get_watermark(cache_key)
                 previous = json.loads(cached) if cached else None
                 self._last_verification_report = previous
-            report = self._build_verification_report()
+            report = (self._build_verification_report(regenerate_analysis=True)
+                      if regenerate_analysis else self._build_verification_report())
             if not report['items'] and previous and previous.get('items'):
                 self._last_verification_report = previous
                 return dict(previous, status='stale', message='正在恢复验证数据，保留上次内容',
@@ -359,6 +360,8 @@ class FundEstimateService:
             self._last_verification_report = report
             return report
         except Exception:
+            if regenerate_analysis:
+                raise
             logger.warning('验证报告读取失败，尝试恢复最后成功内容', exc_info=True)
             previous = self._last_verification_report
             if previous is None:
@@ -372,7 +375,7 @@ class FundEstimateService:
                             refresh_complete=False, next_refresh_at=None)
             raise
 
-    def _build_verification_report(self) -> dict:
+    def _build_verification_report(self, *, regenerate_analysis=False) -> dict:
         """预估与真实涨跌对比：确定性统计为准，AI只做点评且不改动任何数字。"""
         from src.fund_estimate_types import decimal_text
 
@@ -467,7 +470,11 @@ class FundEstimateService:
         # Each data version already has a deterministic summary even if the
         # model failed. Reuse it until the input data changes; resuming NAV
         # polling must not restart analysis of the same version.
-        analysis = self._analysis.read(analysis_items, stats, overall, retry_failed=False)
+        if regenerate_analysis and not analysis_items:
+            raise AiSettingsError('暂无可分析的验证数据')
+        if regenerate_analysis and not self.ai.is_enabled():
+            raise AiSettingsError('请先启用报告提取并配置可用模型')
+        analysis = self._analysis.read(analysis_items, stats, overall, retry_failed=False, force=regenerate_analysis)
         refresh_state = verification_refresh_state(
             active_identities, current_state, items, now,
             is_trading_day=self.bond_trading_day, analysis_status=analysis.get('ai_status'),
@@ -576,14 +583,7 @@ class FundEstimateService:
         base_url = str(body.get("base_url") or (profile or {}).get("base_url") or "").strip()
         api_key = str(body.get("api_key") or "").strip()
         if not api_key:
-            if profile is not None:
-                api_key = profile.get("api_key") or ""
-            else:
-                stored = self.store.secret_ai_settings()
-                # 只在同一接口地址复用已保存密钥，避免把密钥发往任意地址。
-                if base_url and stored.get("base_url"):
-                    if chat_completions_url(stored["base_url"]) == chat_completions_url(base_url):
-                        api_key = stored.get("api_key") or ""
+            api_key = reusable_api_key(base_url, profile or self.store.secret_ai_settings())
         return self.ai.list_models(base_url, api_key)
 
     def test_model_connection(self, body: dict) -> dict:
@@ -591,7 +591,9 @@ class FundEstimateService:
         stored = self.store.secret_ai_settings()
         base_url = str(body.get("base_url") or (profile or {}).get("base_url") or stored.get("base_url") or "")
         model = str(body.get("model") or (profile or {}).get("model") or stored.get("model") or "")
-        api_key = str(body.get("api_key") or "") or (profile or {}).get("api_key") or stored.get("api_key") or ""
+        api_key = str(body.get("api_key") or "").strip()
+        if not api_key:
+            api_key = reusable_api_key(base_url, profile or stored)
         return self.ai.test_connection(base_url, api_key, model)
 
     def _profile_for_request(self, body: dict) -> dict | None:

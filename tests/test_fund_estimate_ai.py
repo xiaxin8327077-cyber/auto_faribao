@@ -120,6 +120,23 @@ def test_test_connection_also_adapts_parameters(model_server):
     assert len(model_server["requests"]) == 2
 
 
+@pytest.mark.parametrize('body', [
+    '<html>proxy login</html>', '{"choices":[]}',
+    '{"choices":[{"finish_reason":"length","message":{"content":""}}]}',
+    '{"choices":[{"finish_reason":"stop","message":{"content":""}}]}',
+])
+def test_connection_rejects_http_200_without_complete_text(body):
+    ai = EstimateAi(None, poster=lambda *_: (200, body))
+    result = ai.test_connection('https://models.example/v1', 'dummy-key', 'reader')
+    assert result['ok'] is False
+
+
+def test_connection_accepts_completed_text_response():
+    body = json.dumps({'choices': [{'finish_reason': 'stop', 'message': {'content': 'pong'}}]})
+    ai = EstimateAi(None, poster=lambda *_: (200, body))
+    assert ai.test_connection('https://models.example/v1', 'dummy-key', 'reader')['ok'] is True
+
+
 def test_list_models_reads_openai_compatible_endpoint(model_server):
     result = ai_for(model_server).list_models(model_server["url"], "test-key")
     assert result["ok"] is True

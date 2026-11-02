@@ -46,48 +46,111 @@ class VerificationAnalysis:
         self._active = None
         self._pending = {}
         self._cache = {}
+        self._completed = {}
+        self._data_jobs = {}
 
-    def read(self, items, stats, overall, *, retry_failed=True) -> dict:
+    def read(self, items, stats, overall, *, retry_failed=True, force=False) -> dict:
         if not items:
             return {"ai_analysis": None, "ai_status": "ready"}
         payload = _analysis_payload(items, stats, overall)
         summary = compact_verification_summary(payload["items"], payload["stats"], {
             **payload["period"], "diagnostics": payload["diagnostics"],
         })
+        data_digest = hashlib.sha256(_json([CACHE_VERSION, payload]).encode()).hexdigest()[:24]
+        data_key = f'verification-analysis:data:{CACHE_VERSION}:{data_digest}'
+        if not force:
+            with self._lock:
+                previous = self._data_view(data_key, payload, summary, retry_failed)
+                if previous is not None:
+                    return previous
         try:
-            enabled = self.ai is not None and self.ai.is_enabled()
+            binder = getattr(self.ai, 'bind', None)
+            request_ai = binder() if callable(binder) else self.ai
+            enabled = request_ai is not None and request_ai.is_enabled()
+            model = self._model_name(request_ai)
+            identity = getattr(request_ai, 'cache_identity', None)
+            config_identity = identity() if callable(identity) else model
         except Exception:
             logger.warning("读取验证点评模型配置失败", exc_info=True)
             return {"ai_analysis": summary, "ai_status": "failed", "ai_model": ""}
         if not enabled:
             return {"ai_analysis": summary, "ai_status": "disabled", "ai_model": ""}
 
-        # 模型名参与缓存键：切换模型后重新生成，标注才不会指向旧模型。
-        model = self._model_name()
-        digest = hashlib.sha256(_json([CACHE_VERSION, payload, model]).encode()).hexdigest()[:24]
+        # 配置身份参与缓存键；同名模型在不同服务商或不同密钥下互不混用。
+        digest = hashlib.sha256(_json([CACHE_VERSION, payload, config_identity]).encode()).hexdigest()[:24]
         key = f"verification-analysis:{CACHE_VERSION}:{digest}"
         with self._lock:
+            if not force:
+                previous = self._data_view(data_key, payload, summary, retry_failed)
+                if previous is not None:
+                    return previous
+            if force:
+                # 合并已在执行的任务也算最新明确选择，跨标签页切换不能被旧排队结果覆盖。
+                self._data_jobs[data_key] = (key, model)
             cached = self._cache.get(key)
             if cached is None:
                 cached = self._restore(key, payload)
                 if cached is not None:
                     self._cache[key] = cached
-            if cached is not None and cached["status"] == "ready":
+            if key == self._active or key in self._pending:
+                return {"ai_analysis": (cached or {}).get('analysis') or summary,
+                        "ai_status": "generating", "ai_model": model}
+            if not force and cached is not None and cached["status"] == "ready":
                 return {"ai_analysis": cached["analysis"], "ai_status": "ready",
                         "ai_model": cached.get("model") or model}
-            if cached is not None and (not retry_failed or cached.get("retry_at", 0) > time()):
+            if not force and cached is not None and (not retry_failed or cached.get("retry_at", 0) > time()):
                 return {"ai_analysis": summary, "ai_status": "failed", "ai_model": cached.get("model") or ""}
             if key != self._active and key not in self._pending:
                 attempts = int((cached or {}).get("attempts", 0)) + 1
-                self._pending[key] = (payload, summary, attempts, model)
+                self._pending[key] = (payload, summary, attempts, model, request_ai, data_key)
+                self._data_jobs[data_key] = (key, model)
             if self._worker is None:
                 self._worker = threading.Thread(target=self._work, name="fund-verification-analysis", daemon=True)
                 self._worker.start()
         return {"ai_analysis": summary, "ai_status": "generating", "ai_model": model}
 
-    def _model_name(self) -> str:
+    def _data_view(self, data_key, payload, summary, retry_failed):
+        record = self._completed.get(data_key)
+        if record is None:
+            record = self._restore(data_key, payload)
+            if record is None:
+                record = self._restore_previous_data(data_key, payload)
+            if record is not None:
+                self._completed[data_key] = record
+        job = self._data_jobs.get(data_key)
+        if job and (job[0] == self._active or job[0] in self._pending):
+            return {'ai_analysis': (record or {}).get('analysis') or summary,
+                    'ai_status': 'generating', 'ai_model': job[1]}
+        if record is not None and (record['status'] == 'ready' or not retry_failed or record.get('retry_at', 0) > time()):
+            return {'ai_analysis': record['analysis'], 'ai_status': record['status'],
+                    'ai_model': record.get('model') or ''}
+        return None
+
+    def _restore_previous_data(self, data_key, payload):
+        """旧缓存按真实输入与原模型识别；配置变更本身不使已完成点评失效。"""
+        lister = getattr(self.store, 'list_watermarks', None)
+        if not callable(lister):
+            return None
+        prefix = f'verification-analysis:{CACHE_VERSION}:'
+        for item in lister(prefix):
+            try:
+                candidate = json.loads(item['value'])
+                if not isinstance(candidate, dict) or candidate.get('version') != CACHE_VERSION:
+                    continue
+                legacy_digest = hashlib.sha256(_json([CACHE_VERSION, payload, candidate.get('model') or '']).encode()).hexdigest()[:24]
+                if candidate.get('data_identity') != data_key and item['key'] != prefix + legacy_digest:
+                    continue
+                record = self._restore(item['key'], payload)
+                if record is not None:
+                    self.store.set_watermark(data_key, _json(record), datetime.now(timezone.utc).isoformat(timespec='seconds'))
+                    return record
+            except (TypeError, ValueError, KeyError):
+                continue
+        return None
+
+    def _model_name(self, ai=None) -> str:
         try:
-            getter = getattr(self.ai, "model_name", None)
+            getter = getattr(self.ai if ai is None else ai, "model_name", None)
             return str(getter() or "") if callable(getter) else ""
         except Exception:
             return ""
@@ -117,10 +180,10 @@ class VerificationAnalysis:
                     self._worker = None
                     return
                 key = next(iter(self._pending))
-                payload, summary, attempts, model = self._pending.pop(key)
+                payload, summary, attempts, model, request_ai, data_key = self._pending.pop(key)
                 self._active = key
             try:
-                text = self._generate(payload)
+                text = self._generate(payload, request_ai)
                 record = {"version": CACHE_VERSION, "status": "ready", "analysis": text, "model": model}
             except Exception:
                 logger.warning("验证短评生成失败，保留确定性摘要并延后重试", exc_info=True)
@@ -128,14 +191,21 @@ class VerificationAnalysis:
                 record = {"version": CACHE_VERSION, "status": "failed", "analysis": summary,
                           "attempts": attempts, "retry_at": time() + delay, "model": model}
             try:
+                record['data_identity'] = data_key
                 self.store.set_watermark(key, _json(record), datetime.now(timezone.utc).isoformat(timespec="seconds"))
             except Exception:
                 logger.warning("保存验证短评缓存失败", exc_info=True)
             with self._lock:
                 self._cache[key] = record
+                if self._data_jobs.get(data_key, (None,))[0] == key:
+                    try:
+                        self.store.set_watermark(data_key, _json(record), datetime.now(timezone.utc).isoformat(timespec="seconds"))
+                    except Exception:
+                        logger.warning('保存本轮验证点评失败', exc_info=True)
+                    self._completed[data_key] = record
                 self._active = None
 
-    def _generate(self, payload):
+    def _generate(self, payload, ai=None):
         # 明细仅发最近记录；按日、按基金统计和诊断仍覆盖全部可比较历史。
         data = _json({**payload, "items": payload["items"][-20:]})
         messages = [
@@ -158,7 +228,7 @@ class VerificationAnalysis:
                 "stats/by_day/by_fund/diagnostics覆盖全部历史，items只列最近明细。数据：" + data
             )},
         ]
-        raw = self._complete(messages)
+        raw = self._complete(messages, ai)
         text = _checked_text(raw, payload)
         if text is not None:
             return text
@@ -170,20 +240,21 @@ class VerificationAnalysis:
                 "总计不超过180字，目标120–180字，不补无关内容，不加标题或编号，保留必要单位与限定条件。"
             )},
         ]
-        text = _checked_text(self._complete(compression), payload)
+        text = _checked_text(self._complete(compression, ai), payload)
         if text is None:
             raise ValueError("点评压缩后仍不符合短句及长度要求")
         return text
 
-    def _complete(self, messages):
+    def _complete(self, messages, ai=None):
+        target = self.ai if ai is None else ai
         # 旧的测试替身和外部实现可能只接收messages；检查签名，避免因内部TypeError重复联网。
         try:
-            inspect.signature(self.ai.complete).bind(messages, max_tokens=AI_TOKEN_BUDGET)
+            inspect.signature(target.complete).bind(messages, max_tokens=AI_TOKEN_BUDGET)
         except TypeError:
-            return self.ai.complete(messages)
+            return target.complete(messages)
         except (ValueError, AttributeError):
             pass
-        return self.ai.complete(messages, max_tokens=AI_TOKEN_BUDGET)
+        return target.complete(messages, max_tokens=AI_TOKEN_BUDGET)
 
 
 def compact_verification_summary(items, stats, overall) -> str | None:

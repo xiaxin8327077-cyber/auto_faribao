@@ -1,6 +1,7 @@
 """看板里单独配置的报告提取模型。不读取项目里已有的助手环境变量。"""
 from __future__ import annotations
 
+import hashlib
 import json
 from urllib.parse import urlsplit
 
@@ -57,6 +58,14 @@ def models_url(base_url: str) -> str:
     return normalized + "/v1/models"
 
 
+def reusable_api_key(base_url: str, stored) -> str:
+    if stored is None or not stored['api_key']:
+        return ''
+    if not base_url or chat_completions_url(base_url) != chat_completions_url(stored['base_url'] or ''):
+        raise AiSettingsError('接口地址已更改，请重新填写 API Key')
+    return stored['api_key']
+
+
 def scrub_secret(message: str, secret: str) -> str:
     text = str(message or "")
     if secret:
@@ -70,25 +79,62 @@ def public_settings_view(stored: dict) -> dict:
     return view
 
 
+def _completion_content(text: str) -> str:
+    try:
+        payload = json.loads(text)
+        choice = payload["choices"][0]
+        if not isinstance(choice, dict):
+            raise ValueError("invalid completion choice")
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise AiUnavailable("模型响应无法解析") from exc
+    if choice.get("finish_reason") == "length":
+        raise AiUnavailable("模型响应被截断，请提高输出预算后重试")
+    if choice.get("finish_reason") not in {None, "stop"}:
+        raise AiUnavailable("模型未正常完成回答")
+    try:
+        content = choice["message"]["content"]
+    except (KeyError, TypeError) as exc:
+        raise AiUnavailable("模型响应无法解析") from exc
+    if not isinstance(content, str) or not content.strip():
+        raise AiUnavailable("模型响应为空")
+    return content.strip()
+
+
 class EstimateAi:
     def __init__(self, store, poster=None, model_lister=None):
         self.store = store
         self.poster = poster or _post_chat
         self.model_lister = model_lister or _get_models
+        self._bound_settings = None
+
+    def _settings(self) -> dict:
+        return dict(self._bound_settings if self._bound_settings is not None else self.store.secret_ai_settings())
+
+    def bind(self):
+        """一次任务固定配置；后续切换、编辑或删除配置不改变已排队的请求。"""
+        bound = EstimateAi(self.store, poster=self.poster, model_lister=self.model_lister)
+        bound._bound_settings = self._settings()
+        return bound
+
+    def cache_identity(self) -> str:
+        settings = self._settings()
+        # 密钥仅参与不可逆指纹，不写入缓存键、返回值或日志。
+        values = [settings.get('profile_id'), settings.get('base_url'), settings.get('model'), settings.get('api_key')]
+        return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
 
     def is_enabled(self) -> bool:
-        settings = self.store.secret_ai_settings()
+        settings = self._settings()
         return bool(settings.get("enabled") and settings.get("api_key") and settings.get("base_url") and settings.get("model"))
 
     def model_name(self) -> str:
         """当前生效的模型名，用于在生成结果旁标注来源。"""
         try:
-            return str(self.store.secret_ai_settings().get("model") or "")
+            return str(self._settings().get("model") or "")
         except Exception:
             return ""
 
     def complete(self, messages: list[dict], max_tokens: int = 4096) -> str:
-        settings = self.store.secret_ai_settings()
+        settings = self._settings()
         if not settings.get("enabled") or not settings.get("api_key") or not settings.get("base_url"):
             raise AiUnavailable("报告提取模型未启用")
         if not settings.get("model"):
@@ -96,25 +142,7 @@ class EstimateAi:
         status, text = self._post(settings, messages, max_tokens)
         if status != 200:
             raise AiUnavailable(self._failure_message(status, text, settings["api_key"]))
-        try:
-            payload = json.loads(text)
-            choice = payload["choices"][0]
-            if not isinstance(choice, dict):
-                raise ValueError("invalid completion choice")
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise AiUnavailable("模型响应无法解析") from exc
-        # 推理模型可能在预算耗尽时只返回reasoning_content，先检查终止原因才能正确报告截断。
-        if choice.get("finish_reason") == "length":
-            raise AiUnavailable("模型响应被截断，请提高输出预算后重试")
-        if choice.get("finish_reason") not in {None, "stop"}:
-            raise AiUnavailable("模型未正常完成报告提取")
-        try:
-            content = choice["message"]["content"]
-        except (KeyError, TypeError) as exc:
-            raise AiUnavailable("模型响应无法解析") from exc
-        if not isinstance(content, str) or not content.strip():
-            raise AiUnavailable("模型响应为空")
-        return content.strip()
+        return _completion_content(text)
 
     def test_connection(self, base_url: str, api_key: str, model: str) -> dict:
         url = chat_completions_url(base_url)
@@ -125,13 +153,17 @@ class EstimateAi:
         if not model_name:
             raise AiSettingsError("请先填写模型名称")
         settings = {"base_url": url, "api_key": key, "model": model_name}
-        messages = [{"role": "user", "content": "ping"}]
+        messages = [{"role": "user", "content": "只回复 OK。"}]
         try:
-            # 推理模型的最小输出预算更高，16 比 1 更不容易被服务端拒绝。
-            status, text = self.poster(settings, messages, 16)
+            # 与正式调用使用相同上限，避免推理预算过小造成空正文。
+            status, text = self.poster(settings, messages, 4096)
         except Exception as exc:
             return {"ok": False, "message": "无法连接该地址：" + scrub_secret(str(exc), key)}
         if status == 200:
+            try:
+                _completion_content(text)
+            except AiUnavailable as exc:
+                return {"ok": False, "message": str(exc)}
             return {"ok": True, "message": "连接成功"}
         return {"ok": False, "message": self._failure_message(status, text, key)}
 

@@ -128,6 +128,29 @@ def test_no_estimate_keeps_latest_actual_only_without_importing_years_of_history
     assert rows[0]["snapshot_generated_at"] is None
 
 
+def test_morning_verification_stops_polling_after_temporary_dividend_failure(books):
+    from src.fund_estimate_verification import read_official_nav_state, verification_refresh_state
+    repository, store, identities = books
+    for identity in identities:
+        _quote(repository, identity, PREVIOUS, '1')
+        _quote(repository, identity)
+        _coverage(store, identity)
+        _snapshot(store, identity)
+    store.save_nav(NavObservation(identities[0].code, DAY, '1.001', None,
+        '2026-10-28T01:00:00+08:00', 'eastmoney_fund', 'temporary-fetch-failure', 'unknown', 'missing'))
+    morning = datetime(2026, 10, 28, 10, 0, tzinfo=TZ_CN)
+    _sync(repository, store, identities, morning)
+    rows = store.read_daily_verifications()
+    assert len(rows) == 2
+    assert all(row['verification_status'] == 'verified' for row in rows)
+    state = read_official_nav_state(repository, identities, morning)
+    refresh = verification_refresh_state(identities, state, rows, morning,
+        is_trading_day=lambda day: day.weekday() < 5, analysis_status='ready', status='ready')
+    assert refresh['refresh_complete'] is True
+    assert refresh['verified_fund_count'] == 2
+    assert refresh['next_refresh_at'] == '2026-10-28T15:00:00+08:00'
+
+
 def test_unknown_dividend_preserves_nav_change_but_never_becomes_zero(books):
     repository, store, identities = books
     identity = identities[0]

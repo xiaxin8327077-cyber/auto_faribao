@@ -278,6 +278,93 @@ def test_model_settings_round_trip_hides_key_and_tests_connection(tmp_path, monk
     assert "QWEN_API_KEY" not in source
 
 
+@pytest.mark.parametrize('operation', ['models', 'test', 'save', 'copy'])
+def test_changed_profile_endpoint_requires_an_explicit_new_key(tmp_path, monkeypatch, operation):
+    from src.fund_estimate_ai import EstimateAi
+    store = FundEstimateStore(tmp_path / 'fund_estimation.db'); store.initialize()
+    saved = store.save_ai_profile(label='A', base_url='https://a.example/v1', model='reader',
+        api_key='dummy-key-a', clear_api_key=False, updated_at='2026-11-02T10:00:00+08:00', activate=True)
+    calls = []
+    def poster(*args):
+        calls.append(args)
+        return 200, json.dumps({'choices': [{'message': {'content': 'pong'}}]})
+    def lister(*args):
+        calls.append(args)
+        return 200, json.dumps({'data': [{'id': 'reader'}]})
+    service = FundEstimateService(None, store, EstimateSources(), None,
+                                 ai=EstimateAi(store, poster=poster, model_lister=lister))
+    client, _, _ = client_for(tmp_path, monkeypatch, service)
+    headers = {'X-Nav-Dashboard-Key': 'secret', 'Content-Type': 'application/json'}
+    if operation in {'models', 'test'}:
+        response = client.post('/api/portfolio/fund-estimate-model-settings/' + operation, headers=headers,
+            json={'profile_id': saved['id'], 'base_url': 'https://b.example/v1', 'model': 'reader'})
+        assert response.get_json()['ok'] is False
+    else:
+        profile = {'base_url': 'https://b.example/v1', 'model': 'reader'}
+        profile['id' if operation == 'save' else 'copy_from_profile_id'] = saved['id']
+        response = client.put('/api/portfolio/fund-estimate-model-settings', headers=headers,
+                              json={'enabled': True, 'jobs_enabled': True, 'profile': profile})
+        assert response.status_code == 400
+        assert store.ai_profile_secret(saved['id'])['base_url'] == 'https://a.example/v1'
+    assert calls == []
+    assert 'API Key' in response.get_json()['message']
+
+
+def test_manual_analysis_regeneration_is_authenticated_and_keeps_statistics(tmp_path, monkeypatch):
+    from tests.test_fund_estimate_analysis import RecordingAi, sample_data
+    store = FundEstimateStore(tmp_path / 'fund_estimation.db'); store.initialize()
+    items, _, _ = sample_data()
+    for item in items:
+        store.save_daily_verification(item)
+    ai = RecordingAi()
+    service = FundEstimateService(None, store, EstimateSources(), None, ai=ai)
+    service.verification_report()
+    _finish_analysis_worker(service)
+    before = service.verification_report()
+    client, _, _ = client_for(tmp_path, monkeypatch, service)
+    path = '/api/portfolio/fund-estimate-verifications/regenerate'
+    assert client.post(path, json={}).status_code == 403
+    ai.model = 'new-selected-model'
+    response = client.post(path, headers={'X-Nav-Dashboard-Key': 'secret'}, json={})
+    assert response.status_code == 202
+    result = response.get_json()
+    assert result['ai_model'] == 'new-selected-model'
+    assert result['ai_status'] in {'generating', 'ready'}
+    assert result['stats'] == before['stats']
+    assert result['items'] == before['items']
+    _finish_analysis_worker(service)
+    assert service.verification_report()['ai_model'] == 'new-selected-model'
+    assert len(ai.calls) == 2
+
+
+def test_mixed_activation_and_flat_update_checks_actual_key_owner(tmp_path):
+    from src.fund_estimate_ai import AiSettingsError
+    store = FundEstimateStore(tmp_path / 'fund_estimation.db'); store.initialize()
+    def add(label, active):
+        return store.save_ai_profile(label=label, base_url=f'https://{label}.example/v1',
+            model='reader', api_key=f'dummy-key-{label}', clear_api_key=False,
+            updated_at='2026-11-02T10:00:00+08:00', activate=active)
+    first, second = add('a', True), add('b', False)
+    service = FundEstimateService(None, store, EstimateSources(), None)
+    with pytest.raises(AiSettingsError, match='API Key'):
+        service.save_model_settings({'enabled': True, 'jobs_enabled': True,
+            'active_profile_id': second['id'], 'base_url': 'https://a.example/v1', 'model': 'reader'},
+            datetime(2026, 11, 2, 10, 0, tzinfo=TZ_CN))
+    assert store.public_ai_settings()['active_profile_id'] == first['id']
+    assert store.ai_profile_secret(second['id'])['base_url'] == 'https://b.example/v1'
+
+
+def test_storage_rejects_endpoint_change_without_replacing_saved_key(tmp_path):
+    from src.fund_estimate_ai import AiSettingsError
+    store = FundEstimateStore(tmp_path / 'fund_estimation.db'); store.initialize()
+    original = store.save_ai_profile(label='A', base_url='https://a.example/v1', model='reader',
+        api_key='dummy-key-a', clear_api_key=False, updated_at='2026-11-02T10:00:00+08:00')
+    with pytest.raises(AiSettingsError, match='API Key'):
+        store.save_ai_profile(profile_id=original['id'], label='A', base_url='https://b.example/v1',
+            model='reader', api_key=None, clear_api_key=False, updated_at='2026-11-02T10:01:00+08:00')
+    assert store.ai_profile_secret(original['id'])['base_url'] == 'https://a.example/v1'
+
+
 def test_model_profiles_support_switch_copy_discovery_and_key_read(tmp_path, monkeypatch):
     store = FundEstimateStore(tmp_path / "fund_estimation.db")
     store.initialize()

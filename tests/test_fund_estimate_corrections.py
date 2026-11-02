@@ -74,6 +74,39 @@ def test_same_date_nav_revision_enqueues_new_training(tmp_path):
     assert any(job['job_type'] == 'train' for job in store.list_jobs('918273'))
 
 
+@pytest.mark.parametrize('dividend,coverage', [('0', 'verified_none'), ('0.01', 'verified_cash')])
+def test_temporary_dividend_fetch_failure_keeps_verified_economic_content(tmp_path, dividend, coverage):
+    store = store_at(tmp_path)
+    verified = replace(observation(), cash_dividend_per_share=dividend,
+                       event_status='ordinary', dividend_coverage=coverage)
+    store.save_nav(verified)
+    store.save_nav(replace(observation(), available_at=NOW.isoformat()))
+    result = store.nav_as_of('918273', NOW.isoformat())[0]
+    assert result.cash_dividend_per_share == dividend
+    assert result.dividend_coverage == coverage
+    assert result.event_status == 'ordinary'
+
+
+def test_missing_dividend_on_changed_nav_does_not_reuse_older_economic_content(tmp_path):
+    store = store_at(tmp_path)
+    store.save_nav(replace(observation(), cash_dividend_per_share='0',
+                           event_status='ordinary', dividend_coverage='verified_none'))
+    store.save_nav(replace(observation(), unit_nav='1.0100', available_at=NOW.isoformat()))
+    result = store.nav_as_of('918273', NOW.isoformat())[0]
+    assert result.unit_nav == '1.0100'
+    assert result.cash_dividend_per_share is None
+
+
+def test_verified_dividend_revision_still_replaces_prior_value(tmp_path):
+    store = store_at(tmp_path)
+    store.save_nav(replace(observation(), cash_dividend_per_share='0',
+                           event_status='ordinary', dividend_coverage='verified_none'))
+    store.save_nav(replace(observation(), cash_dividend_per_share='0.01',
+                           event_status='ordinary', dividend_coverage='verified_cash', available_at=NOW.isoformat()))
+    assert store.nav_as_of('918273', '2026-10-23T08:00:00+08:00')[0].cash_dividend_per_share == '0'
+    assert store.nav_as_of('918273', NOW.isoformat())[0].cash_dividend_per_share == '0.01'
+
+
 def _verifications(store):
     import sqlite3
     with sqlite3.connect(store.path) as conn:

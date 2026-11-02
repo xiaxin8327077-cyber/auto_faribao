@@ -161,13 +161,13 @@ class CfetsCurveSource:
             if market_time > now:
                 raise CurveUnavailable('实时曲线尚未更新')
             closed = now.time() >= time(17, 0)
-            # cfets 盘中曲线约每 2-10 分钟才推进一个时点，按可配置窗口（默认 15 分钟）判定停更；
-            # 收盘后 17:00 定格值/最后时点不需要"继续更新"。
-            if not closed and (now - market_time) > timedelta(minutes=self.intraday_stale_minutes):
-                raise CurveUnavailable('实时曲线尚未更新')
             current = self._levels(day, quote_time)
             observation = self._observation(day, quote_time, previous, current, base)
-            if closed and quote_time != '17:00':
+            if not closed and (now - market_time) > timedelta(minutes=self.intraday_stale_minutes):
+                # 当日完整曲线即使延迟仍可估算；保留来源时点，读路径明确标注行情陈旧。
+                # 不用请求时点替换它：接口可能原样回显尚未发生的时间。
+                observation = replace(observation, basis_status='intraday_reference')
+            elif closed and quote_time != '17:00':
                 # 17:00 最终曲线未发布时保留最后可用时点，并标注为收盘参考而非收盘值。
                 observation = replace(observation, basis_status='close_reference')
         except (CurveUnavailable, requests.RequestException, ValueError, TypeError):

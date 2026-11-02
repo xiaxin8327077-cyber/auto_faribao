@@ -12,6 +12,83 @@ def _read_page() -> str:
     return PAGE_PATH.read_text(encoding="utf-8")
 
 
+def test_model_flags_save_immediately_and_restore_last_saved_values_on_failure():
+    html = _read_page()
+    source = html[html.index('let modelProfiles ='):html.index('function positionTypeLabel(')]
+    bindings = '\n'.join(line.strip() for line in html.splitlines()
+                         if "addEventListener('change', saveModelFlags)" in line)
+    script = r'''
+const assert = require('node:assert/strict');
+const elements = Object.fromEntries(['aiEnabled','estimateJobsEnabled','modelDialog','modelProfileList','aiCopyFromProfile','estimateJobStatus'].map(id => [id,{checked:false,disabled:false,open:false,innerHTML:'',value:'',addEventListener(name,fn){this[name]=fn;}}]));
+const $ = id => elements[id];
+const esc = String;
+let messages=[];const showToast = text => messages.push(text);
+let calls=[];let handler=async()=>({ok:true,json:async()=>({enabled:false,jobs_enabled:true,profiles:[]})});
+const api=async(path,options={})=>{calls.push({path,body:options.body?JSON.parse(options.body):null});return handler();};
+SOURCE
+BINDINGS
+(async()=>{
+ await $('aiEnabled').change();
+ assert.equal(calls.length,0,'unloaded flags must never overwrite server settings');
+ let release;
+ handler=async()=>new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>({enabled:true,jobs_enabled:true,profiles:[]})});});
+ const loading=loadModelSettings();const duplicate=loadModelSettings();
+ assert.equal(calls.length,1);
+ assert.equal($('aiEnabled').disabled,true);
+ await $('aiEnabled').change();
+ assert.equal(calls.length,1);
+ release();await loading;await duplicate;
+ assert.equal($('aiEnabled').checked,true);
+ assert.equal($('estimateJobsEnabled').checked,true);
+ assert.equal($('aiEnabled').disabled,false);
+ calls=[];
+ handler=async()=>({ok:true,json:async()=>({enabled:false,jobs_enabled:true,profiles:[]})});
+ $('aiEnabled').checked=false;
+ assert.equal(typeof $('aiEnabled').change,'function');
+ await $('aiEnabled').change();
+ assert.equal(calls.length,1);
+ assert.deepEqual(calls[0].body,{enabled:false,jobs_enabled:true});
+ assert.equal($('aiEnabled').checked,false);
+ assert.equal($('aiEnabled').disabled,false);
+ handler=async()=>{throw new Error('offline');};
+ $('estimateJobsEnabled').checked=false;
+ await $('estimateJobsEnabled').change();
+ assert.equal($('estimateJobsEnabled').checked,true);
+ assert.equal($('estimateJobsEnabled').disabled,false);
+ assert(messages.some(text=>text.includes('失败')));
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''.replace('SOURCE', source).replace('BINDINGS', bindings)
+    result = subprocess.run([shutil.which('node'), '-e', script], capture_output=True, text=True, encoding='utf-8')
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_manual_analysis_button_uses_post_even_when_automatic_verification_is_paused():
+    _run_continuity_behavior(r'''
+const paused = report([row], {ai_status:'ready',ai_model:'old-model',ai_analysis:'原分析',refresh_complete:true,
+ expected_fund_count:1,verified_fund_count:1,next_refresh_at:'2099-01-01T15:00:00+08:00'});
+renderVerification(paused);
+assert(elements.verificationContent.innerHTML.includes('重新生成分析'));
+const button=elements.verificationContent.querySelector('.verification-regenerate');
+assert.equal(typeof button.click,'function');
+let release;
+handler=async(path,options)=>{
+ assert(path.endsWith('/fund-estimate-verifications/regenerate'));
+ assert.equal(options.method,'POST');
+ assert.deepEqual(JSON.parse(options.body),{});
+ return new Promise(resolve=>{release=()=>resolve(response({...paused,ai_model:'new-model',ai_status:'generating',refresh_complete:false,next_refresh_at:null}));});
+};
+const first=button.click();await flush();
+assert.equal(button.disabled,true);
+button.click();await flush();
+assert.equal(calls.length,1);
+release();await first;await flush();
+assert.equal(verificationState().lastData.ai_model,'new-model');
+assert.deepEqual(verificationState().lastData.items,paused.items);
+assert.equal(verificationPauseUntil(),0);
+assert.equal(verificationState().lastData.ai_status,'generating');
+''')
+
+
 def _run_continuity_behavior(body: str, extra_source: str = ""):
     node = shutil.which("node")
     if not node:
@@ -582,7 +659,6 @@ def test_estimate_list_shows_single_market_time_beside_title():
     assert 'id="estimateMeta"' in html
     assert 'estimateMeta' in html
     assert '行情 ${String(estimate.market_as_of)' not in html
-    assert "latestEstimateTime.slice(-5)" in html
     assert '预估涨跌幅 · 行情 ${latestEstimateTime}' not in html
 
 
@@ -2169,8 +2245,8 @@ def test_market_tab_follows_overview_and_renders_bond_barometer():
     assert 'id="aiModelChoices"' in html
     assert 'id="aiDeleteButton"' in html
     assert 'class="settings-check-row"' in html
-    assert '<label class="settings-check"><input id="estimateJobsEnabled" type="checkbox">启用盘中预估后台任务</label>' in html
-    assert '<label class="settings-check"><input id="aiEnabled" type="checkbox">启用报告提取</label>' in html
+    assert '<label class="settings-check"><input id="estimateJobsEnabled" type="checkbox" disabled>启用盘中预估后台任务</label>' in html
+    assert '<label class="settings-check"><input id="aiEnabled" type="checkbox" disabled>启用报告提取</label>' in html
     assert "/api/portfolio/fund-estimate-model-settings/models" in html
     assert "/profiles/${id}/key" in html
     assert "function copyProfileKey" in html
@@ -2236,7 +2312,7 @@ assert(!result.includes('¥0.00'));
 assert(!result.includes('行情 2026-10-23 16:56'));
 assert(!result.includes('情景范围'));
 assert(!result.includes('试验'));
-assert.strictEqual(elements.estimateMeta.textContent, '16:56');
+assert.strictEqual(elements.estimateMeta.textContent, '2026-10-23 16:56');
 renderStockMarket({available:true,source:'东财',fetched_at:'2026-10-23T16:20:00+08:00',indices:[{name:'标普500',market:'美股',quote_date:'2026-10-22',quote_time:'2026-10-22T16:00:00-04:00',price:'6000',change_pct:'-1.2'}],indices_status:{US:{collection_phase:'close'}},industries:{quote_date:'2026-10-23',stale:true,leaders:[{name:'电子<行业>',change_pct:'2'}],laggards:[]}});
 assert(!elements.stockMarketContent.innerHTML.includes('2026-10-22 16:00 纽约'));
 assert(elements.stockMarketMeta.textContent.includes('16:20 更新'));

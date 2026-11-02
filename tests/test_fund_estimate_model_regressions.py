@@ -52,6 +52,53 @@ def base_nav():
                           'ordinary', 'verified_none')
 
 
+@pytest.mark.parametrize('revision,can_predict', [('missing', True), ('special_event', False)])
+def test_existing_model_recovery_rechecks_current_usable_history(tmp_path, revision, can_predict):
+    store = store_of(tmp_path)
+    family = 'cfets_realtime_mean'
+    config = {'min_fit_samples': 2, 'training_windows': (2,)}
+    for day, value in [('2026-10-20', '1'), ('2026-10-21', '1.001'), ('2026-10-22', '1.002')]:
+        store.save_nav(replace(base_nav(), nav_date=day, unit_nav=value,
+                               available_at=day + 'T20:00:00+08:00', source_version=day))
+    for day, basis in [('2026-10-21', '2026-10-20'), ('2026-10-22', '2026-10-21')]:
+        at = day + 'T17:00:00+08:00'
+        store.save_factor(replace(live_factor(family, at=at), basis_date=basis, source_version=day))
+    assert train_models(IDENTITY, store, NOW, config, source_family=family)['trained']
+    model = store.active_model(IDENTITY.code, IDENTITY.share_class)
+    store.save_nav(replace(base_nav(), nav_date='2026-10-21', unit_nav='1.001',
+                           available_at=NOW.isoformat(), cash_dividend_per_share=None,
+                           dividend_coverage=revision, event_status='unknown' if revision == 'missing' else 'special'))
+    # 模拟旧版本抓取失败后已留下的 rows=0，不能仅凭旧模型的样本数放行。
+    store.set_watermark('training:918273:A', '{"rows": 0, "gaps": 100}', NOW.isoformat())
+    result = project_snapshot(IDENTITY, store, live_factor(family), base_nav(), NOW, config)
+    assert (result.return_pct is not None) is can_predict
+    assert result.model_version == model.model_version
+    if not can_predict:
+        assert result.reason_codes == ['insufficient_history']
+
+
+def test_missing_curve_is_reported_as_market_missing_instead_of_nav_delayed():
+    model = fit_baseline(training_rows(), None)
+    missing = replace(live_factor(), basis_status='missing', basis_date=None,
+                      market_as_of=None, values_bp={name: None for name in FACTOR_NAMES},
+                      missing_fields=list(FACTOR_NAMES))
+    result = predict(model, missing, base_nav(), None, NOW)
+    assert result.return_pct is None
+    assert result.reason_codes == ['market_missing']
+
+
+def test_delayed_curve_prediction_keeps_the_original_market_time():
+    from src.fund_estimate_models import present_snapshot
+    model = fit_baseline(training_rows(), None)
+    delayed = live_factor(status='intraday_reference', at='2026-10-23T09:30:00+08:00')
+    result = present_snapshot(predict(model, delayed, base_nav(), None, NOW).to_dict(),
+                              NOW, {'stale_minutes': 15}, True)
+    assert result['return_pct'] is not None
+    assert result['status'] == 'stale'
+    assert result['market_as_of'] == '2026-10-23T09:30:00+08:00'
+    assert 'market_stale' in result['reason_codes']
+
+
 def test_selected_window_is_the_final_fit_window(tmp_path, monkeypatch):
     # Full-history fitting would save 48 rows although the compared strategy uses 8.
     sample = training_rows()

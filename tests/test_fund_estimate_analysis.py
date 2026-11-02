@@ -113,7 +113,7 @@ def test_completed_analysis_reports_generating_model(store):
     assert done["ai_model"] == "gpt-6.1-terra"
 
 
-def test_switching_model_regenerates_analysis_for_correct_attribution(store):
+def test_switching_model_keeps_completed_analysis_until_manual_regeneration(store):
     ai = RecordingAi(replies=[SHORT_REVIEW, SHORT_REVIEW])
     ai.model = "model-one"
     analysis = analysis_for(store, ai)
@@ -123,10 +123,136 @@ def test_switching_model_regenerates_analysis_for_correct_attribution(store):
 
     ai.model = "model-two"
     reread = analysis.read(*data)
-    assert reread["ai_status"] in {"generating", "ready"}
+    assert reread["ai_status"] == "ready"
+    assert reread['ai_model'] == 'model-one'
+    assert len(ai.calls) == 1
+    analysis.read(*data, force=True)
     done = completed(analysis, data)
     assert done["ai_model"] == "model-two"
     assert len(ai.calls) == 2
+
+
+def test_manual_regeneration_bypasses_ready_cache_and_coalesces_double_clicks(store):
+    ai = RecordingAi()
+    analysis = analysis_for(store, ai)
+    data = sample_data()
+    completed(analysis, data)
+    release = threading.Event(); ai.release = release; ai.started.clear()
+    try:
+        assert analysis.read(*data, force=True)['ai_status'] == 'generating'
+        assert ai.started.wait(1)
+        for _ in range(5):
+            assert analysis.read(*data, force=True)['ai_status'] == 'generating'
+            assert analysis.read(*data)['ai_status'] == 'generating'
+        assert len(ai.calls) == 2
+    finally:
+        release.set()
+    assert completed(analysis, data)['ai_analysis'] == SHORT_REVIEW
+    assert len(ai.calls) == 2
+
+
+def _saved_ai_profile(store, label, *, model=None, active=False):
+    return store.save_ai_profile(label=label, base_url=f'https://{label}.example/v1',
+        model=model or label, api_key='local-dummy-key', clear_api_key=False,
+        updated_at='2026-11-02T10:00:00+08:00', activate=active)
+
+
+def test_queued_analysis_keeps_model_configuration_when_active_profile_changes(store, monkeypatch):
+    first = _saved_ai_profile(store, 'model-a', active=True)
+    second = _saved_ai_profile(store, 'model-b')
+    store.save_ai_settings(enabled=True, jobs_enabled=False, updated_at='2026-11-02T10:00:00+08:00')
+    requested_models = []
+    def poster(settings, *_):
+        requested_models.append(settings['model'])
+        return 200, json.dumps({'choices': [{'finish_reason': 'stop', 'message': {'content': SHORT_REVIEW}}]})
+    analysis = analysis_for(store, EstimateAi(store, poster=poster))
+    started, release = threading.Event(), threading.Event()
+    original = analysis._generate
+    def paused(*args, **kwargs):
+        started.set(); assert release.wait(3)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(analysis, '_generate', paused)
+    try:
+        assert analysis.read(*sample_data())['ai_model'] == 'model-a'
+        assert started.wait(1)
+        worker = analysis._worker
+        store.activate_ai_profile(second['id'], '2026-11-02T10:01:00+08:00')
+    finally:
+        release.set()
+    worker.join(3)
+    assert requested_models == ['model-a']
+    store.activate_ai_profile(first['id'], '2026-11-02T10:02:00+08:00')
+    assert completed(analysis, sample_data())['ai_model'] == 'model-a'
+
+
+def test_profiles_with_same_model_name_do_not_share_analysis_cache(store):
+    _saved_ai_profile(store, 'provider-a', model='reader', active=True)
+    second = _saved_ai_profile(store, 'provider-b', model='reader')
+    store.save_ai_settings(enabled=True, jobs_enabled=False, updated_at='2026-11-02T10:00:00+08:00')
+    requested_urls = []
+    def poster(settings, *_):
+        requested_urls.append(settings['base_url'])
+        return 200, json.dumps({'choices': [{'finish_reason': 'stop', 'message': {'content': SHORT_REVIEW}}]})
+    analysis = analysis_for(store, EstimateAi(store, poster=poster))
+    completed(analysis, sample_data())
+    store.activate_ai_profile(second['id'], '2026-11-02T10:01:00+08:00')
+    assert analysis.read(*sample_data())['ai_status'] == 'ready'
+    assert requested_urls == ['https://provider-a.example/v1']
+    analysis.read(*sample_data(), force=True)
+    completed(analysis, sample_data())
+    assert requested_urls == ['https://provider-a.example/v1', 'https://provider-b.example/v1']
+
+
+def test_legacy_completed_analysis_survives_config_cache_migration_without_a_request(store):
+    from src.fund_estimate_analysis import _analysis_payload, _json, CACHE_VERSION
+    data = sample_data()
+    payload = _analysis_payload(*data)
+    digest = hashlib.sha256(_json([CACHE_VERSION, payload, 'old-model']).encode()).hexdigest()[:24]
+    store.set_watermark(f'verification-analysis:{CACHE_VERSION}:{digest}', json.dumps({
+        'version': CACHE_VERSION, 'status': 'ready', 'analysis': SHORT_REVIEW, 'model': 'old-model'}),
+        '2026-11-02T10:00:00+08:00')
+    _saved_ai_profile(store, 'new-model', active=True)
+    store.save_ai_settings(enabled=True, jobs_enabled=False, updated_at='2026-11-02T10:00:00+08:00')
+    requests = []
+    def poster(*_):
+        requests.append(1)
+        raise AssertionError('opening unchanged data must not request AI')
+    ai = EstimateAi(store, poster=poster)
+    result = analysis_for(store, ai).read(*data)
+    assert result == {'ai_status': 'ready', 'ai_model': 'old-model', 'ai_analysis': SHORT_REVIEW}
+    assert analysis_for(FundEstimateStore(store.path), ai).read(*data) == result
+    assert requests == []
+
+
+def test_last_explicit_model_choice_controls_result_when_forced_requests_interleave(store):
+    first = _saved_ai_profile(store, 'model-b', active=True)
+    second = _saved_ai_profile(store, 'model-c')
+    store.save_ai_settings(enabled=True, jobs_enabled=False, updated_at='2026-11-02T10:00:00+08:00')
+    started, release = threading.Event(), threading.Event()
+    calls = []
+    def poster(settings, *_):
+        calls.append(settings['model'])
+        if len(calls) == 1:
+            started.set(); assert release.wait(3)
+        return 200, json.dumps({'choices': [{'finish_reason': 'stop', 'message': {'content': SHORT_REVIEW}}]})
+    ai = EstimateAi(store, poster=poster)
+    analysis = analysis_for(store, ai)
+    data = sample_data()
+    try:
+        assert analysis.read(*data, force=True)['ai_model'] == 'model-b'
+        assert started.wait(1)
+        worker = analysis._worker
+        store.activate_ai_profile(second['id'], '2026-11-02T10:01:00+08:00')
+        assert analysis.read(*data, force=True)['ai_model'] == 'model-c'
+        store.activate_ai_profile(first['id'], '2026-11-02T10:02:00+08:00')
+        assert analysis.read(*data, force=True)['ai_model'] == 'model-b'
+    finally:
+        release.set()
+    worker.join(3)
+    assert analysis.read(*data)['ai_model'] == 'model-b'
+    restarted = analysis_for(FundEstimateStore(store.path), ai)
+    assert restarted.read(*data)['ai_model'] == 'model-b'
+    assert calls == ['model-b', 'model-c']
 
 
 def test_slow_ai_does_not_block_read_and_repeated_calls_share_generation(store):

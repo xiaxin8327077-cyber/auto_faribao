@@ -138,15 +138,28 @@ def test_intraday_gap_within_window_stays_usable(tmp_path):
     assert live.market_as_of == '2026-10-23T09:50:00+08:00'
 
 
-def test_intraday_gap_beyond_window_remains_missing(tmp_path):
+def test_delayed_same_day_curve_remains_available_as_dated_reference(tmp_path):
     from src.fund_estimate_store import FundEstimateStore
     store = FundEstimateStore(tmp_path / 'e.db'); store.initialize()
     now = datetime(2026, 10, 23, 10, 0, tzinfo=TZ_CN)
     source = _source(store, now, session=_LatestSession(latest_time='09:40'))
     live = source.read_intraday_factors(now)
-    # 超过 15 分钟仍无新时点，按接口停更处理，保持 missing。
+    # 当日完整曲线仍可估算，但必须保留真实时点并标为延迟参考。
+    assert live.basis_status == 'intraday_reference'
+    assert live.market_as_of == '2026-10-23T09:40:00+08:00'
+    assert live.basis_date == '2026-10-22'
+    assert live.missing_fields == []
+    assert live.values_bp['gov_3y_bp'] == '0'
+
+
+def test_future_latest_curve_is_not_relabelled_as_current(tmp_path):
+    from src.fund_estimate_store import FundEstimateStore
+    store = FundEstimateStore(tmp_path / 'e.db'); store.initialize()
+    now = datetime(2026, 10, 23, 10, 0, tzinfo=TZ_CN)
+    source = _source(store, now, session=_LatestSession(latest_time='16:00'))
+    live = source.read_intraday_factors(now)
     assert live.basis_status == 'missing'
-    assert live.missing_fields
+    assert live.market_as_of is None
 
 
 def test_previous_day_curve_never_masquerades_as_today(tmp_path):

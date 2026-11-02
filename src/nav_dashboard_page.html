@@ -456,6 +456,9 @@
     .verification-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 4px; color: var(--muted); font-size: 11px; }
     .verification-toolbar strong { color: var(--text); font-size: 12px; }
     .verification-overall-title { margin: 2px 0 5px; font-size: 13px; font-weight: 800; }
+    .verification-overall-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; }
+    .verification-overall-heading .verification-overall-title { margin: 0; }
+    .verification-regenerate { min-height: 28px; padding: 0 9px; font-size: 12px; white-space: nowrap; }
     .verification-period { margin: 0 0 12px; color: var(--muted); font-size: 10px; line-height: 1.5; }
     .verification-date { min-height: 36px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); font: inherit; font-size: 12px; }
     .verification-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 4px; }
@@ -930,8 +933,8 @@
         <section class="card section settings-block" aria-label="模型设置">
           <h3>模型设置</h3>
           <div class="settings-check-row">
-            <label class="settings-check"><input id="estimateJobsEnabled" type="checkbox">启用盘中预估后台任务</label>
-            <label class="settings-check"><input id="aiEnabled" type="checkbox">启用报告提取</label>
+            <label class="settings-check"><input id="estimateJobsEnabled" type="checkbox" disabled>启用盘中预估后台任务</label>
+            <label class="settings-check"><input id="aiEnabled" type="checkbox" disabled>启用报告提取</label>
           </div>
           <div class="model-profile-list" id="modelProfileList" role="list"><div class="empty">正在读取模型配置...</div></div>
           <div class="settings-actions">
@@ -1430,7 +1433,7 @@
         return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}${pendingHtml}</div>${reasonHtml}</div><div class="estimate-return ${toneClass}">${esc(value)}${heldFundEstimateAmount(estimate)}</div></article>`;
       }).join('') : '<div class="empty">没有持有的公募基金</div>';
       const estimateMeta = $('estimateMeta');
-      if (estimateMeta) estimateMeta.textContent = latestEstimateTime ? latestEstimateTime.slice(-5) : '--';
+      if (estimateMeta) estimateMeta.textContent = latestEstimateTime || '--';
     }
     function stockPercent(value) {
       if (value == null || value === '' || !Number.isFinite(Number(value))) return '--';
@@ -1631,9 +1634,10 @@
     function verificationState() {
       return renderVerification.viewState ||= {loading: false, inFlight: null, requestId: 0,
         refreshQueued: false, forceQueued: false, lastData: null, lastSuccessAt: '', error: '', pollTimer: null,
-        selectedDate: '', manualDate: '', dashboardVersion: ''};
+        selectedDate: '', manualDate: '', dashboardVersion: '', regenerating: false};
     }
     function verificationPauseUntil(data = verificationState().lastData) {
+      if (verificationState().regenerating) return 0;
       if (data?.refresh_complete !== true || data.ai_status === 'generating' || ['updating', 'stale'].includes(data.status)) return 0;
       const next = Date.parse(data.next_refresh_at || '');
       return Number.isFinite(next) && next > Date.now() ? next : 0;
@@ -1653,6 +1657,12 @@
       const busy = !completed && !view.error && (view.loading || updating);
       const spinner = $('verificationSpinner');
       if (spinner) spinner.hidden = !busy;
+      const regenerate = $('verificationContent')?.querySelector('.verification-regenerate');
+      if (regenerate) {
+        const generating = view.regenerating || data?.ai_status === 'generating';
+        regenerate.disabled = Boolean(view.loading || generating);
+        regenerate.textContent = generating ? '生成中…' : '重新生成分析';
+      }
       $('verificationSection')?.setAttribute?.('aria-busy', String(busy));
       if (!status) return;
       let message = '';
@@ -1661,6 +1671,7 @@
         const count = Number(data.expected_fund_count ?? data.verified_fund_count);
         message = Number.isFinite(count) && count > 0 ? `全部 ${count} 只基金验证分析已完成` : '本轮验证分析已完成';
       }
+      else if (view.regenerating) message = '正在重新生成分析…';
       else if (view.loading) message = data?.items?.length ? '正在更新…' : '正在加载验证分析…';
       else if (updating) message = Number(data.today_confirmed_count) > 0 ? '当日净值已更新，正在生成验证…' : '正在更新验证…';
       else if (data?.items?.length) {
@@ -1679,7 +1690,7 @@
       if (document.hidden) return;
       const pausedUntil = verificationPauseUntil();
       if (pausedUntil) view.pollTimer = setTimeout(loadVerification, Math.min(2147483647, Math.max(1, pausedUntil - Date.now())));
-      else if (state.activeTab === 'market') view.pollTimer = setTimeout(loadVerification, 30000);
+      else if (state.activeTab === 'market') view.pollTimer = setTimeout(loadVerification, view.lastData?.ai_status === 'generating' ? 3000 : 30000);
     }
     function refreshVerificationFromDashboard(data) {
       const view = verificationState();
@@ -1764,7 +1775,9 @@
       const start = overall.start_date || dates[dates.length - 1];
       const end = overall.end_date || dates[0];
       const options = dates.map(date => `<option value="${esc(date)}"${date === day ? ' selected' : ''}>${esc(date)}</option>`).join('');
-      box.innerHTML = `<div class="verification-overall"><h3 class="verification-overall-title">累计分析</h3><p class="verification-period">${esc(start)} 至 ${esc(end)} · ${count}条最终预估</p><div class="verification-stats"><div class="verification-stat"><span>方向一致率</span><strong>${verificationPercent(accuracy)}</strong></div><div class="verification-stat"><span>平均误差</span><strong>${verificationPercent(mae)}</strong></div></div>${analysisHtml}</div><div class="verification-toolbar"><strong>每日明细</strong><div class="verification-date-actions"><select class="verification-date" aria-label="验证日期">${options}</select>${view.manualDate ? '<button type="button" class="verification-latest">查看最新</button>' : ''}</div></div><div>${rows}</div><p class="verification-note">偏差取预估与实际之差的绝对值。</p>`;
+      box.innerHTML = `<div class="verification-overall"><div class="verification-overall-heading"><h3 class="verification-overall-title">累计分析</h3><button type="button" class="action-button secondary verification-regenerate">重新生成分析</button></div><p class="verification-period">${esc(start)} 至 ${esc(end)} · ${count}条最终预估</p><div class="verification-stats"><div class="verification-stat"><span>方向一致率</span><strong>${verificationPercent(accuracy)}</strong></div><div class="verification-stat"><span>平均误差</span><strong>${verificationPercent(mae)}</strong></div></div>${analysisHtml}</div><div class="verification-toolbar"><strong>每日明细</strong><div class="verification-date-actions"><select class="verification-date" aria-label="验证日期">${options}</select>${view.manualDate ? '<button type="button" class="verification-latest">查看最新</button>' : ''}</div></div><div>${rows}</div><p class="verification-note">偏差取预估与实际之差的绝对值。</p>`;
+      box.querySelector('.verification-regenerate')?.addEventListener('click', regenerateVerificationAnalysis);
+      updateVerificationStatus();
       const dateSelect = box.querySelector('.verification-date');
       if (dateSelect) dateSelect.addEventListener('change', event => {
         view.manualDate = event.target.value;
@@ -1776,6 +1789,15 @@
         renderVerification.selectedDate = view.selectedDate;
         renderVerification(view.lastData);
       });
+    }
+    async function regenerateVerificationAnalysis() {
+      const view = verificationState();
+      if (view.regenerating || view.lastData?.ai_status === 'generating') return view.inFlight;
+      if (view.inFlight) {
+        await view.inFlight;
+        return regenerateVerificationAnalysis();
+      }
+      return loadVerification({force: true, regenerate: true});
     }
     async function loadVerification(options = {}) {
       const view = verificationState();
@@ -1796,6 +1818,7 @@
       const controller = new AbortController();
       let timeout;
       view.loading = true;
+      view.regenerating = Boolean(options.regenerate);
       view.error = '';
       if (!view.lastData) $('verificationContent').innerHTML = panelLoadingMarkup('正在加载验证分析…');
       updateVerificationStatus();
@@ -1803,8 +1826,14 @@
         try {
           const data = await Promise.race([
             (async () => {
-              const response = await api('/api/portfolio/fund-estimate-verifications', {signal: controller.signal});
-              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              const path = '/api/portfolio/fund-estimate-verifications' + (options.regenerate ? '/regenerate' : '');
+              const request = {signal: controller.signal};
+              if (options.regenerate) Object.assign(request, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+              const response = await api(path, request);
+              if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.message || `HTTP ${response.status}`);
+              }
               return response.json();
             })(),
             new Promise((resolve, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error('请求超时')); }, 15000); })
@@ -1815,11 +1844,13 @@
         } catch (error) {
           if (requestId !== view.requestId) return;
           view.error = error.message || '读取失败';
+          if (options.regenerate) showToast(`重新生成失败：${view.error}`);
           if (!view.lastData?.items?.length) $('verificationContent').innerHTML = '';
         } finally {
           clearTimeout(timeout);
           if (requestId === view.requestId) {
             view.loading = false;
+            view.regenerating = false;
             view.inFlight = null;
             updateVerificationStatus();
             scheduleVerificationPoll();
@@ -1900,7 +1931,10 @@
     let modelFetchTimer = null;
     let deleteConfirmId = null;
     let modelSettingsLoaded = false;
+    let modelSettingsLoading = null;
     let modelChoices = [];
+    let modelFlagsSaving = false;
+    let savedModelFlags = {enabled: false, jobs_enabled: false};
     function setModelSettingsStatus(message, isError) {
       const status = $('aiDialogStatus');
       if (!status) return;
@@ -2057,27 +2091,60 @@
       if ($('modelDialog').open) closeDialog('modelDialog');
     }
     function applyModelSettings(data) {
+      modelSettingsLoaded = true;
       modelProfiles = Array.isArray(data.profiles) ? data.profiles : [];
       activeProfileId = data.active_profile_id === undefined ? null : data.active_profile_id;
       $('aiEnabled').checked = Boolean(data.enabled);
       $('estimateJobsEnabled').checked = Boolean(data.jobs_enabled);
+      savedModelFlags = {enabled: Boolean(data.enabled), jobs_enabled: Boolean(data.jobs_enabled)};
       renderModelProfiles();
       renderCopyFromOptions();
       renderEstimateJobStatus(data);
     }
-    async function loadModelSettings() {
+    async function saveModelFlags() {
+      if (!modelSettingsLoaded || modelFlagsSaving) return;
+      modelFlagsSaving = true;
+      const previous = {...savedModelFlags};
+      const body = {enabled: $('aiEnabled').checked, jobs_enabled: $('estimateJobsEnabled').checked};
+      $('aiEnabled').disabled = true;
+      $('estimateJobsEnabled').disabled = true;
       try {
-        const response = await api('/api/portfolio/fund-estimate-model-settings');
+        const response = await api('/api/portfolio/fund-estimate-model-settings', {
+          method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+        });
         const data = await response.json();
-        if (!response.ok) {
-          setModelSettingsStatus(data.message || '模型设置读取失败', true);
-          return;
-        }
-        modelSettingsLoaded = true;
+        if (!response.ok) throw new Error(data.message || '保存失败');
         applyModelSettings(data);
-      } catch (_error) {
-        setModelSettingsStatus('模型设置读取失败', true);
+        notifyModelSettings('开关已保存', false);
+      } catch (error) {
+        $('aiEnabled').checked = previous.enabled;
+        $('estimateJobsEnabled').checked = previous.jobs_enabled;
+        notifyModelSettings(`开关保存失败：${error.message || '请重试'}`, true);
+      } finally {
+        modelFlagsSaving = false;
+        $('aiEnabled').disabled = false;
+        $('estimateJobsEnabled').disabled = false;
       }
+    }
+    async function loadModelSettings() {
+      if (modelSettingsLoading) return modelSettingsLoading;
+      $('aiEnabled').disabled = true;
+      $('estimateJobsEnabled').disabled = true;
+      modelSettingsLoading = (async () => {
+        try {
+          const response = await api('/api/portfolio/fund-estimate-model-settings');
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.message || '模型设置读取失败');
+          applyModelSettings(data);
+        } catch (_error) {
+          notifyModelSettings('模型设置读取失败，请重新进入设置重试', true);
+        } finally {
+          modelSettingsLoading = null;
+          $('aiEnabled').disabled = !modelSettingsLoaded || modelFlagsSaving;
+          $('estimateJobsEnabled').disabled = !modelSettingsLoaded || modelFlagsSaving;
+        }
+      })();
+      return modelSettingsLoading;
     }
     function renderModelChoices() {
       const box = $('aiModelChoices');
@@ -2192,6 +2259,7 @@
         });
         const data = await response.json();
         if (!response.ok || !data.ok) {
+          if (data.message?.includes('API Key')) $('aiKeyHint').textContent = data.message;
           if (manual) setModelSettingsStatus(data.message || '获取模型列表失败', true);
           return;
         }
@@ -4313,6 +4381,8 @@
     });
     document.querySelectorAll('[data-tab]').forEach(tab => tab.addEventListener('click', () => setActiveTab(tab.dataset.tab)));
     $('modelSettingsForm').addEventListener('submit', saveModelSettings);
+    $('aiEnabled').addEventListener('change', saveModelFlags);
+    $('estimateJobsEnabled').addEventListener('change', saveModelFlags);
     $('aiTestButton').addEventListener('click', testModelSettings);
     $('aiNewProfileButton').addEventListener('click', () => {
       openProfileForm(null);

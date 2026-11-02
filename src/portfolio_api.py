@@ -2267,6 +2267,26 @@ def create_portfolio_blueprint(runtime, provider_factory, estimate_service=None)
         except Exception:
             return jsonify({"status": "error", "message": "验证分析读取失败，请重试"}), 503
 
+    @blueprint.post("/api/portfolio/fund-estimate-verifications/regenerate")
+    def regenerate_fund_estimate_analysis():
+        guard = read_guard()
+        if guard:
+            return guard
+        if estimate_service is None:
+            return _error("estimate_unavailable", "验证分析暂时不可用", 503)
+        if not request.is_json:
+            return _error("json_required", "请使用 JSON 请求", 400)
+        from src.fund_estimate_ai import AiSettingsError, AiUnavailable
+        try:
+            report = estimate_service.verification_report(regenerate_analysis=True)
+        except (AiSettingsError, AiUnavailable) as exc:
+            return _error("analysis_unavailable", str(exc), 400)
+        except Exception:
+            return _error("analysis_regeneration_failed", "重新生成失败，请重试", 503)
+        response = jsonify({key: value for key, value in report.items() if key != 'snapshot_items'})
+        response.headers['Cache-Control'] = 'private, no-store'
+        return response, 202
+
     @blueprint.get("/api/portfolio/fund-estimate-model-settings")
     def fund_estimate_model_settings():
         guard = read_guard()

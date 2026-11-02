@@ -255,6 +255,8 @@ def predict(model: ModelVersion, factors: FactorObservation, base_nav: NavObserv
         return _status_snapshot(identity, trade_date, generated_at, "reference", ["market_missing"], market_reference, base_nav, profile, model)
     if factors.basis_status == "unverified" or factors.source_family == "unverified_mix":
         return _status_snapshot(identity, trade_date, generated_at, "reference", ["basis_unverified"], market_reference, base_nav, profile, model)
+    if factors.basis_status == "missing":
+        return _status_snapshot(identity, trade_date, generated_at, "reference", ["market_missing"], market_reference, base_nav, profile, model)
     if factors.basis_date is None or factors.basis_date != base_nav.nav_date:
         return _status_snapshot(identity, trade_date, generated_at, "pending", ["nav_delayed"], market_reference, base_nav, profile, model)
     missing = [name for name in model.feature_names if factors.values_bp.get(name) in (None, "") and name != "calendar_days"]
@@ -382,7 +384,13 @@ def project_snapshot(identity, store, factors, base_nav, now, config, market_ref
             row_count = int(json.loads(training_rows).get("rows") or 0)
         except (TypeError, ValueError):
             row_count = 0
-    if model is None or row_count < int(config.get("min_fit_samples", 60)):
+    minimum = int(config.get("min_fit_samples", 60))
+    if model is not None and row_count < minimum and int(model.validation.get("history_sample_count") or 0) >= minimum:
+        # 临时抓取失败留下的零水位可恢复，但真实修订仍须满足当前有效样本门槛。
+        training = build_training_set(identity, generated_at, store,
+                                      source_family=model.preprocessing.get("source_family") or source_family)
+        row_count = len(training.rows)
+    if model is None or row_count < minimum:
         return _status_snapshot(
             identity,
             factors.as_of if factors else generated_at[:10],

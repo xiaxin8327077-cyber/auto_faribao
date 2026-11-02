@@ -11,6 +11,7 @@ import sqlite3
 import threading
 
 from src.beijing_time import TZ_CN
+from src.fund_estimate_ai import reusable_api_key
 from src.fund_estimate_types import (
     ESTIMATE_SCHEMA_VERSION,
     FactorObservation,
@@ -458,10 +459,24 @@ class FundEstimateStore:
             ).fetchall()
         visible = [row for row in rows if parse_time(row["available_at"]) <= cutoff]
         latest: dict[str, sqlite3.Row] = {}
+        verified: dict[str, sqlite3.Row] = {}
         for row in visible:
             current = latest.get(row["nav_date"])
             if current is None or parse_time(row["available_at"]) >= parse_time(current["available_at"]):
                 latest[row["nav_date"]] = row
+            known = verified.get(row["nav_date"])
+            if row["dividend_coverage"] != "missing" and (
+                known is None or parse_time(row["available_at"]) >= parse_time(known["available_at"])
+            ):
+                verified[row["nav_date"]] = row
+        for day, row in latest.items():
+            known = verified.get(day)
+            # 相同净值的临时分红抓取失败不是经济内容修订；保留此前已核验版本。
+            # 净值修订、首次缺失和新的已核验分红仍按原样处理，不把未知当成零。
+            if row["dividend_coverage"] == "missing" and known is not None and (
+                row["source"] == known["source"] and row["unit_nav"] == known["unit_nav"]
+            ):
+                latest[day] = known
         return [_nav_from_row(latest[key]) for key in sorted(latest)]
 
     def save_factor(self, observation: FactorObservation) -> bool:
@@ -883,6 +898,14 @@ class FundEstimateStore:
             row = conn.execute("SELECT value FROM watermarks WHERE key = ?", (key,)).fetchone()
         return None if row is None else row["value"]
 
+    def list_watermarks(self, prefix: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT key, value, updated_at FROM watermarks WHERE key LIKE ? "
+                "ORDER BY julianday(updated_at) DESC, key DESC", (prefix + '%',)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def save_curve_levels(self, family: str, day: str, quote_time: str, levels: dict, fetched_at: str) -> None:
         payload = json.dumps(levels, sort_keys=True, ensure_ascii=False)
         version = hashlib.sha256(payload.encode()).hexdigest()[:24]
@@ -1128,7 +1151,7 @@ class FundEstimateStore:
         current = None
         if profile_id is not None:
             current = conn.execute(
-                "SELECT id, api_key FROM ai_model_profiles WHERE id = ?", (profile_id,)
+                "SELECT id, api_key, base_url FROM ai_model_profiles WHERE id = ?", (profile_id,)
             ).fetchone()
             if current is None:
                 raise ValueError("模型配置不存在")
@@ -1138,7 +1161,7 @@ class FundEstimateStore:
             ).fetchone()["active_profile_id"]
             if active_id is not None:
                 current = conn.execute(
-                    "SELECT id, api_key FROM ai_model_profiles WHERE id = ?", (active_id,)
+                    "SELECT id, api_key, base_url FROM ai_model_profiles WHERE id = ?", (active_id,)
                 ).fetchone()
         if current is None:
             stored = ""
@@ -1148,10 +1171,10 @@ class FundEstimateStore:
                 elif copy_from_profile_id is not None:
                     # 从已有配置新建时由服务端复制密钥，明文不经过页面。
                     source = conn.execute(
-                        "SELECT api_key FROM ai_model_profiles WHERE id = ?",
+                        "SELECT api_key, base_url FROM ai_model_profiles WHERE id = ?",
                         (copy_from_profile_id,),
                     ).fetchone()
-                    stored = "" if source is None else source["api_key"]
+                    stored = reusable_api_key(base_url, source)
             cursor = conn.execute(
                 """INSERT INTO ai_model_profiles (label, base_url, model, api_key, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
@@ -1164,6 +1187,9 @@ class FundEstimateStore:
                 stored = ""
             elif api_key:
                 stored = api_key
+            else:
+                # 在同一保存事务内检查实际目标，兼顾混合切换和并发配置修改。
+                stored = reusable_api_key(base_url, current)
             conn.execute(
                 """UPDATE ai_model_profiles
                    SET label = ?, base_url = ?, model = ?, api_key = ?, updated_at = ?
