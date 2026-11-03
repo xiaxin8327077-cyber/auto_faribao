@@ -252,7 +252,7 @@ def _post_chat_payload(url: str, api_key: str, payload: dict):
             "Content-Type": "application/json",
         },
         json=payload,
-        timeout=(3, 45),
+        timeout=(3, 100),
         allow_redirects=False,
         stream=True,
     )

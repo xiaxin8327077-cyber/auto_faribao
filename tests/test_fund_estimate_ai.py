@@ -73,6 +73,32 @@ def ai_for(state):
     return EstimateAi(Store())
 
 
+def test_chat_payload_allows_100_second_read_timeout(monkeypatch):
+    from src.fund_estimate_ai import _post_chat_payload
+
+    captured = {}
+
+    class Response:
+        status_code = 200
+        headers = {}
+
+        def iter_content(self, _size):
+            return iter(())
+
+        def close(self):
+            pass
+
+    def post(*_args, **kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr("src.fund_estimate_ai.requests.post", post)
+    status, text = _post_chat_payload("https://models.example/v1/chat/completions", "key", {})
+
+    assert (status, text) == (200, "")
+    assert captured["timeout"] == (3, 100)
+
+
 def test_real_http_shape_accepts_complete_structured_output(model_server):
     content = ai_for(model_server).complete([{"role":"user","content":"extract"}])
     assert content == model_server["content"]
