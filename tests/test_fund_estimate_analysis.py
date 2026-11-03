@@ -473,7 +473,7 @@ def test_incorrect_numbers_or_unsupported_cause_get_one_rewrite_then_fallback(st
 def test_grounded_percent_and_bp_values_and_qualified_hypotheses_are_accepted(store):
     lines = SHORT_REVIEW.splitlines()
     lines[0] = "方向一致率为100.000%，超过同期间简单基线，当前结论仅反映当日，仍需新增记录复核。"
-    lines[1] = "平均绝对误差为6.000bp，小于实际平均波动，整体偏低，需检查同方向偏差是否再次出现。"
+    lines[1] = "平均绝对误差为6.000个基点，小于实际平均波动，整体偏低，需检查同方向偏差是否再次出现。"
     lines[2] = "最大偏差来自测试纯债A，久期差异仅为待核验假设，应结合正式报告检查，不能直接认定。"
     text = "\n".join(lines)
     ai = RecordingAi([text])

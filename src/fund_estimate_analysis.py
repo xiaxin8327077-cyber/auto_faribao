@@ -399,14 +399,18 @@ def _supported_numbers(text, payload):
     remaining = re.sub(r"(?<!\d)\d{1,2}月\d{1,2}日", " ", remaining)
     for identifier in sorted(identifiers, key=len, reverse=True):
         remaining = re.sub(r"(?<!\d)" + re.escape(identifier) + r"(?!\d)", "", remaining)
-    pattern = r"(?<![\d.])([+-]?\d+(?:\.\d+)?)(?:\s*)(个百分点|[bB][pP]|[%％]|倍|个|只|条|天|日)?"
+    pattern = r"(?<![\d.])([+-]?\d+(?:\.\d+)?)(?:\s*)(个基点|基点|个百分点|[bB][pP]|[%％]|倍|个|只|条|天|日)?"
     for match in re.finditer(pattern, remaining):
         number, unit = _decimal(match[1]), match[2]
         if unit in {"个", "只", "条", "天", "日"}:
             if number not in values["count"]:
                 return False
             continue
-        unit = "%" if unit == "％" else (unit or "").lower()
+        unit = {
+            "％": "%",
+            "个基点": "bp",
+            "基点": "bp",
+        }.get(unit, (unit or "").lower())
         if not unit or not re.fullmatch(r"[+-]?\d+\.\d{3}", match[1]):
             return False
         if not any(abs(number - source) <= Decimal("0.0005") for source in values.get(unit, ())):
