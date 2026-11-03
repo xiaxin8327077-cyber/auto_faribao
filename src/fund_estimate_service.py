@@ -653,11 +653,30 @@ class FundEstimateService:
         else:
             raise RuntimeError("未知估值任务")
 
+    def _persist_portfolio_nav(self, identity: FundIdentity, item, now: datetime) -> None:
+        """估值源取得正式净值后，先写组合账本，再生成实际涨跌。"""
+        if self.repository is None or not hasattr(self.repository, 'upsert_quote'):
+            return
+        from src.portfolio_market import validate_market_quote
+        from src.portfolio_models import MarketQuote
+
+        quote = MarketQuote(
+            product_code=identity.code,
+            quote_date=date.fromisoformat(item.nav_date),
+            unit_nav=Decimal(item.unit_nav),
+            source=item.source,
+            raw_hash=item.source_version,
+            source_timestamp=item.available_at,
+        )
+        validate_market_quote(ProductType.PUBLIC_FUND, quote)
+        self.repository.upsert_quote(identity.product_id, quote, iso_now(now))
+
     def _backfill(self, identity: FundIdentity, now: datetime, enqueue_train: bool) -> None:
         today = ensure_aware(now, TZ_CN).date()
         navs = self.sources.fetch_nav_history(identity, default_history_start(today), today)
         previous = {item.nav_date: _nav_economic_content(item) for item in self.store.nav_as_of(identity.code, iso_now(now))}
         for item in navs:
+            self._persist_portfolio_nav(identity, item, now)
             self.store.save_nav(item)
         factor_changes = []
         try:

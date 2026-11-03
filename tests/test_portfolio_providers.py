@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 import hashlib
 import json
+import urllib.error
 import urllib.parse
 
 import pytest
@@ -805,6 +806,57 @@ def test_changsheng_posts_exact_official_form():
         ],
         "_ZVING_DATA_FORMAT": ["json"],
     }
+
+
+def test_changsheng_request_failure_falls_back_to_eastmoney():
+    from src.portfolio_providers import ChangshengFundProvider
+
+    def opener(request, **_kwargs):
+        if "csfunds.com.cn" in request.full_url:
+            raise urllib.error.HTTPError(
+                request.full_url, 404, "Not Found", {}, None
+            )
+        if "FundSearchAPI" in request.full_url:
+            return {
+                "Datas": [
+                    {
+                        "CODE": "015736",
+                        "CATEGORY": 700,
+                        "FundBaseInfo": {
+                            "SHORTNAME": "长盛盛裕纯债D",
+                            "JJGS": "长盛基金",
+                            "FTYPE": "债券型",
+                        },
+                    }
+                ]
+            }
+        if "api.fund.eastmoney.com" in request.full_url:
+            return {
+                "ErrCode": 0,
+                "Data": {
+                    "LSJZList": [
+                        {
+                            "FSRQ": "2026-11-02",
+                            "DWJZ": "1.0334",
+                            "LJJZ": "1.2334",
+                        }
+                    ]
+                },
+            }
+        raise AssertionError(request.full_url)
+
+    provider = ChangshengFundProvider(opener=opener)
+    quotes = provider.fetch_quotes(
+        provider.resolve_product("015736"),
+        date(2026, 11, 1),
+        date(2026, 11, 3),
+    )
+
+    assert len(quotes) == 1
+    assert quotes[0].product_code == "015736"
+    assert quotes[0].quote_date == date(2026, 11, 2)
+    assert quotes[0].unit_nav == Decimal("1.0334")
+    assert quotes[0].source == "eastmoney_fund"
 
 
 @pytest.mark.parametrize(

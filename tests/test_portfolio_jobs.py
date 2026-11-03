@@ -122,3 +122,42 @@ def test_strict_cycle_propagates_single_product_quote_failure(monkeypatch):
             datetime(2026, 7, 30, 9, 0),
             raise_on_error=True,
         )
+
+
+def test_strict_quote_failure_does_not_skip_remaining_products(monkeypatch):
+    products = [
+        SimpleNamespace(
+            provider="citic_wealth",
+            code=code,
+            name=code,
+            product_type=ProductType.WEALTH_NAV,
+            registration_code="",
+            metadata_json="",
+        )
+        for code in ("AF252171L", "LATER")
+    ]
+    repository = SimpleNamespace(
+        list_products=lambda active_only=False: products,
+    )
+    runtime = SimpleNamespace(write_enabled=True, repository=repository)
+    calls = []
+
+    def sync_product(_self, product, *_args):
+        calls.append(product.code)
+        if product.code == "AF252171L":
+            raise RuntimeError("network")
+        return []
+
+    monkeypatch.setattr(
+        "src.portfolio_jobs.QuoteSyncService.sync_product",
+        sync_product,
+    )
+
+    with pytest.raises(RuntimeError, match="network"):
+        run_portfolio_cycle(
+            runtime,
+            datetime(2026, 7, 30, 9, 0),
+            raise_on_error=True,
+        )
+
+    assert calls == ["AF252171L", "LATER"]

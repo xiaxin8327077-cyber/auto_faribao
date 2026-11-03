@@ -1137,6 +1137,18 @@ def _refresh_dashboard(cfg, state_path, attempted_at: datetime):
     try:
         from src.nav_monitor import ProviderError, query_nav_histories
 
+        # 看板持仓以组合账本为准，手动刷新必须同时补齐账本行情；
+        # 这里只同步净值，不触发定投、确认或收益记账。
+        runtime = _get_portfolio_runtime()
+        if (
+            runtime is not None
+            and getattr(runtime, "repository", None) is not None
+            and getattr(runtime, "write_enabled", False)
+        ):
+            from src.portfolio_jobs import sync_portfolio_quotes
+
+            sync_portfolio_quotes(runtime.repository, attempted_at.date())
+
         histories, errors = query_nav_histories(
             cfg,
             start_date=BASE_DATE - timedelta(days=14),

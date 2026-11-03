@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -18,6 +19,9 @@ from src.nav_monitor import (
 )
 from src.portfolio_market import validate_market_quote
 from src.portfolio_models import MarketProduct, MarketQuote, ProductType
+
+
+logger = logging.getLogger(__name__)
 
 
 VERIFIED_CASH_PRODUCTS = {
@@ -501,6 +505,10 @@ class NanyinPortfolioProvider:
         raise ProviderError("无法可靠识别产品类型")
 
 
+class _ChangshengOfficialRequestError(ProviderError):
+    pass
+
+
 class ChangshengFundProvider:
     provider = "changsheng_fund"
     URL = "https://www.csfunds.com.cn/front/ajax/invoke"
@@ -523,6 +531,21 @@ class ChangshengFundProvider:
         )
 
     def fetch_quotes(self, product, start_date, end_date) -> list[MarketQuote]:
+        try:
+            return self._fetch_official_quotes(product, start_date, end_date)
+        except _ChangshengOfficialRequestError as exc:
+            logger.warning(
+                "长盛基金官方行情不可用，切换公开基金行情：%s（%s）",
+                product.code,
+                exc,
+            )
+            fallback = EastmoneyFundProvider(opener=self.opener)
+            resolved = fallback.resolve_product(product.code)
+            return fallback.fetch_quotes(resolved, start_date, end_date)
+
+    def _fetch_official_quotes(
+        self, product, start_date, end_date
+    ) -> list[MarketQuote]:
         _require_product(self.provider, product)
         resolved_product = self.resolve_product(product.code)
         _name, fund_type = FUND_IDENTITIES[resolved_product.code][:2]
@@ -556,7 +579,7 @@ class ChangshengFundProvider:
         except ProviderError:
             raise
         except Exception as exc:
-            raise ProviderError("长盛基金行情接口请求失败") from exc
+            raise _ChangshengOfficialRequestError("长盛基金行情接口请求失败") from exc
         status = data.get("status") if isinstance(data, dict) else None
         if not (type(status) is int and status == 1):
             raise ProviderError("长盛基金行情接口状态异常")

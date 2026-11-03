@@ -1,4 +1,4 @@
-"""临时估值库 + 模拟组合的全链路整合：数据准备→训练→快照→缓存API，不动正式账本。
+"""临时估值库 + 模拟组合的全链路整合：数据准备→训练→快照→缓存API，正式净值同步组合账本。
 
 网络只在传输边界替换（公告 JSON/PDF、曲线 HTTP），其余组件走生产实现：
 PublicFundDocuments、CfetsCurveSource、ProfileService、train_models、
@@ -154,7 +154,6 @@ def _backfill_history(service):
 def test_full_chain_trains_and_reports_held_and_pending_funds(tmp_path, monkeypatch):
     service, store, database, client, doc_session = _build(tmp_path, monkeypatch)
     headers = {"X-Nav-Dashboard-Key": "secret"}
-    ledger_before = database.path.read_bytes()
 
     service.profiles.refresh(HELD, NOW)
     service.profiles.refresh(PENDING, NOW)
@@ -186,8 +185,12 @@ def test_full_chain_trains_and_reports_held_and_pending_funds(tmp_path, monkeypa
 
     overview = client.get("/api/portfolio/market-overview", headers=headers).get_json()
     assert {"918273", "400030"} <= {item["code"] for item in overview["fund_estimates"].values()}
-    # 全链路只写临时估值库与公开接口读取，模拟组合的正式账本保持只读。
-    assert database.path.read_bytes() == ledger_before
+    # 估值回补的正式净值必须先进入组合账本，驱动看板净值和实际收益。
+    quote = PortfolioRepository(database).latest_quote("p-held")
+    assert quote is not None
+    assert quote.quote_date == date(2026, 10, 22)
+    assert quote.unit_nav is not None
+    assert quote.source == "eastmoney_fund"
     assert doc_session.pdf_downloads
 
 

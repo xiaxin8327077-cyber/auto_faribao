@@ -93,54 +93,61 @@ def _product_metadata(product):
     return None
 
 
+def sync_portfolio_quotes(repository, day, strict=False):
+    """同步全部产品行情；严格模式也在尝试完其余产品后再报错。"""
+    from src.portfolio_wallet import (
+        WALLET_PROVIDER,
+        cash_income_dates_to_accrue,
+        wallet_quote_sync_end_date,
+    )
+
+    sync_service = QuoteSyncService(repository, get_market_provider)
+    synced = 0
+    errors = []
+    for product in repository.list_products(active_only=True):
+        market_product = MarketProduct(
+            provider=product.provider,
+            code=product.code,
+            name=product.name,
+            product_type=product.product_type,
+            registration_code=product.registration_code,
+            metadata=_product_metadata(product),
+        )
+        if product.provider == WALLET_PROVIDER:
+            end_date = wallet_quote_sync_end_date(day)
+            start_date = cash_income_dates_to_accrue(day)[0]
+        else:
+            end_date = day
+            start_date = day - timedelta(days=1)
+        try:
+            quotes = sync_service.sync_product(
+                market_product, start_date, end_date
+            )
+        except Exception as exc:
+            logger.error(
+                "Portfolio quote sync failed for %s",
+                product.code,
+                exc_info=True,
+            )
+            errors.append(exc)
+            continue
+        synced += len(quotes)
+    if strict and errors:
+        raise errors[0]
+    return synced
+
+
 def build_portfolio_jobs(runtime, strict=False):
     repository = runtime.repository
     projector = PositionProjector(repository)
     transaction_service = PortfolioTransactionService(repository, projector)
     sip_service = SipService(repository, projector, transaction_service)
     income_service = CashIncomeService(repository, projector)
-    sync_service = QuoteSyncService(repository, get_market_provider)
     from src.portfolio_dividends import FundDividendService
     dividend_service = FundDividendService(repository)
 
     def sync_quotes(day):
-        from src.portfolio_wallet import (
-            WALLET_PROVIDER,
-            cash_income_dates_to_accrue,
-            wallet_quote_sync_end_date,
-        )
-
-        synced = 0
-        for product in repository.list_products(active_only=True):
-            market_product = MarketProduct(
-                provider=product.provider,
-                code=product.code,
-                name=product.name,
-                product_type=product.product_type,
-                registration_code=product.registration_code,
-                metadata=_product_metadata(product),
-            )
-            if product.provider == WALLET_PROVIDER:
-                end_date = wallet_quote_sync_end_date(day)
-                start_date = cash_income_dates_to_accrue(day)[0]
-            else:
-                end_date = day
-                start_date = day - timedelta(days=1)
-            try:
-                quotes = sync_service.sync_product(
-                    market_product, start_date, end_date
-                )
-            except Exception:
-                logger.error(
-                    "Portfolio quote sync failed for %s",
-                    product.code,
-                    exc_info=True,
-                )
-                if strict:
-                    raise
-                continue
-            synced += len(quotes)
-        return synced
+        return sync_portfolio_quotes(repository, day, strict=strict)
 
     def create_intents(day):
         created = 0

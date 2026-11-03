@@ -76,6 +76,50 @@ def test_new_nav_schedules_one_training_job(tmp_path):
     assert len(training) == 1
 
 
+def test_backfill_updates_portfolio_nav_before_actual_return(tmp_path, monkeypatch):
+    repo = repository(tmp_path)
+    pending_fund(repo, "015736")
+    sources = EstimateSources(
+        nav_fetcher=lambda *_args: {
+            "total": 1,
+            "rows": [{
+                "nav_date": "2026-11-02",
+                "unit_nav": "1.0334",
+                "source": "eastmoney_fund",
+                "source_version": "015736-20261102-v1",
+                "available_at": "2026-11-02T21:00:00+08:00",
+            }],
+        },
+        dividend_fetcher=lambda *_args: {"complete": True, "events": []},
+        factor_fetcher=lambda *_args: [],
+    )
+    service = build(tmp_path, repo, sources)
+    identity = FundIdentity(
+        "p-015736", "015736", "eastmoney_fund", "D", None, "债券型"
+    )
+    verified_quotes = []
+    monkeypatch.setattr(service, "_sync_daily_factors", lambda *_args: [])
+    monkeypatch.setattr(
+        service,
+        "_verify",
+        lambda *_args: verified_quotes.append(
+            repo.get_quote("p-015736", date(2026, 11, 2)).unit_nav
+        ),
+    )
+
+    service._backfill(
+        identity,
+        datetime(2026, 11, 3, 9, 0, tzinfo=TZ_CN),
+        enqueue_train=False,
+    )
+
+    quote = repo.get_quote("p-015736", date(2026, 11, 2))
+    assert quote.unit_nav == Decimal("1.0334")
+    assert quote.source == "eastmoney_fund"
+    assert quote.source_timestamp == "2026-11-02T21:00:00+08:00"
+    assert verified_quotes == [Decimal("1.0334")]
+
+
 def test_model_refit_follows_new_report_without_code_change(tmp_path):
     repo = repository(tmp_path)
     pending_fund(repo, "102938")

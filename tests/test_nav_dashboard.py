@@ -379,6 +379,35 @@ def test_manual_refresh_does_not_reuse_recent_success(monkeypatch, tmp_path):
     assert launches == [True]
 
 
+def test_manual_refresh_syncs_portfolio_quotes(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from src.nav_dashboard import _refresh_dashboard
+
+    repository = object()
+    runtime = SimpleNamespace(repository=repository, write_enabled=True)
+    calls = []
+    store = SimpleNamespace(
+        state={"initialized": True},
+        record_history=lambda *_args: None,
+        save=lambda: None,
+    )
+    monkeypatch.setattr("src.nav_dashboard._get_portfolio_runtime", lambda: runtime)
+    monkeypatch.setattr("src.nav_dashboard.NavDashboardStore", lambda _path: store)
+    monkeypatch.setattr(
+        "src.nav_monitor.query_nav_histories",
+        lambda *_args, **_kwargs: ([], []),
+    )
+    monkeypatch.setattr(
+        "src.portfolio_jobs.sync_portfolio_quotes",
+        lambda actual_repository, day: calls.append((actual_repository, day)),
+    )
+
+    attempted_at = _dt("2026-11-03 09:30")
+    _refresh_dashboard(_cfg(), tmp_path / "state.json", attempted_at)
+
+    assert calls == [(repository, date(2026, 11, 3))]
+
+
 from types import SimpleNamespace
 from src.nav_dashboard import _product_breakdown_rows, _sum_product_amounts
 
