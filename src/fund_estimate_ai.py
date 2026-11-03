@@ -226,16 +226,25 @@ def _post_chat(settings: dict, messages: list[dict], max_tokens: int):
         "temperature": 0,
         "stream": False,
     }
-    # 新模型（GPT-5/o 系列）只接受 max_completion_tokens，部分推理模型不接受
-    # 自定义 temperature。仅在服务端明确拒绝该参数时重试一次，避免对国内
-    # 只认 max_tokens 的兼容接口多发请求。
-    for _attempt in range(3):
+    # 所有模型共享同一预算策略：参数名按服务端能力适配；仅在明确拒绝
+    # 较高预算时回退到原有 4096，不根据模型名称设置特殊分支。
+    for _attempt in range(4):
         status, text = _post_chat_payload(url, settings["api_key"], payload)
         if status != 400:
             return status, text
+        budget_parameter = (
+            "max_completion_tokens"
+            if "max_completion_tokens" in payload
+            else "max_tokens"
+        )
+        if (
+            payload.get(budget_parameter, 0) > 4096
+            and _budget_rejected(text, budget_parameter)
+        ):
+            payload[budget_parameter] = 4096
+            continue
         if "max_tokens" in payload and _parameter_unsupported(text, "max_tokens"):
-            payload.pop("max_tokens")
-            payload["max_completion_tokens"] = max_tokens
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
             continue
         if "temperature" in payload and _parameter_unsupported(text, "temperature"):
             payload.pop("temperature")
@@ -290,6 +299,18 @@ def _parameter_unsupported(text: str, parameter: str) -> bool:
         "unrecognized", "does not support", "only the default",
     )
     return any(marker in message for marker in markers)
+
+
+def _budget_rejected(text: str, parameter: str) -> bool:
+    """识别服务端对当前预算值的拒绝，而不是参数名不兼容。"""
+    try:
+        error = (json.loads(text) or {}).get("error") or {}
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if not isinstance(error, dict) or str(error.get("param") or "") != parameter:
+        return False
+    code = str(error.get("code") or "")
+    return code not in {"unsupported_parameter", "unsupported_value"}
 
 
 def _get_models(settings: dict):

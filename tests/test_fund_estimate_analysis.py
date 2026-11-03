@@ -345,7 +345,7 @@ def test_long_review_gets_one_compression_request_with_compatible_reasoning_budg
     result = completed(analysis_for(store, ai), sample_data())
     assert result["ai_analysis"] == SHORT_REVIEW
     assert len(ai.calls) == 2
-    assert all(budget == 4096 for _, budget in ai.calls)
+    assert all(budget == 8192 for _, budget in ai.calls)
     assert "压缩" in ai.calls[1][0][-1]["content"]
 
 
@@ -536,7 +536,7 @@ def test_reasoning_budget_upgrade_ignores_old_failure_cooldown_and_persists_new_
     analysis = analysis_for(store, ai)
     assert analysis.read(*data)["ai_status"] == "generating"
     assert completed(analysis, data)["ai_analysis"] == SHORT_REVIEW
-    assert len(ai.calls) == 1 and ai.calls[0][1] == 4096
+    assert len(ai.calls) == 1 and ai.calls[0][1] == 8192
     cached = json.loads(store.get_watermark(key_for("short-v2")))
     assert cached["version"] == "short-v2"
     assert cached["status"] == "ready"

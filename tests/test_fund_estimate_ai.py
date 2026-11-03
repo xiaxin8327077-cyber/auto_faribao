@@ -15,6 +15,7 @@ def model_server():
         "requests": [],
         "reject_max_tokens": False,
         "reject_temperature": False,
+        "reject_high_budget": False,
         "fail_status": None,
         "fail_body": "",
         "models": ["LongCat-2.5-Flash", "LongCat-2.5-Preview"],
@@ -40,6 +41,13 @@ def model_server():
             if state["fail_status"]:
                 status = state["fail_status"]
                 body = state["fail_body"].encode()
+            elif state["reject_high_budget"] and max(
+                payload.get("max_tokens", 0),
+                payload.get("max_completion_tokens", 0),
+            ) > 4096:
+                parameter = "max_tokens" if "max_tokens" in payload else "max_completion_tokens"
+                status = 400
+                body = json.dumps({"error": {"message": f"{parameter} exceeds the supported limit", "type": "invalid_request_error", "param": parameter, "code": "invalid_value"}}).encode()
             elif state["reject_max_tokens"] and "max_tokens" in payload:
                 status = 400
                 body = json.dumps({"error": {"message": "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.", "type": "invalid_request_error", "param": "max_tokens", "code": "unsupported_parameter"}}).encode()
@@ -120,6 +128,31 @@ def test_gpt5_style_models_retry_with_max_completion_tokens(model_server):
     assert "max_tokens" in first and "max_completion_tokens" not in first
     assert "max_completion_tokens" in second and "max_tokens" not in second
     assert second["max_completion_tokens"] == first["max_tokens"]
+
+
+def test_high_budget_rejection_falls_back_to_legacy_budget(model_server):
+    model_server["reject_high_budget"] = True
+    content = ai_for(model_server).complete(
+        [{"role": "user", "content": "extract"}], max_tokens=8192
+    )
+
+    assert content == model_server["content"]
+    assert [item["max_tokens"] for item in model_server["requests"]] == [8192, 4096]
+
+
+def test_budget_fallback_preserves_parameter_name_adaptation(model_server):
+    model_server["reject_high_budget"] = True
+    model_server["reject_max_tokens"] = True
+    content = ai_for(model_server).complete(
+        [{"role": "user", "content": "extract"}], max_tokens=8192
+    )
+
+    assert content == model_server["content"]
+    first, second, third = model_server["requests"]
+    assert first["max_tokens"] == 8192
+    assert second["max_tokens"] == 4096
+    assert third["max_completion_tokens"] == 4096
+    assert "max_tokens" not in third
 
 
 def test_reasoning_models_retry_without_temperature(model_server):

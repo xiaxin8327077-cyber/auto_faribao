@@ -15,7 +15,7 @@ from time import time
 logger = logging.getLogger(__name__)
 CACHE_VERSION = "short-v2"
 # 兼容推理模型：输出预算可能同时包含reasoning，正文长度由后续字符及短句校验控制。
-AI_TOKEN_BUDGET = 4096
+AI_TOKEN_BUDGET = 8192
 RETRY_SECONDS = 60
 MAX_RETRY_SECONDS = 900
 
