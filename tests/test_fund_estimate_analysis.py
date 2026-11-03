@@ -101,6 +101,16 @@ def test_month_day_dates_are_not_treated_as_unsupported_numbers():
     assert _supported_numbers(text, payload) is True
 
 
+def test_supported_numbers_accept_equivalent_precision_and_chinese_bp():
+    from src.fund_estimate_analysis import _supported_numbers
+
+    payload = {
+        "stats": {"direction_accuracy": 0.25, "mae_pct": 0.059657142857},
+        "diagnostics": {"mae_bp": 5.9657142857},
+    }
+    assert _supported_numbers("方向准确率25%，平均绝对误差5.966个基点。", payload) is True
+
+
 def test_completed_analysis_reports_generating_model(store):
     ai = RecordingAi()
     ai.model = "gpt-6.1-terra"
@@ -347,6 +357,7 @@ def test_long_review_gets_one_compression_request_with_compatible_reasoning_budg
     assert len(ai.calls) == 2
     assert all(budget == 8192 for _, budget in ai.calls)
     assert "压缩" in ai.calls[1][0][-1]["content"]
+    assert "product_id" not in ai.calls[1][0][-1]["content"]
 
 
 @pytest.mark.parametrize("bad_text", ["这是超长点评。" * 60, "\n".join(["重复罗列。"] * 5), ""],

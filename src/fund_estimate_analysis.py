@@ -233,11 +233,15 @@ class VerificationAnalysis:
         if text is not None:
             return text
         # 只允许一次完整压缩；不截断原文，避免截掉单位或限定条件。
-        compression = messages + [
-            {"role": "assistant", "content": str(raw or "")},
+        # 压缩只需原文，不重复携带整份 JSON；独立短提示降低长输入对
+        # 格式遵循和输出预算的影响，数字真实性仍由下方源数据校验保证。
+        compression = [
+            {"role": "system", "content": "你是文本压缩助手，只输出压缩后的四行中文短句。"},
             {"role": "user", "content": (
-                "请按原数据重新压缩为4条完整短句，四个观察维度各一条，每行一句，"
-                "总计不超过180字，目标120–180字，不补无关内容，不加标题或编号，保留必要单位与限定条件。"
+                "请将以下点评压缩为恰好4条完整短句，四个观察维度各一条，每行一句且不超过70字，"
+                "总计80–180字，不加标题、编号、Markdown或解释，不补无关内容。"
+                "保留必要单位与限定条件；百分比保留3位小数，基点统一写bp，不新增数字或原因。\n"
+                "原文：\n" + str(raw or "")
             )},
         ]
         text = _checked_text(self._complete(compression, ai), payload)
@@ -411,7 +415,7 @@ def _supported_numbers(text, payload):
             "个基点": "bp",
             "基点": "bp",
         }.get(unit, (unit or "").lower())
-        if not unit or not re.fullmatch(r"[+-]?\d+\.\d{3}", match[1]):
+        if not unit:
             return False
         if not any(abs(number - source) <= Decimal("0.0005") for source in values.get(unit, ())):
             return False
