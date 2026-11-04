@@ -96,7 +96,7 @@ def test_completed_verification_keeps_timeout_summary_after_retry_deadline(tmp_p
     assert completed['ai_status'] == 'failed'
     assert completed['ai_analysis'] == first['ai_analysis']
     assert completed['refresh_complete'] is True
-    assert completed['next_refresh_at'] == '2026-10-29T15:00:00+08:00'
+    assert completed['next_refresh_at'] == '2026-10-29T17:00:00+08:00'
     assert ai.calls == 1
 
 
@@ -145,6 +145,11 @@ def test_completed_summary_remains_cached_after_next_market_close(tmp_path, monk
                                       ai=ai, bond_trading_day=lambda _day: True)
         service._verification_amounts = lambda items, _snapshots: items
         service.start_official_verification_sync = lambda *_args, **_kwargs: None
+    # 15:00 是旧恢复点；债市收盘前仍保持完成，不重新生成同一份分析。
+    still_paused = service.verification_report()
+    assert still_paused['refresh_complete'] is True
+    assert still_paused['next_refresh_at'] == '2026-10-29T17:00:00+08:00'
+    later = datetime(2026, 10, 29, 17, 1, tzinfo=TZ_CN)
     later_report = service.verification_report()
     _finish_analysis_worker(service)
     assert later_report['status'] == 'ready'

@@ -148,7 +148,15 @@ def test_morning_verification_stops_polling_after_temporary_dividend_failure(boo
         is_trading_day=lambda day: day.weekday() < 5, analysis_status='ready', status='ready')
     assert refresh['refresh_complete'] is True
     assert refresh['verified_fund_count'] == 2
-    assert refresh['next_refresh_at'] == '2026-10-28T15:00:00+08:00'
+    assert refresh['next_refresh_at'] == '2026-10-28T17:00:00+08:00'
+    arguments = dict(is_trading_day=lambda day: day.weekday() < 5, analysis_status='ready', status='ready')
+    before_close = verification_refresh_state(identities, state, rows,
+        datetime(2026, 10, 28, 16, 59, tzinfo=TZ_CN), **arguments)
+    assert before_close['refresh_complete'] is True
+    assert before_close['next_refresh_at'] == '2026-10-28T17:00:00+08:00'
+    resumed = verification_refresh_state(identities, state, rows,
+        datetime(2026, 10, 28, 17, 0, tzinfo=TZ_CN), **arguments)
+    assert resumed['refresh_complete'] is False
 
 
 def test_unknown_dividend_preserves_nav_change_but_never_becomes_zero(books):

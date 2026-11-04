@@ -83,7 +83,7 @@ def read_official_nav_state(repository, identities, now: datetime) -> dict:
 def verification_refresh_state(identities, current_state, items, now: datetime, *,
                                is_trading_day, analysis_status, status,
                                version_pending=False) -> dict:
-    """全部持仓验证及点评完成后，冻结至之后首个交易日收盘。"""
+    """全部持仓验证及点评完成后，冻结至之后首个交易日 17:00。"""
     identities = list(identities)
     product_ids = {identity.product_id for identity in identities}
     result = {
@@ -127,7 +127,7 @@ def verification_refresh_state(identities, current_state, items, now: datetime, 
             next_day = target + timedelta(days=offset)
             trading = is_trading_day(next_day)
             if trading is True:
-                resume_at = datetime.combine(next_day, time(15), TZ_CN)
+                resume_at = datetime.combine(next_day, time(17), TZ_CN)
                 if now < resume_at:
                     result.update(refresh_complete=True, next_refresh_at=iso_now(resume_at))
                 return result
