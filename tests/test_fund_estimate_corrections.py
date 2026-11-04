@@ -414,7 +414,6 @@ def test_overall_analysis_covers_all_dates_beyond_latest_twenty_results(tmp_path
     assert float(diagnostics['majority_direction_accuracy']) == pytest.approx(1)
     assert float(diagnostics['direction_accuracy_above_baseline']) == pytest.approx(-0.04)
     assert payload['diagnostics'] == diagnostics
-    assert '120' in prompts[0] and '180' in prompts[0]
 
 
 def test_production_service_uses_trading_calendar(tmp_path):

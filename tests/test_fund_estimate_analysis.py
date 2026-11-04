@@ -111,6 +111,92 @@ def test_supported_numbers_accept_equivalent_precision_and_chinese_bp():
     assert _supported_numbers("方向准确率25%，平均绝对误差5.966个基点。", payload) is True
 
 
+def test_real_luna_review_with_dates_units_and_supported_hit_fraction_needs_no_compression(store):
+    """A real 263-character result must display without another model request."""
+    from src.fund_estimate_analysis import _checked_text
+
+    text = "\n".join([
+        "8个观察日方向准确率为68.750%，高于多数方向基线53.125%达15.625个百分点；该基线仅是事后描述对照，并非可交易策略。",
+        "平均绝对误差为5.772bp（0.058%），平均偏差为+4.154bp（+0.042%），整体略偏高；正误差表示预估高于实际。",
+        "主要误差集中在10月30日，四只基金均预估得不够跌，日均绝对误差达23.768bp；11月2日方向仅1/4命中，具体原因待核验。",
+        "下一净值日核对四只基金11月4日公布净值、收益计算及分红或净值调整口径，再逐只复算方向和误差，尤其核实10月30日异常幅度及其原因。",
+    ])
+    payload = {
+        "period": {"day_count": 8},
+        "stats": {"direction_accuracy": "0.6875", "mae_pct": "0.05771875", "bias_pct": "0.04154375"},
+        "diagnostics": {"majority_direction_accuracy": "0.53125", "direction_accuracy_above_baseline": "0.15625"},
+        "by_day": [{"trade_date": "2026-11-02", "direction_hits": 1, "pairs": 4},
+                   {"trade_date": "2026-10-30", "mae_pct": "0.237675"}],
+        "items": [],
+    }
+    ai = RecordingAi([text, RuntimeError("valid review must not request compression")])
+    assert _checked_text(text, payload) == text
+    assert analysis_for(store, ai)._generate(payload) == text
+    assert len(ai.calls) == 1
+
+
+@pytest.mark.parametrize(("text", "accepted"), [
+    ("当日方向仅1/4命中。", True),
+    ("当日方向仅1／4命中。", True),
+    ("当日方向仅2/4命中。", False),
+    ("当日方向仅1/5命中。", False),
+    ("平均误差为1/4bp。", False),
+    ("平均偏差为4.154个百分点，平均误差为5.772个百分点。", False),
+])
+def test_hit_fraction_requires_same_source_counts_and_does_not_relax_units(text, accepted):
+    from src.fund_estimate_analysis import _supported_numbers
+
+    payload = {"by_day": [{"direction_hits": 1, "pairs": 4}],
+               "stats": {"bias_pct": "0.04154375", "mae_pct": "0.05771875"}}
+    assert _supported_numbers(text, payload) is accepted
+
+
+def test_short_review_still_rejects_excess_chinese_text():
+    from src.fund_estimate_analysis import _compact_text
+
+    line = "需要核对预估与实际的偏差及收益口径是否保持一致" * 4 + "并进一步核查数据来源。"
+    assert _compact_text("\n".join([line] * 4)) is None
+
+
+@pytest.mark.parametrize(("text", "accepted"), [
+    ("32组样本中23组预估高于实际。", True),
+    ("32组样本中24组预估高于实际。", False),
+    ("单组误差为21.380–29.710bp。", True),
+    ("单组误差为21.380-29.710bp。", True),
+    ("单组误差为21.380至29.710个基点。", True),
+    ("单组误差为21.380–99.710bp。", False),
+    ("单组误差为21.380–29.710个百分点。", False),
+])
+def test_sample_groups_and_range_endpoints_need_supported_values_and_units(text, accepted):
+    from src.fund_estimate_analysis import _supported_numbers
+
+    payload = {"stats": {"pairs": 32}, "diagnostics": {"positive_errors": 23},
+               "items": [{"error_pct": "0.2138"}, {"error_pct": "0.2971"}]}
+    assert _supported_numbers(text, payload) is accepted
+
+
+def test_invalid_units_are_returned_with_source_data_for_automatic_reanalysis(store):
+    bad = SHORT_REVIEW.replace("绝对误差相对实际波动较小", "平均绝对误差为6.000个百分点")
+    ai = RecordingAi([bad, bad, SHORT_REVIEW])
+    data = sample_data()
+    result = completed(analysis_for(store, ai), data)
+    assert result["ai_analysis"] == SHORT_REVIEW
+    assert len(ai.calls) == 3
+    correction = ai.calls[1][0][-1]["content"]
+    assert "6.000个百分点" in correction
+    source = json.loads(correction.split("数据：", 1)[1])
+    assert source["stats"]["mae_pct"] == data[1]["mae_pct"]
+    assert source["diagnostics"]["mae_bp"] == data[2]["diagnostics"]["mae_bp"]
+
+
+def test_invalid_analysis_stops_after_two_automatic_corrections(store):
+    bad = SHORT_REVIEW.replace("绝对误差相对实际波动较小", "平均绝对误差为6.000个百分点")
+    ai = RecordingAi([bad])
+    result = completed(analysis_for(store, ai), sample_data(), status="failed")
+    assert result["ai_analysis"] != bad
+    assert len(ai.calls) == 3
+
+
 def test_completed_analysis_reports_generating_model(store):
     ai = RecordingAi()
     ai.model = "gpt-6.1-terra"
@@ -362,10 +448,10 @@ def test_long_review_gets_one_compression_request_with_compatible_reasoning_budg
 
 @pytest.mark.parametrize("bad_text", ["这是超长点评。" * 60, "\n".join(["重复罗列。"] * 5), ""],
                          ids=["too-long", "too-many-lines", "empty"])
-def test_invalid_output_after_one_compression_uses_complete_four_dimension_summary(store, bad_text):
+def test_invalid_output_after_two_corrections_uses_complete_four_dimension_summary(store, bad_text):
     ai = RecordingAi([bad_text, bad_text])
     result = completed(analysis_for(store, ai), sample_data(), status="failed")
-    assert len(ai.calls) == 2
+    assert len(ai.calls) == 3
     text = result["ai_analysis"]
     assert_compact(text)
     assert "基线" in text
@@ -469,7 +555,7 @@ def test_new_versions_share_one_worker_and_keep_their_own_cache(store):
     "因为基金久期偏长，预估持续低估，下一净值日无需再核验该原因。",
     "好。",
 ], ids=["ratio-wrong-unit", "invented-number", "unsupported-cause", "unhelpfully-short"])
-def test_incorrect_numbers_or_unsupported_cause_get_one_rewrite_then_fallback(store, replacement):
+def test_incorrect_numbers_or_unsupported_cause_get_two_rewrites_then_fallback(store, replacement):
     malformed = SHORT_REVIEW.splitlines()
     malformed[0] = replacement
     malformed = "\n".join(malformed)
@@ -477,7 +563,7 @@ def test_incorrect_numbers_or_unsupported_cause_get_one_rewrite_then_fallback(st
         malformed = "\n".join(["好。"] * 4)
     ai = RecordingAi([malformed, malformed])
     result = completed(analysis_for(store, ai), sample_data(), status="failed")
-    assert len(ai.calls) == 2
+    assert len(ai.calls) == 3
     assert_compact(result["ai_analysis"])
 
 
