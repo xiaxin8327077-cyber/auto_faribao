@@ -1441,18 +1441,33 @@
     }
     function stockSparkline(item, marketStatus = {}, now = Date.now()) {
       const trend = item.trend;
+      const segments = Array.isArray(item.session_segments) ? item.session_segments : [];
       const points = trend && trend.quote_date === item.quote_date ? (trend.points || []).filter(point =>
-        String(point.time || '').slice(0, 10) === item.quote_date && Number.isFinite(Date.parse(point.time)) && Number.isFinite(Number(point.price)) && Number(point.price) > 0
+        Number.isFinite(Date.parse(point.time)) && Number.isFinite(Number(point.price)) && Number(point.price) > 0
+        && (segments.length || String(point.time || '').slice(0, 10) === item.quote_date)
       ).sort((left, right) => Date.parse(left.time) - Date.parse(right.time)) : [];
-      if (points.length < 2) return `<div class="stock-sparkline-placeholder">${points.length ? '走势积累中' : '走势暂缺'}</div>`;
-      const prices = points.map(point => Number(point.price));
+      const sessionMinute = segments.length ? point => {
+        const time = Date.parse(point.time);
+        let cursor = 0;
+        for (const segment of segments) {
+          const start = Date.parse(segment.start);
+          const end = Date.parse(segment.end);
+          if (![time, start, end].every(Number.isFinite) || end < start) return null;
+          if (time >= start && time <= end) return cursor + (time - start);
+          cursor += end - start;
+        }
+        return null;
+      } : null;
+      const drawPoints = sessionMinute ? points.filter(point => sessionMinute(point) != null) : points;
+      if (drawPoints.length < 2) return `<div class="stock-sparkline-placeholder">${points.length ? '走势积累中' : '走势暂缺'}</div>`;
+      const prices = drawPoints.map(point => Number(point.price));
       const base = Number(trend.pre_close);
       const hasBase = trend.pre_close != null && Number.isFinite(base) && base > 0;
       const values = hasBase ? [...prices, base] : prices;
       const low = Math.min(...values), high = Math.max(...values);
       const span = high - low;
       const y = value => span ? 34 - (value - low) / span * 32 : 18;
-      const minutes = points.map(point => {
+      const minutes = sessionMinute ? drawPoints.map(sessionMinute) : drawPoints.map(point => {
         const clock = String(point.time).slice(11, 16).split(':').map(Number);
         let minute = Math.min(clock[0] * 60 + clock[1], item.market_id === 'CN' ? 900 : 960);
         if (item.market_id === 'CN' && minute >= 780) minute -= 90;
@@ -1470,8 +1485,8 @@
       const area = `${path} L${coords[coords.length - 1][0].toFixed(2)},${baseline} L${coords[0][0].toFixed(2)},${baseline} Z`;
       const label = esc(`${item.name || ''} ${item.quote_date} 当日走势`);
       const endpoint = coords[coords.length - 1];
-      const lastAge = now - Date.parse(points[points.length - 1].time);
-      const trading = ['morning', 'afternoon'].includes(marketStatus.collection_phase);
+      const lastAge = now - Date.parse(drawPoints[drawPoints.length - 1].time);
+      const trading = ['morning', 'afternoon', 'night'].includes(marketStatus.collection_phase);
       // 心跳只代表5分钟内真实走势，延迟/失败/休市行情始终静止。
       const live = trading && !marketStatus.stale && !marketStatus.refresh_error && !item.stale && !item.source_delayed && !item.refresh_error && lastAge >= -60000 && lastAge <= 5 * 60000;
       const dot = live ? `<circle class="stock-trend-endpoint" cx="${endpoint[0].toFixed(2)}" cy="${endpoint[1].toFixed(2)}" r="1.8"/>` : '';
@@ -1507,9 +1522,9 @@
         return {active: view.session.any_active, boundaryReached: next != null && next <= now, nextDelay: next == null ? null : Math.max(1, next - now)};
       }
       const statuses = snapshot?.indices_status || {};
-      const phases = ['CN', 'HK', 'US'].map(market => statuses[market]?.collection_phase);
+      const phases = ['CN', 'HK', 'US', 'SGE', 'SHFE'].map(market => statuses[market]?.collection_phase);
       const known = phases.every(Boolean);
-      const active = phases.some(phase => phase === 'morning' || phase === 'afternoon');
+      const active = phases.some(phase => phase === 'morning' || phase === 'afternoon' || phase === 'night');
       return {active: active || !known && Boolean(snapshot?.available), boundaryReached: false, nextDelay: null};
     }
     function scheduleMarketPoll() {
@@ -1588,9 +1603,16 @@
       const statuses = data.indices_status || {};
       $('stockMarketMeta').textContent = updated ? `${updated} 更新` : '--';
       const marketKeys = { 'A股': 'CN', '港股': 'HK', '美股': 'US' };
-      const phaseLabel = phase => phase === 'lunch' ? '午间休市' : (phase === 'morning' || phase === 'afternoon') ? '交易中' : '已收盘';
+      const phaseLabel = phase => phase === 'lunch' ? '午间休市' : (phase === 'morning' || phase === 'afternoon' || phase === 'night') ? '交易中' : '已收盘';
       const indices = data.indices || [];
-      const groups = ['A股', '港股', '美股'].map(market => {
+      const groupStatus = market => {
+        if (market !== '黄金') return (data.indices_status || {})[marketKeys[market]] || {};
+        const members = [statuses.SGE, statuses.SHFE].filter(Boolean);
+        if (members.some(item => item.collection_phase === 'morning' || item.collection_phase === 'afternoon' || item.collection_phase === 'night')) return {collection_phase: 'morning'};
+        if (members.some(item => item.collection_phase === 'lunch')) return {collection_phase: 'lunch'};
+        return {collection_phase: 'close'};
+      };
+      const groups = ['A股', '港股', '美股', '黄金'].map(market => {
         const members = indices.filter(item => item.market === market);
         const cards = members.map(item => {
           const price = item.price == null || !Number.isFinite(Number(item.price)) ? '--' : Number(item.price).toFixed(2);
@@ -1598,14 +1620,14 @@
           const change = stockPercent(item.change_pct);
           nextValues[key] = {price, change};
           // 根级 stale/error 汇总其他市场，活跃判断只使用该指数及其所属市场。
-          const trendStatus = {...(statuses[marketKeys[market]] || {})};
+          const trendStatus = {...(statuses[item.market_id] || statuses[marketKeys[market]] || {})};
           if (marketSessionState().session?.any_active === false) trendStatus.collection_phase = 'closed';
           return `<div class="stock-index"><div class="stock-index-name">${esc(item.name)}</div><div class="stock-index-value ${tone(item.change_pct)}">${stockFlipNumber(previousValues[key]?.price, price)}</div><div class="stock-index-change ${tone(item.change_pct)}">${stockFlipNumber(previousValues[key]?.change, change)}</div>${stockSparkline(item, trendStatus)}</div>`;
         }).join('');
-        const status = (data.indices_status || {})[marketKeys[market]] || {};
+        const status = groupStatus(market);
         const dates = members.map(i => i.quote_date).filter(Boolean).sort();
         const dateText = dates.length ? dates[dates.length - 1].replace(/-/g, '.') : '';
-        const trading = status.collection_phase === 'morning' || status.collection_phase === 'afternoon';
+        const trading = status.collection_phase === 'morning' || status.collection_phase === 'afternoon' || status.collection_phase === 'night';
         return cards ? `<section class="stock-market-group"><div class="stock-group-heading"><h3 class="stock-market-title">${esc(market)}</h3><div class="stock-group-meta"><span>${esc(dateText)}</span><span class="stock-market-state${trading ? ' trading' : ''}">${esc(phaseLabel(status.collection_phase))}</span></div></div><div class="stock-grid">${cards}</div></section>` : '';
       }).join('');
       const sectors = data.industries || {};

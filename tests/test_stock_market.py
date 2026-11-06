@@ -17,10 +17,10 @@ def _module():
 
 
 @pytest.mark.parametrize('stamp,active,next_open', [
-    ('2026-10-27T20:00:00+08:00', False, '2026-10-27T13:30:00+00:00'),
-    ('2026-10-27T12:15:00+08:00', False, '2026-10-27T05:00:00+00:00'),
-    ('2026-11-10T20:00:00+08:00', False, '2026-11-10T14:30:00+00:00'),
-    ('2026-10-25T20:00:00+08:00', False, '2026-10-26T01:30:00+00:00'),
+    ('2026-10-27T20:00:00+08:00', True, '2026-10-27T13:00:00+00:00'),
+    ('2026-10-27T12:15:00+08:00', True, '2026-10-27T05:00:00+00:00'),
+    ('2026-11-10T20:00:00+08:00', True, '2026-11-10T13:00:00+00:00'),
+    ('2026-10-25T20:00:00+08:00', False, '2026-10-26T01:00:00+00:00'),
 ])
 def test_session_clock_sleeps_until_real_next_open_including_us_dst(stamp, active, next_open):
     calendar = {market: lambda day: day.weekday() < 5 for market in ('CN', 'HK', 'US')}
@@ -125,7 +125,7 @@ def test_read_empty_database_is_read_only_and_never_fetches(monkeypatch):
 
 def test_public_quotes_preserve_percentage_units_and_market_local_source_dates(conn):
     result = _module().refresh_stock_market(conn, now=_now(), session=_Session())
-    assert len(result["indices"]) == 10
+    assert len(result["indices"]) == 12
     shanghai = _index(result, "sse")
     assert shanghai["price"] == "3690.48"
     assert shanghai["change_pct"] == "0.89"
@@ -332,9 +332,13 @@ def test_lunch_and_close_finalization_are_each_requested_only_once_even_when_for
     module.refresh_stock_market(conn, now=_now("2026-10-23T16:01:00+08:00"), session=session)
     assert session.calls
     session.calls.clear()
-    for value in ["2026-10-23T16:05:00+08:00", "2026-10-23T20:00:00+08:00"]:
-        module.refresh_stock_market(conn, now=_now(value), session=session, force=True)
+    module.refresh_stock_market(conn, now=_now("2026-10-23T16:05:00+08:00"), session=session, force=True)
     assert session.calls == []
+    module.refresh_stock_market(conn, now=_now("2026-10-23T20:00:00+08:00"), session=session, force=True)
+    gold_calls = [call for call in session.calls if "/ulist." in call[0]]
+    assert len(gold_calls) == 1
+    assert gold_calls[0][1]["secids"] == "118.AU9999"
+    session.calls.clear()
     # Friday's US close occurs on Saturday morning in Beijing, and gets one check.
     module.refresh_stock_market(conn, now=_now("2026-10-24T10:00:00+08:00"), session=session)
     quote_calls = [call for call in session.calls if '/ulist.' in call[0]]

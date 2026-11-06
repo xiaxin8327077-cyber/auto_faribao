@@ -84,6 +84,14 @@ def parse_csfunds_dividends(html, source_url):
     return events
 
 
+def require_eastmoney_dividend_page(html, code):
+    """Reject a dividend table when the page title is for a different fund."""
+    match = re.search(r"<title>(.*?)</title>", html, re.I | re.S)
+    title = re.sub(r"\s+", "", match.group(1)) if match else ""
+    if f"({code})" not in title:
+        raise DividendSourceConflict(f"分红页面与请求的基金代码不符：{code}")
+
+
 def parse_eastmoney_dividends(html, source_url):
     table = re.search(r"<table\b[^>]*class=[\"'][^\"']*\bcfxq\b[^\"']*[\"'][^>]*>.*?</table>", html, re.S | re.I)
     if not table:
@@ -252,4 +260,6 @@ class PublicFundDividendProvider:
         if not re.fullmatch(r"\d{6}", product.code):
             raise ValueError("公募基金代码必须为6位数字")
         url = f"https://fundf10.eastmoney.com/fhsp_{product.code}.html"
-        return self._eastmoney_rules(product,parse_eastmoney_dividends(self._html(url), url))
+        html = self._html(url)
+        require_eastmoney_dividend_page(html, product.code)
+        return self._eastmoney_rules(product, parse_eastmoney_dividends(html, url))

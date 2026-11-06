@@ -188,6 +188,40 @@ def test_real_source_table_structures_do_not_confuse_per_ten_and_per_share():
     assert parse_csfunds_dividends(official,'https://official.test')[0].per_share==Decimal('.0082')
     assert parse_eastmoney_dividends(eastmoney,'https://eastmoney.test')[0].per_share==Decimal('.0082')
 
+
+def test_eastmoney_dividend_page_rejects_another_funds_table():
+    from types import SimpleNamespace
+    import pytest
+    from src.portfolio_dividend_provider import (
+        DividendSourceConflict,
+        PublicFundDividendProvider,
+        require_eastmoney_dividend_page,
+    )
+
+    other = (
+        "<title>港股通央企红利ETF华安(513920)基金分红送配</title>"
+        "<table class='w782 comm cfxq'><tr><td>2026年</td><td>2026-10-21</td>"
+        "<td>2026-10-22</td><td>每10份派现金0.1200元</td><td>2026-10-27</td></tr></table>"
+    )
+    own = "<title>东方添益债券(400030)基金分红送配 _ 基金档案</title>"
+    with pytest.raises(DividendSourceConflict, match="400030"):
+        require_eastmoney_dividend_page(other, "400030")
+    require_eastmoney_dividend_page(own, "400030")
+
+    class Response:
+        content = other.encode()
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def get(self, url, **kwargs):
+            return Response()
+
+    provider = PublicFundDividendProvider(session=Session())
+    with pytest.raises(DividendSourceConflict, match="400030"):
+        provider.fetch_dividends(SimpleNamespace(code="400030"))
+
 def test_same_day_automatic_dividend_settles_in_one_atomic_operation(services):
     from src.portfolio_dividends import FundDividend,FundDividendService,dividend_records
     from test_portfolio_transactions import seed_wallet_plus

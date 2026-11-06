@@ -19,6 +19,22 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from src.gold_market import (
+    GOLD_INSTRUMENTS,
+    GOLD_MARKETS,
+    KLINE_URL,
+    SINA_MINUTE_CODES,
+    SINA_MINUTE_URL,
+    SINA_QUOTE_CODES,
+    SINA_QUOTE_URL,
+    gold_slot,
+    kline_trend_payload,
+    parse_sina_gold_quotes,
+    parse_sina_minute_payload,
+    segment_payload,
+    trading_date_of,
+    upcoming_boundaries,
+)
 from src.portfolio_confirmation import MissingTradingCalendarError, is_trading_day
 from src.stock_market_trends import attach_intraday_trend, tencent_trend_payload, yahoo_trend_payload
 
@@ -39,6 +55,7 @@ _MARKETS = {
     "CN": {"name": "A股", "timezone": "Asia/Shanghai", "morning_end": "11:30", "close": "15:00"},
     "HK": {"name": "港股", "timezone": "Asia/Hong_Kong", "morning_end": "12:00", "close": "16:00"},
     "US": {"name": "美股", "timezone": "America/New_York", "morning_end": None, "close": "16:00"},
+    **GOLD_MARKETS,
 }
 _INDICES = (
     ("sse", "上证指数", "CN", "1.000001"),
@@ -52,6 +69,7 @@ _INDICES = (
     # In this particular Eastmoney endpoint, 100.NDX is the Nasdaq Composite.
     ("nasdaq", "纳斯达克综合", "US", "100.NDX"),
     ("sp500", "标普500", "US", "100.SPX"),
+    *GOLD_INSTRUMENTS,
 )
 _TENCENT_URL = "https://qt.gtimg.cn/q="
 _TENCENT_CODES = {
@@ -148,11 +166,12 @@ def _decimal(value):
 
 
 def _trading_day(market, day, calendars):
+    calendars = calendars or {}
     if day.weekday() >= 5:
-        return False, market == "CN" or market in calendars
+        return False, market in {"CN", "SGE", "SHFE"} or market in calendars
     if market in calendars:
         return bool(calendars[market](day)), True
-    if market == "CN":
+    if market in {"CN", "SGE", "SHFE"}:
         try:
             return is_trading_day(day), True
         except MissingTradingCalendarError:
@@ -162,6 +181,9 @@ def _trading_day(market, day, calendars):
 
 def _market_slot(market, at, calendars=None):
     calendars = calendars or {}
+    if market in GOLD_MARKETS:
+        _, known = _trading_day(market, at.astimezone(ZoneInfo("Asia/Shanghai")).date(), calendars)
+        return gold_slot(market, at, lambda day: _trading_day(market, day, calendars)[0], known)
     spec = _MARKETS[market]
     local = at.astimezone(ZoneInfo(spec["timezone"]))
     day = local.date()
@@ -220,6 +242,12 @@ def stock_market_session(now=None, *, trading_calendars=None) -> dict:
     active = any(_market_slot(market, at, trading_calendars)['active'] for market in _MARKETS)
     openings, transitions = [], []
     for market, spec in _MARKETS.items():
+        if market in GOLD_MARKETS:
+            market_openings, market_transitions = upcoming_boundaries(
+                market, at, lambda day: _trading_day(market, day, trading_calendars)[0])
+            openings.extend(market_openings)
+            transitions.extend(market_transitions)
+            continue
         zone = ZoneInfo(spec['timezone'])
         day = at.astimezone(zone).date()
         for offset in range(370):
@@ -284,6 +312,27 @@ def _quote(raw, *, key, name, market, secid):
         "price": price, "change_pct": pct, "change_points": _decimal(raw.get("f4")),
         "available": price is not None and pct is not None and stamp is not None,
     }
+
+
+def _prepare_gold_quote(quote, calendars):
+    """黄金报价日用交易所交易日，分时包含前一晚的夜盘。"""
+    if quote.get("market_id") not in GOLD_MARKETS:
+        return quote
+    trading = lambda day: _trading_day(quote["market_id"], day, calendars)[0]
+    stamp = _parse_datetime(quote.get("source_updated_at"))
+    owner = trading_date_of(quote["market_id"], stamp, trading) if stamp is not None else None
+    if owner is None and quote.get("quote_date"):
+        try:
+            owner = date.fromisoformat(quote["quote_date"])
+        except ValueError:
+            owner = None
+    updated = dict(quote)
+    if owner is not None:
+        updated["quote_date"] = owner.isoformat()
+        updated["session_segments"] = segment_payload(quote["market_id"], owner, trading)
+    else:
+        updated["session_segments"] = []
+    return updated
 
 
 def _parse_indices(payload, markets):
@@ -391,7 +440,7 @@ def _snapshot(records, at, calendars=None):
         for key, name, kind, secid in _INDICES:
             if kind == market:
                 quote = by_key.get(key) or _quote({}, key=key, name=name, market=kind, secid=secid)
-                indices.append(_decorate_quote(quote, status, slot, at))
+                indices.append(_decorate_quote(_prepare_gold_quote(quote, calendars), status, slot, at))
     sector_slot = _market_slot("CN", at, calendars)
     sector_record = records.get("industries") or {}
     industries = {"available": False, "items": [], "leaders": [], "laggards": [],
@@ -463,6 +512,47 @@ def _fallback_trend(client, key, deadline):
     return tencent_trend_payload(response.json(), code=code, secid=secid, market=market)
 
 
+def _merge_sina_gold(client, deadline, payload):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise requests.Timeout("stock-market refresh deadline exceeded")
+    response = client.get(
+        SINA_QUOTE_URL + ",".join(SINA_QUOTE_CODES.values()),
+        params={},
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"},
+        timeout=(min(3.0, remaining / 2), min(5.0, remaining / 2)),
+    )
+    response.raise_for_status()
+    response.encoding = "gbk"
+    sina = parse_sina_gold_quotes(response.text)
+    if payload is None:
+        return sina
+    return {**payload, "data": {**payload["data"], "diff": [*_rows(payload), *sina["data"]["diff"]]}}
+
+
+def _gold_trend(client, key, url, params, deadline):
+    secid = next(item[3] for item in GOLD_INSTRUMENTS if item[0] == key)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise requests.Timeout("stock-market refresh deadline exceeded")
+    timeout = (min(3.0, remaining / 2), min(5.0, remaining / 2))
+    try:
+        response = client.get(url, params=params, headers=_HEADERS, timeout=timeout)
+        response.raise_for_status()
+        return kline_trend_payload(response.json(), secid)
+    except Exception:
+        symbol = SINA_MINUTE_CODES.get(key)
+        if symbol is None:
+            raise
+        response = client.get(
+            SINA_MINUTE_URL, params={"symbol": symbol, "type": 1},
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return parse_sina_minute_payload(response.text, secid)
+
+
 def _fetch(markets, industries_due, session):
     """Transport threads never receive a connection or publish after the caller returns."""
     deadline = time.monotonic() + _NETWORK_BUDGET_SECONDS
@@ -474,7 +564,13 @@ def _fetch(markets, industries_due, session):
                   "secids": ",".join(secid for _, _, market, secid in _INDICES if market in markets)}
         jobs.append(("indices", _INDICES_URL, params))
         for key, _, market, secid in _INDICES:
-            if market in markets:
+            if market not in markets:
+                continue
+            if market in GOLD_MARKETS:
+                jobs.append((f'trend:{key}', KLINE_URL,
+                             {'secid': secid, 'klt': 1, 'fqt': 1, 'lmt': 1200, 'end': '20500101',
+                              'fields1': 'f1,f2,f3,f4,f5,f6,f7,f8', 'fields2': 'f51,f53'}))
+            else:
                 jobs.append((f'trend:{key}', _TRENDS_URL,
                              {'secid': secid, 'fields1': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11',
                               'fields2': 'f51,f53,f54,f55,f56,f57,f58', 'ndays': 1, 'iscr': 0, 'iscca': 0}))
@@ -487,7 +583,10 @@ def _fetch(markets, industries_due, session):
         client = session
         try:
             client = client if client is not None else requests.Session()
-            result = _request(client, url, params, deadline, trend=name.startswith('trend:'))
+            if name.startswith('trend:') and name.split(':', 1)[1] in {row[0] for row in GOLD_INSTRUMENTS}:
+                result = _gold_trend(client, name.split(':', 1)[1], url, params, deadline)
+            else:
+                result = _request(client, url, params, deadline, trend=name.startswith('trend:'))
             if name == "industries":
                 collected = _rows(result)
                 total = int(result["data"].get("total", len(collected)))
@@ -501,10 +600,16 @@ def _fetch(markets, industries_due, session):
         except Exception as exc:  # Each public source can fail independently.
             if name == "indices":
                 try:
-                    outcome = (_tencent_indices(client, deadline), None)
+                    payload = _tencent_indices(client, deadline)
                 except Exception:
-                    outcome = (None, f"{type(exc).__name__}: {str(exc)[:180]}")
-            elif name.startswith('trend:'):
+                    payload = None
+                if any(secid in params.get("secids", "") for _, _, _, secid in GOLD_INSTRUMENTS):
+                    try:
+                        payload = _merge_sina_gold(client, deadline, payload)
+                    except Exception:
+                        payload = payload
+                outcome = (payload, None) if payload is not None else (None, f"{type(exc).__name__}: {str(exc)[:180]}")
+            elif name.startswith('trend:') and name.split(':', 1)[1] not in {row[0] for row in GOLD_INSTRUMENTS}:
                 try:
                     outcome = (_fallback_trend(client, name.split(':', 1)[1], deadline), None)
                 except Exception:
@@ -620,6 +725,7 @@ def refresh_stock_market(conn, now=None, *, session=None, force=False, trading_c
                 candidate, market_error = None, "no usable index quotes for market"
             if candidate is not None:
                 previous = {item['key']: item for item in ((records.get(market) or {}).get('payload') or [])}
+                candidate = [_prepare_gold_quote(item, trading_calendars or {}) for item in candidate]
                 candidate = [attach_intraday_trend(item, outcomes.get(f"trend:{item['key']}", (None, None))[0],
                                                    previous.get(item['key'])) for item in candidate]
             updates[market] = (candidate, market_error, slots[market]["slot"])

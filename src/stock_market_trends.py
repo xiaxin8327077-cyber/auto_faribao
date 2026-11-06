@@ -6,7 +6,8 @@ from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 
-_ZONES = {'CN': 'Asia/Shanghai', 'HK': 'Asia/Hong_Kong', 'US': 'America/New_York'}
+_ZONES = {'CN': 'Asia/Shanghai', 'HK': 'Asia/Hong_Kong', 'US': 'America/New_York',
+          'SGE': 'Asia/Shanghai', 'SHFE': 'Asia/Shanghai'}
 _SOURCE_ZONE = ZoneInfo('Asia/Shanghai')
 
 
@@ -68,7 +69,19 @@ def yahoo_trend_payload(payload, *, symbol, secid):
     return _history_payload(secid, points, data['meta'].get('chartPreviousClose'), 'Yahoo Finance 分时行情')
 
 
-def parse_intraday_trend(payload, *, secid, market, quote_date):
+def _inside_segments(stamp, segments):
+    for segment in segments or []:
+        try:
+            start = datetime.fromisoformat(segment['start'])
+            end = datetime.fromisoformat(segment['end'])
+        except (TypeError, ValueError):
+            continue
+        if start <= stamp <= end:
+            return True
+    return False
+
+
+def parse_intraday_trend(payload, *, secid, market, quote_date, segments=None):
     """trends2 的 f51/f53 列分别为北京时间和该分钟最新价。"""
     if not isinstance(payload, dict) or payload.get('rc') not in (None, 0):
         raise ValueError('invalid intraday trend response')
@@ -88,7 +101,11 @@ def parse_intraday_trend(payload, *, secid, market, quote_date):
         value = _price(fields[1])
         # 港股收市竞价价格可能在16:00后披露，保留真实更新时间及价格。
         closing_update = payload.get('_closing_update') and market in ('CN', 'HK') and time(15 if market == 'CN' else 16) < stamp.time() < time(20)
-        if stamp.date().isoformat() != quote_date or not (_in_session(stamp, market) or closing_update) or value is None:
+        if segments:
+            accepted = _inside_segments(stamp, segments)
+        else:
+            accepted = stamp.date().isoformat() == quote_date and (_in_session(stamp, market) or closing_update)
+        if not accepted or value is None:
             continue
         points[stamp.isoformat(timespec='seconds')] = value
     if not points:
@@ -116,7 +133,8 @@ def attach_intraday_trend(quote, payload, previous=None):
     history = {}
     if payload is not None:
         try:
-            history = parse_intraday_trend(payload, secid=quote['secid'], market=quote['market_id'], quote_date=day)
+            history = parse_intraday_trend(payload, secid=quote['secid'], market=quote['market_id'], quote_date=day,
+                                           segments=quote.get('session_segments'))
             if quote_pre_close and history.get('pre_close'):
                 expected = Decimal(quote_pre_close)
                 if abs(Decimal(history['pre_close']) - expected) / expected > Decimal('0.001'):
@@ -133,8 +151,10 @@ def attach_intraday_trend(quote, payload, previous=None):
         stamp = stamp.replace(second=0, microsecond=0)
         key = stamp.isoformat(timespec='seconds')
         value = _price(quote['price'])
-        if (stamp.date().isoformat() == day and _in_session(stamp, quote['market_id'])
-                and value is not None and (not points or key >= max(points))):
+        in_session = (_inside_segments(stamp, quote.get('session_segments'))
+                      if quote.get('session_segments') else
+                      stamp.date().isoformat() == day and _in_session(stamp, quote['market_id']))
+        if in_session and value is not None and (not points or key >= max(points)):
             points[key] = value
     except (ValueError, TypeError, KeyError):
         pass

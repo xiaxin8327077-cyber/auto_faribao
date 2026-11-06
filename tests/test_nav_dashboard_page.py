@@ -631,6 +631,18 @@ assert.ok(!stockSparkline(item).includes('NaN'));
 assert.ok(!stockSparkline(item).includes('Infinity'));
 item.trend.quote_date = '2026-10-22';
 assert.ok(!stockSparkline(item).includes('<svg'));
+const gold = {name: '沪金主连', market_id: 'SHFE', quote_date: '2026-10-28', change_pct: '-1',
+  session_segments: [
+    {start: '2026-10-27T21:00:00+08:00', end: '2026-10-28T02:30:00+08:00'},
+    {start: '2026-10-28T09:00:00+08:00', end: '2026-10-28T10:15:00+08:00'}],
+  trend: {quote_date: '2026-10-28', pre_close: '880', points: [
+    {time: '2026-10-27T21:01:00+08:00', price: '881'},
+    {time: '2026-10-28T09:01:00+08:00', price: '879'},
+    {time: '2026-10-28T12:00:00+08:00', price: '1'}]}};
+const goldChart = stockSparkline(gold, {collection_phase: 'night'}, Date.parse('2026-10-28T09:02:00+08:00'));
+assert.ok(goldChart.includes('<svg'));
+assert.ok(goldChart.includes('stock-trend-pulse'));
+assert.ok(!goldChart.includes('NaN'));
 """.replace('SOURCE', source)
     result = subprocess.run([node, '-e', script], capture_output=True, text=True, encoding='utf-8')
     assert result.returncode == 0, result.stdout + result.stderr
