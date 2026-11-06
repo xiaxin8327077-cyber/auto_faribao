@@ -9,6 +9,7 @@ from src.gold_market import (
     night_trading_date,
     parse_sina_gold_quotes,
     parse_sina_minute_payload,
+    quote_row_from_kline,
     session_segments,
     trading_date_of,
 )
@@ -78,7 +79,16 @@ def test_gold_trend_keeps_the_previous_evening_and_drops_the_lunch_break():
     assert [point["price"] for point in trend["points"]] == ["880", "881"]
 
 
-def test_minute_adapters_keep_source_prices_and_reject_the_wrong_contract():
+def test_kline_last_bar_becomes_the_gold_quote():
+    row = quote_row_from_kline(
+        {"data": {"code": "AU9999", "market": 118, "name": "黄金9999", "prePrice": "884.09",
+                  "klines": ["2026-11-05 20:01,887.00", "2026-11-06 13:27,867.80"]}},
+        "118.AU9999")
+    assert row["f2"] == "867.80"
+    assert row["f12"] == "AU9999"
+    assert Decimal(row["f4"]) == Decimal("867.80") - Decimal("884.09")
+    moment = datetime.fromtimestamp(row["f124"], at("2026-11-06T13:27:00+08:00").tzinfo)
+    assert (moment.hour, moment.minute) == (13, 27)
     payload = kline_trend_payload(
         {"data": {"code": "aum", "market": 113, "prePrice": "879.26",
                   "klines": ["2026-11-05 21:01,887.16", "2026-11-06 11:30,870.02"]}},

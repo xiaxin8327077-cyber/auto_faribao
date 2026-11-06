@@ -31,6 +31,7 @@ from src.gold_market import (
     kline_trend_payload,
     parse_sina_gold_quotes,
     parse_sina_minute_payload,
+    quote_row_from_kline,
     segment_payload,
     trading_date_of,
     upcoming_boundaries,
@@ -553,27 +554,77 @@ def _gold_trend(client, key, url, params, deadline):
         return parse_sina_minute_payload(response.text, secid)
 
 
+def _fetch_gold_quotes(client, markets, deadline):
+    """黄金不走股票列表接口。首尔访问该接口会丢掉黄金代码，分钟线可以取到。"""
+    rows = []
+    last_error = None
+    for key, _, market, secid in GOLD_INSTRUMENTS:
+        if market not in markets:
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise requests.Timeout("stock-market refresh deadline exceeded")
+        timeout = (min(3.0, remaining / 2), min(5.0, remaining / 2))
+        try:
+            response = client.get(
+                KLINE_URL,
+                params={"secid": secid, "klt": 1, "fqt": 1, "lmt": 1200, "end": "20500101",
+                        "fields1": "f1,f2,f3,f4,f5,f6,f7,f8", "fields2": "f51,f53"},
+                headers=_HEADERS,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            rows.append(quote_row_from_kline(response.json(), secid))
+        except Exception as exc:
+            last_error = exc
+            symbol = SINA_QUOTE_CODES.get(key)
+            if symbol is None:
+                continue
+            try:
+                response = client.get(
+                    SINA_QUOTE_URL + symbol, params={},
+                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"},
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                response.encoding = "gbk"
+                matched = [row for row in parse_sina_gold_quotes(response.text)["data"]["diff"]
+                           if f"{row['f13']}.{row['f12']}".lower() == secid.lower()]
+                if not matched:
+                    raise ValueError("sina gold quote missing")
+                rows.append(matched[0])
+            except Exception as sina_exc:
+                last_error = sina_exc
+    if not rows:
+        raise last_error or ValueError("no gold quotes")
+    return {"rc": 0, "data": {"diff": rows}}
+
+
 def _fetch(markets, industries_due, session):
     """Transport threads never receive a connection or publish after the caller returns."""
     deadline = time.monotonic() + _NETWORK_BUDGET_SECONDS
     outcomes = {}
     result_lock = threading.Lock()
+    stock_markets = [market for market in markets if market not in GOLD_MARKETS]
+    gold_markets = [market for market in markets if market in GOLD_MARKETS]
     jobs = []
-    if markets:
+    if stock_markets:
         params = {"fltt": 2, "fields": _FIELDS,
-                  "secids": ",".join(secid for _, _, market, secid in _INDICES if market in markets)}
+                  "secids": ",".join(secid for _, _, market, secid in _INDICES if market in stock_markets)}
         jobs.append(("indices", _INDICES_URL, params))
-        for key, _, market, secid in _INDICES:
-            if market not in markets:
-                continue
-            if market in GOLD_MARKETS:
-                jobs.append((f'trend:{key}', KLINE_URL,
-                             {'secid': secid, 'klt': 1, 'fqt': 1, 'lmt': 1200, 'end': '20500101',
-                              'fields1': 'f1,f2,f3,f4,f5,f6,f7,f8', 'fields2': 'f51,f53'}))
-            else:
-                jobs.append((f'trend:{key}', _TRENDS_URL,
-                             {'secid': secid, 'fields1': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11',
-                              'fields2': 'f51,f53,f54,f55,f56,f57,f58', 'ndays': 1, 'iscr': 0, 'iscca': 0}))
+    if gold_markets:
+        jobs.append(("gold", KLINE_URL, {"markets": ",".join(gold_markets)}))
+    for key, _, market, secid in _INDICES:
+        if market not in markets:
+            continue
+        if market in GOLD_MARKETS:
+            jobs.append((f'trend:{key}', KLINE_URL,
+                         {'secid': secid, 'klt': 1, 'fqt': 1, 'lmt': 1200, 'end': '20500101',
+                          'fields1': 'f1,f2,f3,f4,f5,f6,f7,f8', 'fields2': 'f51,f53'}))
+        else:
+            jobs.append((f'trend:{key}', _TRENDS_URL,
+                         {'secid': secid, 'fields1': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11',
+                          'fields2': 'f51,f53,f54,f55,f56,f57,f58', 'ndays': 1, 'iscr': 0, 'iscca': 0}))
     if industries_due:
         jobs.append(("industries", _INDUSTRIES_URL,
                      {"pn": 1, "pz": 100, "po": 1, "np": 1, "fltt": 2, "invt": 2,
@@ -583,7 +634,9 @@ def _fetch(markets, industries_due, session):
         client = session
         try:
             client = client if client is not None else requests.Session()
-            if name.startswith('trend:') and name.split(':', 1)[1] in {row[0] for row in GOLD_INSTRUMENTS}:
+            if name == "gold":
+                result = _fetch_gold_quotes(client, set(params["markets"].split(",")), deadline)
+            elif name.startswith('trend:') and name.split(':', 1)[1] in {row[0] for row in GOLD_INSTRUMENTS}:
                 result = _gold_trend(client, name.split(':', 1)[1], url, params, deadline)
             else:
                 result = _request(client, url, params, deadline, trend=name.startswith('trend:'))
@@ -712,13 +765,15 @@ def refresh_stock_market(conn, now=None, *, session=None, force=False, trading_c
         attempt_order = _LAST_ATTEMPT_ORDER
     outcomes = _fetch(markets, industries_due, session)
     updates = {}
-    if markets:
-        raw, error = outcomes["indices"]
+    stock_markets = [market for market in markets if market not in GOLD_MARKETS]
+    gold_markets = [market for market in markets if market in GOLD_MARKETS]
+
+    def publish(group, raw, error):
         try:
-            groups = _parse_indices(raw, markets) if not error else {}
+            groups = _parse_indices(raw, group) if not error else {}
         except (ValueError, TypeError, KeyError) as exc:
             groups, error = {}, f"invalid index response: {str(exc)[:180]}"
-        for market in markets:
+        for market in group:
             candidate = groups.get(market)
             market_error = error
             if candidate is not None and not any(item["available"] for item in candidate):
@@ -729,6 +784,11 @@ def refresh_stock_market(conn, now=None, *, session=None, force=False, trading_c
                 candidate = [attach_intraday_trend(item, outcomes.get(f"trend:{item['key']}", (None, None))[0],
                                                    previous.get(item['key'])) for item in candidate]
             updates[market] = (candidate, market_error, slots[market]["slot"])
+
+    if stock_markets:
+        publish(stock_markets, *outcomes["indices"])
+    if gold_markets:
+        publish(gold_markets, *outcomes["gold"])
     if industries_due:
         raw, error = outcomes["industries"]
         try:

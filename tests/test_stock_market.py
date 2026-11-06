@@ -335,9 +335,9 @@ def test_lunch_and_close_finalization_are_each_requested_only_once_even_when_for
     module.refresh_stock_market(conn, now=_now("2026-10-23T16:05:00+08:00"), session=session, force=True)
     assert session.calls == []
     module.refresh_stock_market(conn, now=_now("2026-10-23T20:00:00+08:00"), session=session, force=True)
-    gold_calls = [call for call in session.calls if "/ulist." in call[0]]
-    assert len(gold_calls) == 1
-    assert gold_calls[0][1]["secids"] == "118.AU9999"
+    gold_calls = [call for call in session.calls if "kline" in call[0] and call[1].get("secid") == "118.AU9999"]
+    assert gold_calls
+    assert all("1.000001" not in params.get("secids", "") for _, params, _ in session.calls)
     session.calls.clear()
     # Friday's US close occurs on Saturday morning in Beijing, and gets one check.
     module.refresh_stock_market(conn, now=_now("2026-10-24T10:00:00+08:00"), session=session)

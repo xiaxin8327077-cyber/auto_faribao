@@ -79,7 +79,15 @@ class _FakeSession:
         self.price_shift = price_shift
 
     def get(self, url, *, params, timeout, headers):
-        rows = _index_rows() if "/ulist." in url else _industry_rows()
+        if "/ulist." in url:
+            rows = _index_rows()
+        elif "kline" in url:
+            secid = params.get("secid", "118.AU9999")
+            market, code = secid.split(".", 1)
+            return _Response({"rc": 0, "data": {"code": code, "market": int(market), "name": code,
+                                                "prePrice": 869.2, "klines": ["2026-10-23 09:59,867.50"]}})
+        else:
+            rows = _industry_rows()
         if self.price_shift:
             rows = [dict(row, f2=row["f2"] + self.price_shift, f3=row["f3"] + 0.01) for row in rows]
         return _Response({"rc": 0, "rt": 6, "full": 1, "data": {"total": len(rows), "diff": rows}})

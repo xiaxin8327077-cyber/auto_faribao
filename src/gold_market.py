@@ -225,6 +225,31 @@ def parse_sina_gold_quotes(text):
     return {"rc": 0, "data": {"diff": rows}}
 
 
+def quote_row_from_kline(payload, secid):
+    """Latest minute bar plus previous close, in the Eastmoney list-row shape."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise ValueError("gold quote response has no data")
+    market, code = secid.split(".", 1)
+    if str(data.get("market")) != market or str(data.get("code")).lower() != code.lower():
+        raise ValueError("gold quote security mismatch")
+    rows = data.get("klines") or []
+    if not rows:
+        raise ValueError("gold quote response has no points")
+    moment, _, price_text = str(rows[-1]).partition(",")
+    price = _number(price_text)
+    previous = _number(data.get("prePrice"))
+    if price is None or price <= 0 or previous is None or previous <= 0:
+        raise ValueError("gold quote response has no price")
+    stamp = datetime.strptime(moment, "%Y-%m-%d %H:%M").replace(tzinfo=SHANGHAI)
+    change = price - previous
+    return {
+        "f12": data.get("code"), "f13": int(market), "f14": data.get("name") or "黄金",
+        "f2": format(price, "f"), "f3": format(change / previous * 100, "f"),
+        "f4": format(change, "f"),         "f124": int(stamp.timestamp()),
+    }
+
+
 def kline_trend_payload(payload, secid):
     """Eastmoney 1-minute kline uses klines, not the trends2 field."""
     data = payload.get("data") if isinstance(payload, dict) else None
