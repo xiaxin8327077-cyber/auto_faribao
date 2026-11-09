@@ -4,6 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <meta name="color-scheme" content="light">
+  <script>
+    // 无私密链接时直接隐藏看板，避免首屏骨架在无效链接下闪现。
+    try {
+      if (!decodeURIComponent(location.hash.slice(1))) document.documentElement.classList.add('access-invalid');
+    } catch (_error) {
+      document.documentElement.classList.add('access-invalid');
+    }
+  </script>
   <title>理财组合看板</title>
   <link rel="icon" type="image/png" href="/nav-assets/private-wealth-logo.png">
   <link rel="stylesheet" href="/nav-assets/fonts/fz-fangsong/font.css">
@@ -55,6 +63,7 @@
       overflow: hidden;
     }
     #dashboardContent[hidden] { display: none !important; }
+    html.access-invalid #dashboardContent { display: none !important; }
     .topbar {
       position: relative;
       order: 1;
@@ -491,7 +500,23 @@
     @media (max-width: 370px) { .stock-market-loading { gap: 4px; font-size: 9px; } .stock-market-heading { gap: 5px; } }
     .panel-loading { position: relative; padding: 10px 0; }
     .panel-loading-message { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 12px 0; color: var(--muted); font-size: 12px; }
-    .loading-skeleton { height: 58px; margin: 10px 0; border-radius: 8px; background: linear-gradient(100deg, var(--bg) 20%, var(--line-soft) 45%, var(--bg) 70%); background-size: 220% 100%; animation: panel-shimmer 1.7s ease-in-out infinite; }
+    .loading-skeleton { display: block; border-radius: 6px; background: linear-gradient(100deg, var(--bg) 20%, var(--line-soft) 45%, var(--bg) 70%); background-size: 220% 100%; animation: panel-shimmer 1.7s ease-in-out infinite; }
+    .loading-skeleton--block { height: 58px; margin: 10px 0; border-radius: 8px; }
+    .loading-skeleton--line { height: 12px; width: 100%; margin: 6px 0; }
+    .loading-skeleton--line.short { width: 56%; }
+    .loading-skeleton--chip { display: inline-block; width: 56px; height: 12px; margin: 0; border-radius: 6px; vertical-align: middle; }
+    .loading-skeleton--chip.short { width: 40px; }
+    .loading-skeleton--chip.lg { width: 88px; height: 20px; }
+    .loading-skeleton--title { height: 18px; width: 42%; margin: 4px 0 10px; }
+    .loading-skeleton--value { height: 14px; width: 64%; margin: 4px 0; }
+    .loading-skeleton--circle { width: 28px; height: 28px; margin: 0; border-radius: 50%; }
+    .loading-skeleton--button { width: 84px; height: 28px; margin: 0; }
+    .loading-skeleton--header { display: inline-block; width: 92px; height: 10px; margin: 0; border-radius: 5px; vertical-align: middle; }
+    .loading-skeleton--sparkline { height: 30px; margin: 4px 0; }
+    .loading-skeleton--cell { height: 32px; margin: 0; }
+    .loading-skeleton--rank { width: 22px; height: 22px; margin: 0; border-radius: 7px; }
+    .loading-skeleton--total { height: 42px; width: 62%; margin: 0; }
+    .skeleton-stack { display: grid; gap: 6px; min-width: 0; }
     .panel-load-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 11px; line-height: 1.6; }
     .panel-load-status:empty { display: none; }
     .panel-retry, .verification-latest { min-height: 32px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--blue); font: inherit; cursor: pointer; }
@@ -794,7 +819,7 @@
       <h2>私密链接无效</h2>
       <p>请使用完整的理财组合看板私密链接访问。</p>
     </div>
-    <div id="dashboardContent" hidden>
+    <div id="dashboardContent">
       <header class="topbar">
         <div class="app-brand">
           <img class="brand-logo" src="/nav-assets/private-wealth-logo.png" width="38" height="38" alt="" aria-hidden="true">
@@ -843,10 +868,10 @@
       <section class="hero" id="hero" aria-label="组合收益概览">
         <button class="profit-trigger" id="cumulativeProfitTrigger" type="button" aria-controls="dailyProfitSheet" aria-expanded="false">
           <span class="hero-label">累计收益<span class="detail-cue">查看每日明细</span></span>
-          <span class="total" id="cumulativeProfit">--<span class="unit">元</span></span>
+          <span class="total" id="cumulativeProfit"><span class="loading-skeleton loading-skeleton--total" aria-hidden="true"></span></span>
         </button>
-        <div class="today"><span id="latestProfitLabel">最新收益</span><span class="today-value" id="latestProfit">-- 元</span><small class="latest-profit-date" id="latestProfitDate">--</small></div>
-        <div class="month-profit"><span>本月累计</span><span class="month-value" id="currentMonthProfit">-- 元</span></div>
+        <div class="today"><span id="latestProfitLabel">最新收益</span><span class="today-value" id="latestProfit"><span class="loading-skeleton loading-skeleton--chip lg" aria-hidden="true"></span></span><small class="latest-profit-date" id="latestProfitDate"></small></div>
+        <div class="month-profit"><span>本月累计</span><span class="month-value" id="currentMonthProfit"><span class="loading-skeleton loading-skeleton--chip" aria-hidden="true"></span></span></div>
         <div class="basis" id="basis">自 2026-07-01 起按收益流水累计</div>
         <img class="weather-icon" src="/nav-assets/cloud-rain.svg" id="weatherIcon" alt="" aria-hidden="true">
       </section>
@@ -855,24 +880,55 @@
         <div class="section-head"><h2>资产概况</h2><button class="action-button" id="quickTradeButton" type="button" data-write-action="trade">+交易</button><span class="section-meta" id="pendingStatus">待处理 0 笔</span></div>
         <div class="overview-grid">
           <div class="overview-left">
-            <div class="overview-item"><span class="overview-label">总资产</span><span class="overview-value" id="totalAssets">--</span></div>
-            <div class="overview-item"><span class="overview-label">估算市值</span><span class="overview-value" id="marketValue">--</span></div>
-            <div class="overview-item"><span class="overview-label">最新披露</span><span class="overview-value" id="latestDateDisplay">--</span></div>
+            <div class="overview-item"><span class="overview-label">总资产</span><span class="overview-value" id="totalAssets"><span class="loading-skeleton loading-skeleton--chip" aria-hidden="true"></span></span></div>
+            <div class="overview-item"><span class="overview-label">估算市值</span><span class="overview-value" id="marketValue"><span class="loading-skeleton loading-skeleton--chip" aria-hidden="true"></span></span></div>
+            <div class="overview-item"><span class="overview-label">最新披露</span><span class="overview-value" id="latestDateDisplay"><span class="loading-skeleton loading-skeleton--chip short" aria-hidden="true"></span></span></div>
           </div>
-          <div class="overview-right" id="typeSummary"><div class="empty">正在统计...</div></div>
+          <div class="overview-right" id="typeSummary" aria-busy="true">
+            <div class="overview-item"><span class="overview-label"><span class="loading-skeleton loading-skeleton--chip short" aria-hidden="true"></span></span><span class="overview-value"><span class="loading-skeleton loading-skeleton--chip short" aria-hidden="true"></span></span></div>
+            <div class="overview-item"><span class="overview-label"><span class="loading-skeleton loading-skeleton--chip short" aria-hidden="true"></span></span><span class="overview-value"><span class="loading-skeleton loading-skeleton--chip short" aria-hidden="true"></span></span></div>
+            <div class="overview-item"><span class="overview-label"><span class="loading-skeleton loading-skeleton--chip short" aria-hidden="true"></span></span><span class="overview-value"><span class="loading-skeleton loading-skeleton--chip short" aria-hidden="true"></span></span></div>
+          </div>
         </div>
       </section>
 
       <section class="card section" aria-label="产品持仓">
         <div class="section-head"><h2 id="productTitle">产品持仓（0）</h2><span class="section-meta">最新披露</span></div>
-        <div class="product-list" id="productList"><div class="empty">正在读取组合数据...</div></div>
+        <div class="product-list" id="productList" aria-busy="true">
+          <div class="product" aria-hidden="true">
+            <span class="loading-skeleton loading-skeleton--rank"></span>
+            <span class="skeleton-stack"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line short"></span></span>
+            <span class="skeleton-stack"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line short"></span></span>
+            <span class="skeleton-stack"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line short"></span></span>
+          </div>
+          <div class="product" aria-hidden="true">
+            <span class="loading-skeleton loading-skeleton--rank"></span>
+            <span class="skeleton-stack"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line short"></span></span>
+            <span class="skeleton-stack"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line short"></span></span>
+            <span class="skeleton-stack"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line short"></span></span>
+          </div>
+          <div class="product" aria-hidden="true">
+            <span class="loading-skeleton loading-skeleton--rank"></span>
+            <span class="skeleton-stack"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line short"></span></span>
+            <span class="skeleton-stack"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line short"></span></span>
+            <span class="skeleton-stack"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line short"></span></span>
+          </div>
+        </div>
       </section>
 
       <section class="card section" aria-label="本月收益贡献排行">
         <div class="section-head"><h2>本月收益贡献排行</h2><span class="section-meta">单位：元</span></div>
         <div class="ranking">
-          <div class="rank-block"><p class="rank-title">TOP 3 贡献最多</p><div id="positiveRanking"></div></div>
-          <div class="rank-block"><p class="rank-title negative">TOP 3 拖累最多</p><div id="negativeRanking"></div></div>
+          <div class="rank-block"><p class="rank-title">TOP 3 贡献最多</p><div id="positiveRanking" aria-busy="true">
+            <div class="rank-line" aria-hidden="true"><b></b><span class="loading-skeleton loading-skeleton--line"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+            <div class="rank-line" aria-hidden="true"><b></b><span class="loading-skeleton loading-skeleton--line"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+            <div class="rank-line" aria-hidden="true"><b></b><span class="loading-skeleton loading-skeleton--line"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+          </div></div>
+          <div class="rank-block"><p class="rank-title negative">TOP 3 拖累最多</p><div id="negativeRanking" aria-busy="true">
+            <div class="rank-line" aria-hidden="true"><b></b><span class="loading-skeleton loading-skeleton--line"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+            <div class="rank-line" aria-hidden="true"><b></b><span class="loading-skeleton loading-skeleton--line"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+            <div class="rank-line" aria-hidden="true"><b></b><span class="loading-skeleton loading-skeleton--line"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+          </div></div>
         </div>
       </section>
       <div class="status" id="statusText" role="status"></div>
@@ -880,29 +936,171 @@
 
       <section id="marketPanel" class="management-panel" role="tabpanel" aria-labelledby="marketTab" hidden>
         <section class="card section" aria-label="股市行情">
-          <div class="section-head stock-market-heading"><h2>股市行情</h2><span class="stock-market-loading"><span class="loading-spinner" id="stockMarketSpinner" aria-hidden="true"></span><span id="stockMarketLoadingText">正在读取股市行情…</span></span><span class="section-meta" id="stockMarketMeta">--</span></div>
+          <div class="section-head stock-market-heading"><h2>股市行情</h2><span class="stock-market-loading"><span class="loading-spinner" id="stockMarketSpinner" aria-hidden="true"></span><span id="stockMarketLoadingText"><span class="loading-skeleton loading-skeleton--header" aria-hidden="true"></span></span></span><span class="section-meta" id="stockMarketMeta">--</span></div>
           <div id="stockMarketStatus" class="panel-load-status" role="status" aria-live="polite"></div>
-          <div id="stockMarketContent" aria-busy="true"><div class="panel-loading"><div class="loading-skeleton" aria-hidden="true"></div><div class="loading-skeleton" aria-hidden="true"></div></div></div>
+          <div id="stockMarketContent" aria-busy="true">
+            <section class="stock-market-group" aria-hidden="true">
+              <div class="stock-group-heading"><h3 class="stock-market-title"><span class="loading-skeleton loading-skeleton--title"></span></h3><div class="stock-group-meta"><span class="loading-skeleton loading-skeleton--chip"></span></div></div>
+              <div class="stock-grid">
+                <div class="stock-index">
+                  <div class="stock-index-name"><span class="loading-skeleton loading-skeleton--line short"></span></div>
+                  <div class="stock-index-value"><span class="loading-skeleton loading-skeleton--value"></span></div>
+                  <div class="stock-index-change"><span class="loading-skeleton loading-skeleton--chip"></span></div>
+                  <span class="loading-skeleton loading-skeleton--sparkline"></span>
+                </div>
+                <div class="stock-index">
+                  <div class="stock-index-name"><span class="loading-skeleton loading-skeleton--line short"></span></div>
+                  <div class="stock-index-value"><span class="loading-skeleton loading-skeleton--value"></span></div>
+                  <div class="stock-index-change"><span class="loading-skeleton loading-skeleton--chip"></span></div>
+                  <span class="loading-skeleton loading-skeleton--sparkline"></span>
+                </div>
+              </div>
+            </section>
+            <section class="stock-market-group" aria-hidden="true">
+              <div class="stock-group-heading"><h3 class="stock-market-title"><span class="loading-skeleton loading-skeleton--title"></span></h3><div class="stock-group-meta"><span class="loading-skeleton loading-skeleton--chip"></span></div></div>
+              <div class="stock-sector-grid">
+                <div>
+                  <p class="stock-group-title"><span class="loading-skeleton loading-skeleton--line short"></span></p>
+                  <div class="stock-sector-row"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--chip"></span></div>
+                  <div class="stock-sector-row"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--chip"></span></div>
+                  <div class="stock-sector-row"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--chip"></span></div>
+                </div>
+                <div>
+                  <p class="stock-group-title"><span class="loading-skeleton loading-skeleton--line short"></span></p>
+                  <div class="stock-sector-row"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--chip"></span></div>
+                  <div class="stock-sector-row"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--chip"></span></div>
+                  <div class="stock-sector-row"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--chip"></span></div>
+                </div>
+              </div>
+            </section>
+          </div>
         </section>
         <div class="write-notice" id="marketWriteNotice" hidden></div>
         <section class="card section" aria-label="债市晴雨表">
           <div class="section-head"><h2>债市晴雨表</h2><span class="section-meta" id="barometerMeta">--</span></div>
-          <div id="barometerContent"><div class="empty">正在读取行情...</div></div>
+          <div id="barometerContent" aria-busy="true">
+            <div class="barometer-weather-row">
+              <div class="barometer-weather-card"><span class="loading-skeleton loading-skeleton--line short"></span><b class="loading-skeleton loading-skeleton--value"></b><small class="loading-skeleton loading-skeleton--line short"></small></div>
+              <div class="barometer-weather-card"><span class="loading-skeleton loading-skeleton--line short"></span><b class="loading-skeleton loading-skeleton--value"></b><small class="loading-skeleton loading-skeleton--line short"></small></div>
+            </div>
+            <div class="barometer-grid" style="--cols:5" aria-hidden="true">
+              <span></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="barometer-row-label"><span class="loading-skeleton loading-skeleton--chip"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-row-label"><span class="loading-skeleton loading-skeleton--chip"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+            </div>
+            <div class="barometer-grid" style="--cols:6" aria-hidden="true">
+              <span></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="loading-skeleton loading-skeleton--chip"></span>
+              <span class="barometer-row-label"><span class="loading-skeleton loading-skeleton--chip"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-row-label"><span class="loading-skeleton loading-skeleton--chip"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+              <span class="barometer-cell"><span class="loading-skeleton loading-skeleton--cell"></span></span>
+            </div>
+          </div>
         </section>
         <section class="card section" id="heldFundEstimateSection" aria-label="持仓涨跌幅预估">
           <div class="section-head"><h2>持仓涨跌幅预估</h2><span class="section-meta" id="estimateMeta">预估涨跌幅</span></div>
-          <div id="estimateWatchList"><div class="empty">正在读取持仓基金...</div></div>
+          <div id="estimateWatchList" aria-busy="true">
+            <article class="estimate-row" aria-hidden="true">
+              <div><div class="estimate-name"><span class="loading-skeleton loading-skeleton--line"></span></div><div class="estimate-code"><span class="loading-skeleton loading-skeleton--chip"></span></div></div>
+              <div class="estimate-return"><span class="loading-skeleton loading-skeleton--value"></span></div>
+            </article>
+            <article class="estimate-row" aria-hidden="true">
+              <div><div class="estimate-name"><span class="loading-skeleton loading-skeleton--line"></span></div><div class="estimate-code"><span class="loading-skeleton loading-skeleton--chip"></span></div></div>
+              <div class="estimate-return"><span class="loading-skeleton loading-skeleton--value"></span></div>
+            </article>
+          </div>
         </section>
         <section class="card section" id="verificationSection" aria-label="预估验证分析" aria-busy="true">
           <div class="section-head"><h2>预估验证分析<span class="loading-spinner" id="verificationSpinner" aria-hidden="true" hidden></span></h2><span class="section-meta" id="verificationMeta">--</span></div>
           <div id="verificationStatus" class="panel-load-status" role="status" aria-live="polite">正在加载验证分析…</div>
-          <div id="verificationContent"><div class="panel-loading"><p class="panel-loading-message"><span class="loading-spinner" aria-hidden="true"></span>正在加载验证分析…</p><div class="loading-skeleton" aria-hidden="true"></div><div class="loading-skeleton" aria-hidden="true"></div></div></div>
+          <div id="verificationContent" aria-busy="true">
+            <div class="verification-overall" aria-hidden="true">
+              <div class="verification-overall-heading"><h3 class="verification-overall-title"><span class="loading-skeleton loading-skeleton--title"></span></h3><span class="loading-skeleton loading-skeleton--button"></span></div>
+              <p class="verification-period"><span class="loading-skeleton loading-skeleton--chip"></span></p>
+              <div class="verification-stats">
+                <div class="verification-stat"><span class="loading-skeleton loading-skeleton--chip"></span><strong class="loading-skeleton loading-skeleton--value"></strong></div>
+                <div class="verification-stat"><span class="loading-skeleton loading-skeleton--chip"></span><strong class="loading-skeleton loading-skeleton--value"></strong></div>
+              </div>
+              <div class="verification-analysis"><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line"></span><span class="loading-skeleton loading-skeleton--line short"></span></div>
+            </div>
+            <div class="verification-toolbar"><strong><span class="loading-skeleton loading-skeleton--chip"></span></strong><span class="loading-skeleton loading-skeleton--chip"></span></div>
+            <article class="verification-fund" aria-hidden="true">
+              <div class="verification-fund-head"><div class="verification-name"><span class="loading-skeleton loading-skeleton--line"></span><div class="verification-code"><span class="loading-skeleton loading-skeleton--chip"></span></div></div><span class="loading-skeleton loading-skeleton--circle"></span></div>
+              <div class="verification-values">
+                <div class="verification-value"><span class="loading-skeleton loading-skeleton--chip"></span><strong class="loading-skeleton loading-skeleton--value"></strong></div>
+                <div class="verification-value"><span class="loading-skeleton loading-skeleton--chip"></span><strong class="loading-skeleton loading-skeleton--value"></strong></div>
+                <div class="verification-value"><span class="loading-skeleton loading-skeleton--chip"></span><strong class="loading-skeleton loading-skeleton--value"></strong></div>
+              </div>
+            </article>
+            <article class="verification-fund" aria-hidden="true">
+              <div class="verification-fund-head"><div class="verification-name"><span class="loading-skeleton loading-skeleton--line"></span><div class="verification-code"><span class="loading-skeleton loading-skeleton--chip"></span></div></div><span class="loading-skeleton loading-skeleton--circle"></span></div>
+              <div class="verification-values">
+                <div class="verification-value"><span class="loading-skeleton loading-skeleton--chip"></span><strong class="loading-skeleton loading-skeleton--value"></strong></div>
+                <div class="verification-value"><span class="loading-skeleton loading-skeleton--chip"></span><strong class="loading-skeleton loading-skeleton--value"></strong></div>
+                <div class="verification-value"><span class="loading-skeleton loading-skeleton--chip"></span><strong class="loading-skeleton loading-skeleton--value"></strong></div>
+              </div>
+            </article>
+          </div>
         </section>
       </section>
 
       <section id="positionsPanel" class="management-panel" role="tabpanel" aria-labelledby="positionsTab" hidden>
         <div class="write-notice" id="positionsWriteNotice" hidden></div>
-        <div class="manage-list" id="positionsList"><div class="empty">正在读取持仓...</div></div>
+        <div class="manage-list" id="positionsList" aria-busy="true">
+          <article class="manage-card" aria-hidden="true">
+            <div class="manage-title-row"><div class="manage-name"><span class="loading-skeleton loading-skeleton--line"></span></div><div class="manage-value"><span class="loading-skeleton loading-skeleton--chip"></span></div></div>
+            <div class="manage-code"><span class="loading-skeleton loading-skeleton--chip"></span></div>
+            <div class="manage-grid">
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+            </div>
+            <div class="row-actions"><span class="loading-skeleton loading-skeleton--button"></span><span class="loading-skeleton loading-skeleton--button"></span></div>
+          </article>
+          <article class="manage-card" aria-hidden="true">
+            <div class="manage-title-row"><div class="manage-name"><span class="loading-skeleton loading-skeleton--line"></span></div><div class="manage-value"><span class="loading-skeleton loading-skeleton--chip"></span></div></div>
+            <div class="manage-code"><span class="loading-skeleton loading-skeleton--chip"></span></div>
+            <div class="manage-grid">
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+            </div>
+            <div class="row-actions"><span class="loading-skeleton loading-skeleton--button"></span><span class="loading-skeleton loading-skeleton--button"></span></div>
+          </article>
+        </div>
       </section>
 
       <section id="transactionsPanel" class="management-panel" role="tabpanel" aria-labelledby="transactionsTab" hidden>
@@ -920,13 +1118,49 @@
             <button class="transaction-filter" type="button" aria-pressed="false" data-transaction-filter="adjustment">校准</button>
           </div>
         </div>
-        <div class="manage-list" id="transactionsList"><div class="empty">暂无交易记录</div></div>
+        <div class="manage-list" id="transactionsList" aria-busy="true">
+          <article class="manage-card transaction-card" aria-hidden="true">
+            <div class="manage-card-head"><div><div class="manage-name"><span class="loading-skeleton loading-skeleton--line"></span></div><div class="transaction-subhead"><span class="loading-skeleton loading-skeleton--chip"></span></div></div></div>
+            <div class="transaction-summary">
+              <div class="transaction-metric"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="transaction-metric"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+            </div>
+          </article>
+          <article class="manage-card transaction-card" aria-hidden="true">
+            <div class="manage-card-head"><div><div class="manage-name"><span class="loading-skeleton loading-skeleton--line"></span></div><div class="transaction-subhead"><span class="loading-skeleton loading-skeleton--chip"></span></div></div></div>
+            <div class="transaction-summary">
+              <div class="transaction-metric"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="transaction-metric"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+            </div>
+          </article>
+        </div>
       </section>
 
       <section id="sipPanel" class="management-panel" role="tabpanel" aria-labelledby="sipTab" hidden>
         <div class="panel-heading"><h2>定投计划</h2><button class="action-button" type="button" data-write-action="sip">新增定投</button></div>
         <div class="write-notice" id="sipWriteNotice" hidden></div>
-        <div class="manage-list" id="sipList"><div class="empty">暂无定投计划</div></div>
+        <div class="manage-list" id="sipList" aria-busy="true">
+          <article class="manage-card" aria-hidden="true">
+            <div class="manage-card-head"><div><div class="manage-name"><span class="loading-skeleton loading-skeleton--line"></span></div><div class="manage-meta"><span class="loading-skeleton loading-skeleton--chip"></span></div></div><div class="manage-value"><span class="loading-skeleton loading-skeleton--chip"></span></div></div>
+            <div class="manage-grid">
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+            </div>
+            <div class="row-actions"><span class="loading-skeleton loading-skeleton--button"></span><span class="loading-skeleton loading-skeleton--button"></span></div>
+          </article>
+          <article class="manage-card" aria-hidden="true">
+            <div class="manage-card-head"><div><div class="manage-name"><span class="loading-skeleton loading-skeleton--line"></span></div><div class="manage-meta"><span class="loading-skeleton loading-skeleton--chip"></span></div></div><div class="manage-value"><span class="loading-skeleton loading-skeleton--chip"></span></div></div>
+            <div class="manage-grid">
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+              <div class="manage-stat"><span class="loading-skeleton loading-skeleton--chip"></span><b class="loading-skeleton loading-skeleton--chip"></b></div>
+            </div>
+            <div class="row-actions"><span class="loading-skeleton loading-skeleton--button"></span><span class="loading-skeleton loading-skeleton--button"></span></div>
+          </article>
+        </div>
       </section>
 
       <section id="settingsPanel" class="management-panel" role="tabpanel" aria-labelledby="settingsTab" hidden>
@@ -936,7 +1170,16 @@
             <label class="settings-check"><input id="estimateJobsEnabled" type="checkbox" disabled>启用盘中预估后台任务</label>
             <label class="settings-check"><input id="aiEnabled" type="checkbox" disabled>启用报告提取</label>
           </div>
-          <div class="model-profile-list" id="modelProfileList" role="list"><div class="empty">正在读取模型配置...</div></div>
+          <div class="model-profile-list" id="modelProfileList" role="list" aria-busy="true">
+            <div class="model-profile" aria-hidden="true">
+              <div class="model-profile-main"><strong><span class="loading-skeleton loading-skeleton--line"></span></strong><span><span class="loading-skeleton loading-skeleton--chip"></span></span></div>
+              <div class="model-profile-badge"><span class="loading-skeleton loading-skeleton--chip"></span></div>
+            </div>
+            <div class="model-profile" aria-hidden="true">
+              <div class="model-profile-main"><strong><span class="loading-skeleton loading-skeleton--line"></span></strong><span><span class="loading-skeleton loading-skeleton--chip"></span></span></div>
+              <div class="model-profile-badge"><span class="loading-skeleton loading-skeleton--chip"></span></div>
+            </div>
+          </div>
           <div class="settings-actions">
             <button class="action-button secondary" id="aiNewProfileButton" type="button">新增模型配置</button>
           </div>
@@ -1091,6 +1334,25 @@
     const token = hashKey;
     const accessKey = token;
     const $ = id => document.getElementById(id);
+    const skeletonSnapshots = new Map();
+    const skeletonContainerIds = ['productList', 'positiveRanking', 'negativeRanking', 'typeSummary', 'stockMarketContent', 'barometerContent', 'estimateWatchList', 'verificationContent', 'positionsList', 'transactionsList', 'sipList', 'modelProfileList'];
+    function snapshotSkeletons() {
+      skeletonContainerIds.forEach(id => {
+        const box = $(id);
+        if (box) skeletonSnapshots.set(id, box.innerHTML);
+      });
+    }
+    function restoreSkeleton(id) {
+      const box = $(id);
+      const markup = skeletonSnapshots.get(id);
+      if (!box || markup == null) return;
+      box.innerHTML = markup;
+      box.setAttribute('aria-busy', 'true');
+    }
+    function markSkeletonReady(id) {
+      const box = $(id);
+      if (box) box.setAttribute('aria-busy', 'false');
+    }
     const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
     const number = value => Number(value || 0);
     const money = value => number(value).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -1254,7 +1516,7 @@
         control.title = state.writeEnabled ? '' : reason;
       });
       document.querySelectorAll('.write-notice').forEach(notice => {
-        notice.hidden = state.writeEnabled;
+        notice.hidden = state.writeEnabled || !state.data;
         notice.textContent = reason;
       });
       const dialogWriteControls = document.querySelectorAll('.management-dialog input, .management-dialog select, .management-dialog textarea, .management-dialog button:not([data-close-dialog])');
@@ -1291,6 +1553,7 @@
         return;
       }
       barometerReady = true;
+      markSkeletonReady('barometerContent');
       const sourceTime = String(data.source_updated_at || '').slice(11, 16);
       const daily = data.source_id !== 'southernfund';
       meta.textContent = `${data.as_of}${daily ? ' · 日终数据' : sourceTime ? ` · 行情 ${sourceTime}` : ''}`;
@@ -1317,6 +1580,7 @@
     }
     async function loadBarometer(force = false) {
       if (barometerLoading) return;
+      if (!barometerReady) restoreSkeleton('barometerContent');
       barometerLoading = true;
       try {
         const response = await api(`/api/portfolio/bond-barometer${force ? '?refresh=1' : ''}`);
@@ -1432,6 +1696,7 @@
         if (marketTime && (!latestEstimateTime || marketTime > latestEstimateTime)) latestEstimateTime = marketTime;
         return `<article class="estimate-row"><div><div class="estimate-name">${esc(item.name || item.code || '')}</div><div class="estimate-code">${esc(item.code || '')}${pendingHtml}</div>${reasonHtml}</div><div class="estimate-return ${toneClass}">${esc(value)}${heldFundEstimateAmount(estimate)}</div></article>`;
       }).join('') : '<div class="empty">没有持有的公募基金</div>';
+      markSkeletonReady('estimateWatchList');
       const estimateMeta = $('estimateMeta');
       if (estimateMeta) estimateMeta.textContent = latestEstimateTime || '--';
     }
@@ -1492,9 +1757,6 @@
       const dot = live ? `<circle class="stock-trend-endpoint" cx="${endpoint[0].toFixed(2)}" cy="${endpoint[1].toFixed(2)}" r="1.8"/>` : '';
       const pulse = live ? `<circle class="stock-trend-pulse" cx="${endpoint[0].toFixed(2)}" cy="${endpoint[1].toFixed(2)}" r="3"/>` : '';
       return `<svg class="stock-sparkline ${tone(item.change_pct)}" viewBox="0 0 120 36" role="img" aria-label="${label}" preserveAspectRatio="none"><title>${label}</title><path d="${area}" fill="currentColor" opacity="0.10"/>${hasBase ? `<line x1="2" x2="118" y1="${baseline}" y2="${baseline}" stroke="var(--line)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ''}<path d="${path}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>${pulse}${dot}</svg>`;
-    }
-    function panelLoadingMarkup(message) {
-      return `<div class="panel-loading">${message ? `<p class="panel-loading-message"><span class="loading-spinner" aria-hidden="true"></span>${esc(message)}</p>` : ''}<div class="loading-skeleton" aria-hidden="true"></div><div class="loading-skeleton" aria-hidden="true"></div></div>`;
     }
     function marketSessionState() {
       return renderStockMarket.sessionState ||= {session: null, receivedAt: 0, bootstrapAttempted: false, dashboardPending: false, dashboardTimer: null};
@@ -1560,7 +1822,7 @@
       if (busy && renderStockMarket.lastData) { busy = false; message = ''; }
       if (spinner) spinner.hidden = !busy;
       const progress = $('stockMarketLoadingText');
-      if (progress) progress.textContent = busy ? message : '';
+      if (progress) progress.innerHTML = busy ? '<span class="loading-skeleton loading-skeleton--header" aria-hidden="true"></span>' : '';
       $('stockMarketContent')?.setAttribute?.('aria-busy', String(busy));
       if (retry) $('stockMarketContent')?.querySelectorAll?.('.stock-trend-pulse, .stock-trend-endpoint').forEach(dot => dot.remove());
       if (!status) return;
@@ -1730,7 +1992,7 @@
         if (data?.status !== 'empty') {
           if (data?.status === 'updating') {
             view.lastData = {...(view.lastData || {}), ...data, items: view.lastData?.items || []};
-            if (!view.lastData.items.length) box.innerHTML = panelLoadingMarkup('正在生成验证分析…');
+            if (!view.lastData.items.length) restoreSkeleton('verificationContent');
           } else {
             view.error = '验证结果未就绪';
             if (!view.lastData?.items?.length) box.innerHTML = '';
@@ -1798,6 +2060,7 @@
       const end = overall.end_date || dates[0];
       const options = dates.map(date => `<option value="${esc(date)}"${date === day ? ' selected' : ''}>${esc(date)}</option>`).join('');
       box.innerHTML = `<div class="verification-overall"><div class="verification-overall-heading"><h3 class="verification-overall-title">累计分析</h3><button type="button" class="action-button secondary verification-regenerate">重新生成分析</button></div><p class="verification-period">${esc(start)} 至 ${esc(end)} · ${count}条最终预估</p><div class="verification-stats"><div class="verification-stat"><span>方向一致率</span><strong>${verificationPercent(accuracy)}</strong></div><div class="verification-stat"><span>平均误差</span><strong>${verificationPercent(mae)}</strong></div></div>${analysisHtml}</div><div class="verification-toolbar"><strong>每日明细</strong><div class="verification-date-actions"><select class="verification-date" aria-label="验证日期">${options}</select>${view.manualDate ? '<button type="button" class="verification-latest">查看最新</button>' : ''}</div></div><div>${rows}</div><p class="verification-note">偏差取预估与实际之差的绝对值。</p>`;
+      markSkeletonReady('verificationContent');
       box.querySelector('.verification-regenerate')?.addEventListener('click', regenerateVerificationAnalysis);
       updateVerificationStatus();
       const dateSelect = box.querySelector('.verification-date');
@@ -1842,7 +2105,7 @@
       view.loading = true;
       view.regenerating = Boolean(options.regenerate);
       view.error = '';
-      if (!view.lastData) $('verificationContent').innerHTML = panelLoadingMarkup('正在加载验证分析…');
+      if (!view.lastData) restoreSkeleton('verificationContent');
       updateVerificationStatus();
       view.inFlight = (async () => {
         try {
@@ -1906,7 +2169,7 @@
       let timeout;
       let loadError = '';
       if (!renderStockMarket.lastData) {
-        $('stockMarketContent').innerHTML = panelLoadingMarkup('');
+        restoreSkeleton('stockMarketContent');
         stockMarketStatus('正在读取股市行情…', true);
       }
       try {
@@ -1975,6 +2238,7 @@
       if (!list) return;
       if (!modelProfiles.length) {
         list.innerHTML = '<div class="empty">还没有模型配置，点下方新增</div>';
+        markSkeletonReady('modelProfileList');
         return;
       }
       list.innerHTML = modelProfiles.map(item => {
@@ -1989,6 +2253,7 @@
           : '';
         return `<div class="model-profile${item.active ? ' active' : ''}" role="listitem" data-select-profile="${item.id}"><div class="model-profile-main"><strong>${esc(title)}</strong>${modelLine}</div><div class="model-profile-actions">${action}${copy}<button class="action-button secondary" type="button" data-edit-profile="${item.id}">编辑</button><button class="action-button secondary" type="button" data-delete-profile="${item.id}">删除</button></div></div>`;
       }).join('');
+      markSkeletonReady('modelProfileList');
       list.onclick = event => {
         const copy = event.target.closest('[data-copy-key]');
         if (copy) {
@@ -2150,6 +2415,7 @@
     }
     async function loadModelSettings() {
       if (modelSettingsLoading) return modelSettingsLoading;
+      if (!modelSettingsLoaded) restoreSkeleton('modelProfileList');
       $('aiEnabled').disabled = true;
       $('estimateJobsEnabled').disabled = true;
       modelSettingsLoading = (async () => {
@@ -3134,9 +3400,13 @@
         const total = rows.reduce((sum, row) => sum + number(rowValue(row, 'market_value', 'value', 'holding_value')), 0);
         return `<div class="overview-item"><span class="overview-label">${esc(typeLabels[group] || group)}</span><span class="overview-value">${rows.length ? `${money(total)} 元` : '--'}</span></div>`;
       }).join('');
+      markSkeletonReady('typeSummary');
       renderPositions();
       renderTransactions();
       renderSip();
+      markSkeletonReady('positionsList');
+      markSkeletonReady('transactionsList');
+      markSkeletonReady('sipList');
       updateWriteControls();
       setActiveTab(state.activeTab);
     }
@@ -3456,6 +3726,9 @@
       }).join('') : '<div class="empty">暂无已配置的净值产品</div>';
       $('positiveRanking').innerHTML = rankingRows(monthlyPositives, '本月无正贡献');
       $('negativeRanking').innerHTML = rankingRows(monthlyNegatives, '本月无拖累');
+      markSkeletonReady('productList');
+      markSkeletonReady('positiveRanking');
+      markSkeletonReady('negativeRanking');
       $('statusText').textContent = data.last_error ? `部分数据更新失败：${data.last_error}` : data.refreshing ? '正在更新官网净值...' : '';
       renderManagement(data);
       renderHeldFundEstimates();
@@ -4609,6 +4882,7 @@
       marketSessionState().dashboardPending = false;
       if (state.activeTab === 'market') loadMarketOverview();
     }, 15000);
+    snapshotSkeletons();
     setActiveTab(state.activeTab);
     updateWriteControls();
     loadDashboard();

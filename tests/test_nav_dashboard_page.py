@@ -22,6 +22,8 @@ const assert = require('node:assert/strict');
 const elements = Object.fromEntries(['aiEnabled','estimateJobsEnabled','modelDialog','modelProfileList','aiCopyFromProfile','estimateJobStatus'].map(id => [id,{checked:false,disabled:false,open:false,innerHTML:'',value:'',addEventListener(name,fn){this[name]=fn;}}]));
 const $ = id => elements[id];
 const esc = String;
+const restoreSkeleton = () => {};
+const markSkeletonReady = () => {};
 let messages=[];const showToast = text => messages.push(text);
 let calls=[];let handler=async()=>({ok:true,json:async()=>({enabled:false,jobs_enabled:true,profiles:[]})});
 const api=async(path,options={})=>{calls.push({path,body:options.body?JSON.parse(options.body):null});return handler();};
@@ -110,6 +112,8 @@ const elements = Object.fromEntries(['verificationContent', 'verificationMeta', 
   'verificationStatus', 'verificationSpinner', 'stockMarketContent', 'stockMarketMeta',
   'stockMarketStatus', 'stockMarketSpinner', 'stockMarketLoadingText'].map(id => [id, new Element()]));
 const $ = id => elements[id];
+const restoreSkeleton = id => { const box = $(id); if (box) box.innerHTML = '<div class="loading-skeleton" aria-hidden="true"></div>'; };
+const markSkeletonReady = id => { const box = $(id); if (box && box.setAttribute) box.setAttribute('aria-busy', 'false'); };
 const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
 const tone = value => Number(value) > 0 ? 'positive' : Number(value) < 0 ? 'negative' : 'neutral';
 const document = {hidden: false};
@@ -416,7 +420,8 @@ assert.equal(calls.filter(call => call.path.includes('market-overview')).length,
 def test_stock_progress_sits_beside_title_and_top_meta_only_shows_update_time():
     _run_continuity_behavior(r"""
 stockMarketStatus('正在读取股市行情…', true);
-assert.equal(elements.stockMarketLoadingText.textContent, '正在读取股市行情…');
+// 标题旁保留旋转圆环，文字改为骨架条。
+assert.ok(elements.stockMarketLoadingText.innerHTML.includes('loading-skeleton'));
 assert.equal(elements.stockMarketStatus.innerHTML, '');
 assert.equal(elements.stockMarketSpinner.hidden, false);
 renderStockMarket({available: true, fetched_at: '2026-10-27T16:00:00+08:00',
@@ -430,6 +435,76 @@ assert.equal(elements.stockMarketSpinner.hidden, true);
     html = _read_page()
     header = html[html.index('class="section-head stock-market-heading"'):html.index('id="stockMarketStatus"')]
     assert header.index('股市行情') < header.index('stockMarketSpinner') < header.index('stockMarketLoadingText') < header.index('stockMarketMeta')
+
+
+def test_first_paint_shows_layout_skeletons_across_tabs():
+    html = _read_page()
+    # 旧的文字占位不再出现，首屏直接展示布局骨架。
+    for text in ('正在读取组合数据', '正在读取行情', '正在读取持仓基金', '正在读取持仓',
+                 '正在读取模型配置', '正在统计'):
+        assert text not in html
+    assert 'id="dashboardContent" hidden' not in html
+    assert 'html.access-invalid #dashboardContent { display: none !important; }' in html
+    for marker in ('loading-skeleton--total', 'loading-skeleton--rank', 'loading-skeleton--cell',
+                   'loading-skeleton--sparkline', 'loading-skeleton--circle', 'loading-skeleton--button',
+                   'loading-skeleton--header'):
+        assert marker in html
+
+
+def test_barometer_and_model_settings_show_skeletons_only_without_data():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for dashboard behavior checks")
+    html = _read_page()
+    barometer = html[html.index("async function loadBarometer"):html.index("function setActiveTab")]
+    model = html[html.index("async function loadModelSettings"):html.index("function renderModelChoices")]
+    script = r"""
+const assert = require('node:assert/strict');
+class Element {
+  constructor() { this.innerHTML = ''; this.textContent = ''; this.hidden = false; this.disabled = false; this.attrs = {}; this.style = {}; }
+  setAttribute(name, value) { this.attrs[name] = value; }
+  querySelector() { return null; }
+  querySelectorAll() { return []; }
+}
+const elements = Object.fromEntries(['barometerContent', 'modelProfileList', 'aiEnabled', 'estimateJobsEnabled'].map(id => [id, new Element()]));
+const $ = id => elements[id];
+const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
+const skeletonSnapshots = new Map();
+const restoreSkeleton = id => { const box = $(id); if (box) box.innerHTML = '<div class="loading-skeleton" aria-hidden="true"></div>'; };
+const markSkeletonReady = () => {};
+const renderBarometer = () => {};
+const applyModelSettings = () => {};
+const notifyModelSettings = () => {};
+let barometerLoading = false, barometerReady = false;
+let modelSettingsLoading = null, modelSettingsLoaded = false, modelFlagsSaving = false;
+const response = data => ({ok: true, status: 200, headers: {get: () => ''}, json: async () => data});
+let handler = async () => response({});
+const api = async path => handler(path);
+const setAccessState = () => {};
+""" + barometer + model + r"""
+(async () => {
+  let release;
+  handler = () => new Promise(resolve => { release = resolve; });
+  const pending = loadBarometer();
+  assert.ok(elements.barometerContent.innerHTML.includes('loading-skeleton'), '债市无数据时应显示骨架');
+  release(response({}));
+  await pending;
+  elements.barometerContent.innerHTML = '<div>已加载</div>';
+  barometerReady = true;
+  handler = () => new Promise(() => {});
+  await loadBarometer();
+  assert.equal(elements.barometerContent.innerHTML, '<div>已加载</div>', '债市已有数据时不得显示骨架');
+
+  let releaseModel;
+  handler = () => new Promise(resolve => { releaseModel = resolve; });
+  const pendingModel = loadModelSettings();
+  assert.ok(elements.modelProfileList.innerHTML.includes('loading-skeleton'), '模型配置无数据时应显示骨架');
+  releaseModel(response({profiles: []}));
+  await pendingModel;
+})().catch(error => { console.error(error); process.exit(1); });
+"""
+    result = subprocess.run([node], input=script, capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_dashboard_render_preserves_market_fields_and_renders_saved_stock_snapshot():
@@ -715,6 +790,8 @@ const assert = require('node:assert/strict');
 const box = {innerHTML: '', querySelectorAll: () => [], querySelector: () => null};
 const meta = {textContent: ''};
 const $ = id => id === 'verificationContent' ? box : meta;
+const restoreSkeleton = () => {};
+const markSkeletonReady = () => {};
 const esc = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
 const tone = value => Number(value) > 0 ? 'positive' : Number(value) < 0 ? 'negative' : 'neutral';
 SOURCE
@@ -918,7 +995,9 @@ def test_hero_cumulative_profit_keeps_amount_and_yuan_on_one_line():
     start = html.index(".total {")
     block = html[start: start + 280]
     assert "white-space: nowrap;" in block
-    assert 'id="cumulativeProfit">--<span class="unit">元</span>' in html
+    # 首屏数值改为骨架占位，金额与“元”单位由 countUp 格式化器渲染。
+    assert 'id="cumulativeProfit"' in html
+    assert '<span class="unit">元</span>' in html
 
 
 def test_management_tabs_are_sticky_bottom_with_icons():
@@ -972,6 +1051,8 @@ def test_read_only_state_disables_dialog_writes_and_load_failure_closes_writes()
     assert "function disableWrites(reason)" in html
     assert "disableWrites('组合数据读取失败，写操作已关闭。')" in html
     assert "if (!state.writeEnabled) return;" in html
+    # 首屏骨架阶段不显示只读提示，只有拿到数据且不可写时才显示。
+    assert "notice.hidden = state.writeEnabled || !state.data;" in html
 
 
 def test_preview_and_submit_share_one_idempotency_key_from_the_first_request():
@@ -2305,6 +2386,7 @@ def test_estimates_render_profit_below_rate_and_pending_purchase_without_false_p
 const assert = require('assert');
 const elements={estimateWatchList:{innerHTML:''},estimateMeta:{textContent:''},stockMarketContent:{innerHTML:''},stockMarketMeta:{textContent:''}};
 const $=id=>elements[id];
+const markSkeletonReady = () => {};
 const esc=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const tone=v=>Number(v)>0?'positive':Number(v)<0?'negative':'neutral';
 const rowValue=(r,...ks)=>{for(const k of ks)if(r?.[k]!==undefined&&r[k]!==null)return r[k];return '';};
@@ -2354,6 +2436,7 @@ def test_barometer_renders_source_time_egg_ranges_and_missing_quotes():
 const assert = require('assert');
 const elements = {barometerMeta:{textContent:''},barometerContent:{innerHTML:''}};
 const $ = id => elements[id];
+const markSkeletonReady = () => {};
 const esc = value => String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 """ + logic + r"""
 renderBarometer({available:true,as_of:'2026-10-23',source_id:'southernfund',source:'南方基金<行情>',
